@@ -24,4 +24,4 @@
 ```
 
 ## 清单
-- （暂无）
+- [[prds/m1-infrastructure.md|M1 基础设施基座]] — 已定稿（2026-09-04）；任务已拆至 [[tasks/m1/01-monorepo-scaffold.md|tasks/m1/]]（5 个，按依赖链 01→02→03→04→05 推进）。
