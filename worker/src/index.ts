@@ -5,7 +5,7 @@ import { PROTOCOL_VERSION } from '@remotepi/shared';
 
 export default {
   fetch(_request: Request): Response {
-    return new Response(`hello from remotepi-hello (protocol v${PROTOCOL_VERSION})`, {
+    return new Response(`hello from remotepi worker v${PROTOCOL_VERSION}`, {
       status: 200,
       headers: { 'content-type': 'text/plain; charset=utf-8' },
     });

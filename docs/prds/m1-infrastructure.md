@@ -226,12 +226,13 @@ RemotePi/
 | Cloudflare provider | `~> 5.0` | 5.x 是当前 major；具体小版本在首次 `terraform init` 时由 lock file 钉住 |
 | Backend | S3 + `use_lockfile = true` | 与 ADR-0002 的 IaC 选型一致；参数化见下 |
 | required_version 锚定 | `terraform { required_version = "~> 1.15" }` | 锁大版本线，避免 2.x 行为变更 |
-| Zone 拉取 | `data "cloudflare_zone" "main" { name = "sankabox.com" }` | zone_id 不进 git、PR 友好、自动适配 CF 账户里的真实 zone |
+| Zone 拉取 | `data "cloudflare_zone" "main" { filter = { name = "sankabox.com", account = { id = var.cloudflare_account_id }, match = "all" } }` | 5.x 必须用 `filter` 块（顶层 `name =` 已在 4.x 弃用）；zone_id 不进 git、PR 友好、自动适配 CF 账户里的真实 zone；`filter.account.id` 嵌套结构防御同名 zone 跨账户误匹配 |
 | 敏感变量 | `TF_VAR_cloudflare_api_token`、`TF_VAR_cloudflare_account_id` | 全程不进 `.tf` 文件、不进 backend 配置、不进 CI secrets 以外的明文 |
 | Backend 参数化 | `backend "s3" {}`（空块） + `terraform init -backend-config=backend.hcl` | bucket/region 不进 git；`backend.hcl` 加进 `.gitignore`；CI 用环境变量或 secret 注入等价配置 |
 | State 加锁 | `use_lockfile = true`（S3 原生） | 不维护 DynamoDB；TF ≥ 1.10 原生支持 |
-| 资源最小集（M1） | (1) `cloudflare_record`：`remote-pi.sankabox.com` 的 proxied A 记录占位（指向 `192.0.2.1` 文档保留地址，等 worker 真接管时再改）；(2) `cloudflare_worker_route`：`remote-pi.sankabox.com/*` → wrangler 部署的 worker 名（`remotepi-hello`，与 `worker/wrangler.toml` 的 `name` 对齐） | M1 只需要"DNS + 路由到位"；worker 本体用 `wrangler deploy` 上传（不走 TF，避免双写同一资源） |
+| 资源最小集（M1） | (1) `cloudflare_dns_record`（5.x 复数化，4.x 是 `cloudflare_record`）：`remote-pi.sankabox.com` 的 proxied A 记录占位（指向 `192.0.2.1` 文档保留地址，等 worker 真接管时再改）；(2) `cloudflare_workers_route`（5.x 复数化，4.x 是 `cloudflare_worker_route`）：`remote-pi.sankabox.com/*` → wrangler 部署的 worker 名（`remotepi-hello`，与 `worker/wrangler.toml` 的 `name` 对齐），字段 `script`（5.x 由 4.x 的 `script_name` 改名为 `script`） | M1 只需要"DNS + 路由到位"；worker 本体用 `wrangler deploy` 上传（不走 TF，避免双写同一资源） |
 | 资源归属 | DNS / route 在 TF；worker script 在 wrangler | TF 关注"路由骨架与 DNS"，wrangler 关注"代码上传"；避免两边抢同一资源造成漂移 |
+| cloudflare provider 5.x 适配要点 | (a) DNS 资源 `cloudflare_record` → `cloudflare_dns_record`（复数化，4.x 资源名已重命名）；(b) worker route 资源 `cloudflare_worker_route` → `cloudflare_workers_route`（复数化），字段 `script_name` → `script`；(c) `cloudflare_zone` data source 顶层 `name =` 参数废弃，必须用 `filter = { name = ..., account = { id = ... }, match = ... }` 块结构（`filter.account.id` 是嵌套结构而非 `filter.account_id`）；(d) provider 块不再接受 `account_id`（4.x 已删除），账户由 API token 隐式解析；防御性 account 约束下放到 data source 的 `filter.account.id`（避免 API token 跨账户时同名 zone 误匹配） | 5.x 与 4.x 的关键差异；按旧（4.x）文档直接复制粘板会触发 401 / 422 / Unknown resource 等报错，必须以本表为准 |
 
 **M1 阶段 Terraform 不做的事**：
 - 不 `apply`（CI 只跑 `fmt -check` + `validate`；首次 `apply` 由用户本地跑，验证无凭据也能 init/plan/validate）。
@@ -297,7 +298,7 @@ RemotePi/
 
 | 凭据 | 用途 | 范围 / 最小权限 |
 |------|------|----------------|
-| Cloudflare API Token | Terraform 管理 DNS + worker 路由 | 模板：Edit zone DNS（zone: sankabox.com）+ Account-level: Workers Routes: Edit + Workers Scripts: Read。**不要给 Account-level: Workers Scripts: Edit**——M1 阶段 worker script 由 wrangler 上传，不由 TF 管理 |
+| Cloudflare API Token | Terraform 管理 DNS + worker 路由 | 模板：Zone DNS Edit（zone: sankabox.com）+ Account Workers Routes: Edit + Account Workers Scripts: Read（创建 route 时 API 会校验 script 是否存在，故需 Read 权限读取 worker 列表）。**不要给 Account-level: Workers Scripts: Edit**——M1 阶段 worker script 由 wrangler 上传，不由 TF 管理 |
 | Cloudflare Account ID | `TF_VAR_cloudflare_account_id` | 公开值，但走 env 不进 git |
 | AWS Access Key ID + Secret（具备 S3 写权限） | Terraform S3 backend（state + lock file） | 最小权限：`s3:GetObject`、`s3:PutObject`、`s3:DeleteObject`、`s3:ListBucket`，限定到 state bucket |
 | S3 Bucket 名 + Region | Terraform backend 配置（`backend.hcl`） | 用户创建好空 bucket，启用 versioning（state 历史回滚） |
