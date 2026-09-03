@@ -1,0 +1,16 @@
+# Generated / vendored — never format these.
+pnpm-lock.yaml
+pnpm-workspace.yaml
+dist/
+.wrangler/
+node_modules/
+coverage/
+
+# .pi/ hosts agent runtime extensions (vendored alongside the project) — not source.
+.pi/
+
+# Docs are maintained outside our format pipeline (instruction: do not modify docs/).
+# NOTE: prettier 3.x has built-in markdown + YAML support (not plugin-gated as
+# previously assumed). To enable CI drift detection here, the docs/ markdown
+# corpus would need to first be reformatted in place — currently out of scope.
+docs/

@@ -1,0 +1,57 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "dev:bridge",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["--filter", "@remotepi/bridge", "dev"],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "dev"
+      }
+    },
+    {
+      "label": "dev:worker",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["--filter", "worker", "dev"],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "dev"
+      }
+    },
+    {
+      "label": "dev:worker:inspector",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["--filter", "worker", "dev:inspector"],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "dev"
+      }
+    },
+    {
+      "label": "dev:web",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["--filter", "@remotepi/web", "dev"],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "dev"
+      }
+    }
+  ]
+}

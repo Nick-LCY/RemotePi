@@ -1,6 +1,6 @@
 ---
 prd: prds/m1-infrastructure.md
-status: todo
+status: done
 ---
 # 任务：monorepo 脚手架
 

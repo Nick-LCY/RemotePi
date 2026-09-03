@@ -10,7 +10,7 @@
 ## 任务看板
 | Task | 状态 | 备注 |
 |------|------|------|
-| [[tasks/m1/01-monorepo-scaffold.md\|01 脚手架]] | todo | 仓库根 package.json + 4 包占位 + 顶层脚本 + .vscode 调试四件套 |
+| [[tasks/m1/01-monorepo-scaffold.md\|01 脚手架]] | done | 脚手架+四包空壳+.vscode 四件套；review 通过（修复 prettierignore/shared 双脚本/launch.json 字段/wrangler→4.128+compat 2025-09-01 等 7 项）|
 | [[tasks/m1/02-shared-envelope-prototype.md\|02 信封雏形]] | todo | Zod envelope + 三个测试用例（依赖 01）|
 | [[tasks/m1/03-hello-worker.md\|03 hello worker]] | todo | wrangler dev 起服务，演示性 import shared（依赖 01→02）|
 | [[tasks/m1/04-terraform-cloudflare.md\|04 Terraform CF]] | todo | zone/dns/route + S3 backend（依赖 01；与 03 平行——route 引用 worker 名）|
@@ -19,9 +19,10 @@
 依赖链：01 必须先做；02 依赖 01；03 依赖 01+02；04 依赖 01+03；05 依赖 01+04。
 
 ## TODO / 阻塞
-- [ ] 领取 [[tasks/m1/01-monorepo-scaffold.md|tasks/m1/01]] 开始执行；按依赖链 01→02→03→04→05 推进。
+- [ ] 领取 [[tasks/m1/02-shared-envelope-prototype.md|tasks/m1/02]]（依赖已满足）。
 
 ## 最近变更
+- 2026-09-04（task 01 完成 + review） — [[tasks/m1/01-monorepo-scaffold.md|01]] 完成并 review 通过：脚手架（根 package.json / pnpm-workspace / tsconfig.base / eslint flat / prettier / .nvmrc / .gitignore）+ 四包空壳（shared / bridge / web / worker）+ .vscode 调试四件套（launch.json 三配置 / tasks.json 四后台任务 / settings.json / extensions.json）全部落地；review 修复 7 项（prettierignore / shared 双脚本 / launch.json 字段 / wrangler→4.128+compat 2025-09-01 等）。技术备注：(a) `.prettierignore` 保留 `docs/` 与 `pnpm-lock.yaml` / `pnpm-workspace.yaml` 排除——prettier 3.x 默认格式化 md/yaml，全量格式化 docs 待后续单独做后再放开排除；(b) wrangler 升 4.128 后对 `@cloudflare/workers-types` 有 unmet peer 警告（peer `^5`、现装 v4），当前 dry-run / typecheck 全绿，留待 M2 引入真实 worker 逻辑时再对齐版本。
 - 2026-09-04（追加 .vscode 调试四件套） — 用户补充需求：M1 范围内追加本地调试/调试任务配置。新增 [[prds/m1-infrastructure.md#11-本地调试与一键启动vscode|PRD §11 本地调试与一键启动（.vscode）]]（含 `tasks.json` 四任务 / `launch.json` 三配置 / `settings.json` / `extensions.json` 完整定义），目录树补 `.vscode/` 条目，§10 用户清单前插第 0 条（可选 VS Code 一键启动），验收标准新增「### 本地调试（.vscode）」一组；同步收紧 [[tasks/m1/01-monorepo-scaffold.md|任务 01]] 完成标准（worker dev:inspector + .vscode 四件套全部用 `${workspaceFolder}`）。
 - 2026-09-04（PRD 落盘 + 任务拆分） — [[prds/m1-infrastructure.md|M1 PRD]] 定稿（基础设施基座）；按 PRD 拆 5 个任务 [[tasks/m1/01-monorepo-scaffold.md|01]] / [[tasks/m1/02-shared-envelope-prototype.md|02]] / [[tasks/m1/03-hello-worker.md|03]] / [[tasks/m1/04-terraform-cloudflare.md|04]] / [[tasks/m1/05-github-actions-ci.md|05]]（全 todo），依赖链 01→02→03→04→05。版本锚定按本地实测修正：`pnpm@9.15.0`→`pnpm@10.32.1`、engines `pnpm >=9 <10`→`>=10 <11`、`pnpm/action-setup` `version: 9`→`10`；Terraform `~> 1.10`→`~> 1.15`、`terraform_version: 1.10.x`→`1.15.x`（PRD §7/§8/§9、根 package.json、CI workflows、4/5 任务清单一致）。`docs/architecture/protocol/README.md` 按 PRD 验收要求保持占位不动。
 - 2026-09-04（定稿） — 用户定稿路线图：从早先 M0–M5 六段草案改为 **M1–M4 四步走**（基建 → 通路 → 单 session 闭环 → 多 session 管理）；同步更新 [[roadmap.md]] §5 里程碑表与 §6 待决问题（加归属列）；新建 [[architecture/protocol/README.md|architecture/protocol/]] 作为 RemotePi 隧道协议（envelope / 握手 / token 配对 / 业务消息 / 错误码 / 版本化）的唯一真相源；[[architecture/README.md]] / [[architecture/overview.md]] / [[README.md]] 地图补 protocol 入口；扩展 UI 对话框桥接并入 M3。
