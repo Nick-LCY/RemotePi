@@ -138,9 +138,10 @@ RemotePi/
   ]);
   export type Envelope = z.infer<typeof Envelope>;
   ```
-  - 字段：`v: ProtocolVersion`（字面量类型，未来用 `1 | 2` 演进）、`kind: 'hello' | 'ping' | 'echo'`、`id: string`（消息 ID，用于请求-响应关联）、`payload: ...`。
-  - `Hello`：连接建立后第一帧（web→worker、bridge→worker），载荷为 `{ role: 'web' | 'bridge', token?: string }`（M1 可不带 token，M2 补齐）。
-  - `Ping` / `Echo`：最小双向探活；M1 用于 e2e smoke test，M2 用于 keepalive。
+  - 字段：`v: ProtocolVersion`（字面量类型，未来用 `1 | 2` 演进）、`kind: 'hello' | 'ping' | 'echo'`、`id: z.string()`（消息 ID，用于请求-响应关联——M1 阶段不限长度、不做格式校验，M2 引入请求-响应关联时收紧为 `z.string().min(1)` 或 `z.string().uuid()`）、`payload: ...`（形态随 `kind` 变化，对应下方 `XxxPayload`）。
+  - **命名约定**（M1 由 review 正式裁定，以实现命名为准——任务简报里的 `Hello` / `Ping` / `Echo` 仅指消息概念，代码层一律使用下述命名）：envelope 的 Zod schema 与推导类型同名（`HelloEnvelope` / `PingEnvelope` / `EchoEnvelope`）；payload 与 envelope 区分，Zod schema 带 `Schema` 后缀（`HelloPayloadSchema` / `PingPayloadSchema` / `EchoPayloadSchema`），推导类型不带后缀（`HelloPayload` / `PingPayload` / `EchoPayload`）。消费者按需 import：消费 envelope 时 import `Envelope` 或具体 `XxxEnvelope`；消费 payload 时 import `XxxPayload`。M2 扩展新 kind 时沿用该约定。
+  - **`HelloEnvelope`**：连接建立后第一帧（web→worker、bridge→worker），载荷 `HelloPayload` 形状 `{ role: 'web' | 'bridge', token?: string }`（M1 可不带 token，M2 补齐）。
+  - **`PingEnvelope` / `EchoEnvelope`**：最小双向探活，载荷分别为 `PingPayload`（空对象或 `{ nonce?: string }`）与 `EchoPayload`（`{ nonce: string }`）；M1 用于 e2e smoke test，M2 用于 keepalive。
   - **不实现** token 配对、业务消息、错误码——这些全部 M2 补。
 - **导出格式**：`packages/shared` 用 `tsc` 编译为 ESM，输出 `dist/` + `.d.ts` + `src/` 源码（source 模式让 worker 端 wrangler 直接消费 TS，避免编译步骤）。`package.json` 用 `exports`：
   ```json

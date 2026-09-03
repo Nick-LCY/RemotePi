@@ -1,6 +1,6 @@
 ---
 prd: prds/m1-infrastructure.md
-status: todo
+status: done
 ---
 # 任务：shared 隧道信封雏形
 
