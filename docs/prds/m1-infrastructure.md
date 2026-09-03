@@ -252,8 +252,7 @@ RemotePi/
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@v4
-        - uses: pnpm/action-setup@v4
-          with: { version: 10 }
+        - uses: pnpm/action-setup@v4   # 版本读根 package.json 的 packageManager 字段
         - uses: actions/setup-node@v4
           with:
             node-version-file: .nvmrc
@@ -283,6 +282,7 @@ RemotePi/
   ```
 
 - **缓存**：`pnpm` 缓存由 `actions/setup-node` 内置（`cache: pnpm` 配 `pnpm/action-setup`）；Terraform 不需要缓存（`fmt -check` + `validate` 不下载 provider，用 `-backend=false` 跳过 provider 拉取）。
+- **pnpm 版本唯一真相源**：根 `package.json` 的 `packageManager` 字段（见 §9），CI 不再向 `pnpm/action-setup` 重复传 `version` 输入——v4 action 在同时收到 `version` 输入与 `packageManager` 字段时会报 "Multiple versions of pnpm specified"，故 workflow 一律让 action 从 `packageManager` 自动解析。
 - **凭据**：CI **不**持有 Cloudflare / AWS 凭据；本地 `apply` 用户自跑。
 
 ### §9 版本锚定与根 package.json
@@ -375,7 +375,7 @@ RemotePi/
 - [ ] `.github/workflows/ci.yml` 在 PR/push 上触发，依次跑 `install --frozen-lockfile`、`lint`、`typecheck`、`test`、`build`
 - [ ] `.github/workflows/terraform.yml` 在 PR/push 上跑 `fmt -check` + `init -backend=false` + `validate`，**不**需要任何 secret
 - [ ] CI 使用 `actions/setup-node@v4` 的 `node-version-file: .nvmrc` 锁 Node 22
-- [ ] CI 使用 `pnpm/action-setup` 的 `version: 10` 与 `setup-node` 的 `cache: pnpm` 形成 pnpm 缓存命中
+- [ ] CI 使用 `pnpm/action-setup` 读根 `package.json` 的 `packageManager` 字段定位 pnpm 版本（不传 `version` 输入），与 `setup-node` 的 `cache: pnpm` 形成 pnpm 缓存命中
 - [ ] 两个 workflow 在空仓库首推时全绿
 
 ### 本地调试（.vscode）
