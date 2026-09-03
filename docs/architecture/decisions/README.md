@@ -15,4 +15,10 @@
 ```
 
 ## 清单
-- （暂无）
+
+| 编号 | 标题 | 状态 | 日期 |
+|------|------|------|------|
+| [[architecture/decisions/0001-three-component-topology-with-cf-do.md\|0001]] | 三组件拓扑 + Cloudflare Durable Object 中转 | 已接受 | 2026-09-03 |
+| [[architecture/decisions/0002-monorepo-and-tech-stack.md\|0002]] | 采用 pnpm workspaces monorepo | 已接受 | 2026-09-03 |
+| [[architecture/decisions/0003-session-lifecycle-and-history-source.md\|0003]] | DO 不持久化；session 生命周期与历史来源 | 已接受 | 2026-09-03 |
+| [[architecture/decisions/0004-extension-ui-dialog-forwarding.md\|0004]] | 扩展 UI 对话框转发到 web 弹窗 | 已接受 | 2026-09-03 |

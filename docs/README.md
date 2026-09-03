@@ -7,7 +7,8 @@
 | 领域 | 何时来查 | 入口 |
 |------|---------|------|
 | 当前状态 | 开始任何工作前，先了解进度 / TODO | [[current-state.md]] |
-| 架构 | 理解系统设计、查看架构决策 (ADR) | [[architecture/README.md]] |
+| 路线图 | 了解项目愿景、里程碑、待决问题 | [[roadmap.md]] |
+| 架构 | 理解系统设计、查看架构决策 (ADR) 与 RemotePi 隧道协议规范 | [[architecture/README.md]]（含 [[architecture/protocol/README.md\|protocol/]]） |
 | 约定 | 编码、提交、命名等规范 | [[conventions/README.md]] |
 | 词汇表 | 统一文档库术语含义 | [[glossary.md]] |
 | 需求 (PRD) | 了解某个需求的设计 | [[prds/README.md]] |
@@ -24,4 +25,4 @@
 PRD → 拆分为任务 → tasks → 执行并更新状态 → current-state 汇总进度
 ```
 
-详见 [[architecture/overview.md]]。
+详见 [[architecture/overview.md]]，长期规划与里程碑见 [[roadmap.md]]。
