@@ -4,7 +4,7 @@
 
 ## 活跃需求
 - [[roadmap.md]] — 路线图 M1–M4 已定稿（**2026-09-04 用户定稿**：基建 → 通路 → 单 session 闭环 → 多 session 管理）。下一步按里程碑逐个出 [[prds/README.md|PRD]]。
-- [[prds/m1-infrastructure.md|M1 PRD]] 已定稿（基础设施基座，2026-09-04 落盘）；任务已拆至 [[tasks/m1/01-monorepo-scaffold.md|tasks/m1/01]] ~ [[tasks/m1/05-github-actions-ci.md|05]]，已全部 done（5/5 任务 + CI 双绿，2026-09-05 代码侧收官），详见 [[tasks/README.md|任务索引]]；剩余待人项见下方 TODO。
+- [[prds/m1-infrastructure.md|M1 PRD]] 已定稿（基础设施基座，2026-09-04 落盘）；任务已拆至 [[tasks/m1/01-monorepo-scaffold.md|tasks/m1/01]] ~ [[tasks/m1/05-github-actions-ci.md|05]]，已全部 done（5/5 任务 + CI 双绿 + 真实环境闭环，2026-09-05 收官），详见 [[tasks/README.md|任务索引]]。下一步：拆 [[roadmap.md|M2 通路]] 的 PRD。
 - [[architecture/protocol/README.md|architecture/protocol/]] —— RemotePi 隧道协议（envelope / 握手 / token 配对 / 业务消息 / 错误码 / 版本化）的唯一真相源（骨架已立；envelope / 握手 / 版本化小节留待对应里程碑 PRD 填充，M1 阶段保持占位）。
 
 ## 任务看板
@@ -13,16 +13,17 @@
 | [[tasks/m1/01-monorepo-scaffold.md\|01 脚手架]] | done | 脚手架+四包空壳+.vscode 四件套；review 通过（修复 prettierignore/shared 双脚本/launch.json 字段/wrangler→4.128+compat 2025-09-01 等 7 项）|
 | [[tasks/m1/02-shared-envelope-prototype.md\|02 信封雏形]] | done | Zod envelope + 5 用例全绿；review 通过，修复冗余再导出并裁定命名契约 |
 | [[tasks/m1/03-hello-worker.md\|03 hello worker]] | done | 返回文案对齐 + wrangler dev curl 实测 + getting-started/README 落地 |
-| [[tasks/m1/04-terraform-cloudflare.md\|04 Terraform CF]] | done | 代码交付 + 无凭据验证（fmt/init -backend=false/validate）全绿；5.x 资源名适配 + 防御性 account filter；apply 待用户凭据（见 getting-started §6） |
+| [[tasks/m1/04-terraform-cloudflare.md\|04 Terraform CF]] | done | 代码交付 + 无凭据验证全绿；5.x 资源名适配 + 防御性 account filter；用户已本地 apply 成功，remote-pi.sankabox.com 实测返回 hello |
 | [[tasks/m1/05-github-actions-ci.md\|05 CI 骨架]] | done | 两 workflow 首跑 terraform 绿/ci 红于双重版本指定，修复后 aa87770 双绿（CI + Terraform）|
 
 依赖链：01 必须先做；02 依赖 01；03 依赖 01+02；04 依赖 01+03；05 依赖 01+04。
 
 ## TODO / 阻塞
-- [ ] 用户：凭据就绪后本地执行 `terraform init -backend-config=backend.hcl && plan && apply`（见 [[getting-started.md|getting-started §6]]；apply 前先 `wrangler deploy`，详见 [[getting-started.md|getting-started §5]]）。
+- [ ] 拆分 M2（通路：web ↔ worker ↔ bridge）PRD；先敲定归属 M2 的待决问题：CF 套餐/DO 配额、token 安全细节、bridge 分发方式（见 [[roadmap.md#6-待决问题|roadmap §6]]）。
 
 ## 最近变更
-- 2026-09-05 — task 05 完成，修复 `pnpm/action-setup` 双重版本指定后 aa87770 双 workflow 全绿。**M1 里程碑代码侧收官**。
+- 2026-09-05（M1 真实环境闭环） — 用户本地完成 wrangler deploy（改用 CLOUDFLARE_API_TOKEN 环境变量认证）+ `terraform apply`（DNS + workers route 创建成功）；`curl https://remote-pi.sankabox.com/` 实测返回 `hello from remotepi worker v1`。**M1 里程碑完整收官**。顺带：worker `deploy` script 更名 `deploy:cf`（避开 pnpm 内置 deploy 命令），新增 `infra/terraform.tfvars.example` 并修复 `.gitignore` 行内注释失效（`*.tfvars` 此前实际未被忽略）。
+- 2026-09-05 — task 05 完成，修复 `pnpm/action-setup` 双重版本指定后 aa87770 双 workflow 全绿。**M1 代码侧收官**。
 - 2026-09-05（task 05 CI 首跑 + 修复） — CI workflow 首跑：terraform workflow 绿；ci workflow 红于 `pnpm/action-setup@v4` 同时收到 `version` 输入与根 `package.json` 的 `packageManager` 字段，触发 "Multiple versions of pnpm specified"。裁定 **pnpm 版本唯一真相源为根 `package.json` 的 `packageManager` 字段**，workflow 不再传 `version` 输入（v4 action 二者并存必报错），改为让 action 从 `packageManager` 自动解析。修复后重推 ci workflow 验证绿。同步落 [[prds/m1-infrastructure.md#8-github-actions-ci-骨架|PRD §8]]：`ci.yml` 示例 YAML 的 `- uses: pnpm/action-setup@v4` 行去掉 `with: { version: 10 }`、只保留注释说明；§8 缓存 bullet 后新增 "pnpm 版本唯一真相源" bullet；验收条目的 `version: 10` 表述改为"读 `packageManager` 字段定位 pnpm 版本"。
 - 2026-09-04（task 03/04 完成 + review 通过） — [[tasks/m1/03-hello-worker.md|03]] / [[tasks/m1/04-terraform-cloudflare.md|04]] 完成并 review 通过：
   - **03 hello worker**：`worker/src/index.ts` 返回文案与 [[getting-started.md|getting-started §3.3]] 描述对齐（`hello from remotepi worker v1`，`PROTOCOL_VERSION=1` 来自 `@remotepi/shared`）；`wrangler dev` 本地起 `http://localhost:8787/`、curl 实测响应一致；`wrangler deploy --dry-run --outdir=dist` 产出 `dist/` 无错；`compatibility_date="2025-09-01"`、`name="remotepi-hello"` 与 [[prds/m1-infrastructure.md#7-terraform-细节|PRD §7]] route 引用对齐。
