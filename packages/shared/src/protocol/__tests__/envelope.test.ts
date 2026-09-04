@@ -15,6 +15,7 @@ import {
   BridgeStatusPayloadSchema,
   CONTROL_TYPES,
   Envelope,
+  ERROR_CODES,
   ErrorPayloadSchema,
   HandshakePayloadSchema,
   PingPayloadSchema,
@@ -22,7 +23,6 @@ import {
   PROTOCOL_VERSION,
   ROLES,
   type BridgeStatusEnvelope,
-  type ErrorCode,
   type ErrorEnvelope,
   type HandshakeEnvelope,
   type PingEnvelope,
@@ -231,15 +231,7 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
 
   // ----- error (cases 9–10) -----
   it('9. accepts an error envelope for every legal ErrorCode', () => {
-    const codes: ErrorCode[] = [
-      'auth_failed',
-      'duplicate_bridge',
-      'invalid_envelope',
-      'unsupported_version',
-      'unsupported_type',
-      'internal',
-    ];
-    for (const code of codes) {
+    for (const code of ERROR_CODES) {
       const result = parseEnvelope({
         v: 1,
         kind: 'control',
@@ -254,7 +246,7 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
       }
     }
 
-    for (const code of codes) {
+    for (const code of ERROR_CODES) {
       expect(ErrorPayloadSchema.safeParse({ code, message: 'x' }).success).toBe(true);
     }
   });
@@ -327,6 +319,22 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
       });
       expect(result.success, `kind=pi, type=${type} must fail`).toBe(false);
     }
+
+    // Additional negative case: even a payload that is *legal* for the
+    // control kind (a real handshake payload) must still be refused when
+    // `kind` is `pi`. Proves the rejection happens on the `kind` gate
+    // (PiBranch = z.never()) and not on payload semantics.
+    const legalControlPayloadWithPiKind = parseEnvelope({
+      v: 1,
+      kind: 'pi',
+      type: 'handshake',
+      id: 'msg-013-payload-legit',
+      payload: { role: 'web', token: 't' },
+    });
+    expect(
+      legalControlPayloadWithPiKind.success,
+      'kind=pi with a legal control payload must still fail (gate is on kind, not payload)',
+    ).toBe(false);
   });
 
   it('14. rejects an envelope whose `kind` is neither `control` nor `pi`', () => {
@@ -376,6 +384,23 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
       // on the schema surface for v1 lock-version (envelope.md §锁版承诺).
       expect(result.data.session).toBeUndefined();
     }
+
+    // Positive case: when `session` is provided, parsing still succeeds and
+    // the value is preserved verbatim. No M2 message populates it today, but
+    // the field is part of the v1 wire surface — consumers must round-trip
+    // it without dropping or renaming it.
+    const withSession = parseEnvelope({
+      v: 1,
+      kind: 'control',
+      type: 'handshake',
+      id: 'msg-016b',
+      session: 'sess-x',
+      payload: { role: 'web', token: 't0k' },
+    });
+    expect(withSession.success).toBe(true);
+    if (withSession.success) {
+      expect(withSession.data.session).toBe('sess-x');
+    }
   });
 
   it('17. accepts an envelope that omits the optional `reply_to`', () => {
@@ -392,6 +417,88 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
     if (result.success) {
       expect(result.data.reply_to).toBeUndefined();
     }
+
+    // Positive case: when `reply_to` is provided, parsing still succeeds and
+    // the value is preserved verbatim. The schema is round-trippable for
+    // both fields even though M2 has no emitter that sets them.
+    const withReplyTo = parseEnvelope({
+      v: 1,
+      kind: 'control',
+      type: 'ping',
+      id: 'msg-017b',
+      reply_to: 'msg-006',
+      payload: { nonce: 'r2' },
+    });
+    expect(withReplyTo.success).toBe(true);
+    if (withReplyTo.success) {
+      expect(withReplyTo.data.reply_to).toBe('msg-006');
+    }
+  });
+
+  // ----- bridge_status `changed_at` precision (post-PRD additions) -----
+  // The M2 PRD §6 lists 17 cases; cases 18 / 19 below were added during the
+  // v1 review to pin down the `changed_at` precision contract — see
+  // BridgeStatusPayloadSchema JSDoc.
+
+  it('18. accepts a bridge_status envelope whose `changed_at` has millisecond precision (toISOString format)', () => {
+    // `new Date().toISOString()` always emits `.123Z`-style timestamps with
+    // three fractional digits. The schema must accept that or every bridge
+    // status emitted by JS runtimes would be refused at the boundary.
+    const result = parseEnvelope({
+      v: 1,
+      kind: 'control',
+      type: 'bridge_status',
+      id: 'msg-018',
+      payload: {
+        online: true,
+        changed_at: '2026-09-05T10:00:00.123Z',
+        reason: 'connected',
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const env = narrow<BridgeStatusEnvelope>(result.data, 'bridge_status');
+      expect(env.payload.changed_at).toBe('2026-09-05T10:00:00.123Z');
+    }
+
+    // Schema-level spot check — same outcome in isolation.
+    expect(
+      BridgeStatusPayloadSchema.safeParse({
+        online: true,
+        changed_at: '2026-09-05T10:00:00.123Z',
+        reason: 'connected',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('19. accepts a bridge_status envelope whose `changed_at` is second-precision (no fractional part)', () => {
+    // Tests, SDKs and humans frequently emit second-precision ISO strings
+    // without the `.000` suffix. The schema must accept those too — both
+    // precisions are legal under `datetime({ precision: null })`.
+    const result = parseEnvelope({
+      v: 1,
+      kind: 'control',
+      type: 'bridge_status',
+      id: 'msg-019',
+      payload: {
+        online: true,
+        changed_at: '2026-09-05T10:00:00Z',
+        reason: 'connected',
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const env = narrow<BridgeStatusEnvelope>(result.data, 'bridge_status');
+      expect(env.payload.changed_at).toBe('2026-09-05T10:00:00Z');
+    }
+
+    expect(
+      BridgeStatusPayloadSchema.safeParse({
+        online: true,
+        changed_at: '2026-09-05T10:00:00Z',
+        reason: 'connected',
+      }).success,
+    ).toBe(true);
   });
 });
 
@@ -419,14 +526,7 @@ describe('Enum literals ↔ payload schemas (sanity)', () => {
   });
 
   it('every ErrorCode parses ErrorPayloadSchema', () => {
-    for (const code of [
-      'auth_failed',
-      'duplicate_bridge',
-      'invalid_envelope',
-      'unsupported_version',
-      'unsupported_type',
-      'internal',
-    ] as const) {
+    for (const code of ERROR_CODES) {
       expect(ErrorPayloadSchema.safeParse({ code, message: 'x' }).success).toBe(true);
     }
   });

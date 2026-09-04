@@ -18,9 +18,18 @@
 // only plain ZodObjects expose `.shape` — a nested `discriminatedUnion` (the
 // `ControlBranch`) does not. z.union preserves the same kind-gating: the
 // ControlBranch validates `kind === 'control'`; PiBranch (`z.never()`) rejects
-// `kind === 'pi'` and every other kind with a single ZodError. M3 will swap
-// PiBranch for a real `z.discriminatedUnion('type', [...9 pi schemas...])` —
-// the outer `z.union([ControlBranch, PiBranch])` shape stays unchanged.
+// `kind === 'pi'` and every other kind with a single ZodError.
+//
+// ### Kind gating across milestones
+//
+// Today (M2) every successful parse has `kind === 'control'` because the pi
+// branch is the always-reject `z.never()` placeholder. From M3 onward a
+// successful parse will have `kind ∈ {'control', 'pi'}` once `PiBranch` is
+// swapped for a real `z.discriminatedUnion('type', [...9 pi schemas...])`.
+// Consumers MUST narrow on `kind` before switching on `type` (or use the
+// discriminatedUnion on the appropriate branch) — an outer
+// `discriminatedUnion('kind', ...)` is not used here for the reason given
+// above, so the kind branch happens at parse time, not type-narrowing time.
 import { z } from 'zod';
 
 /** Single source of truth for the protocol version. Bumping it is a wire
@@ -88,10 +97,17 @@ export const PongPayloadSchema = z.object({
 export type PongPayload = z.infer<typeof PongPayloadSchema>;
 
 /** BridgeStatus payload — bridge online state + ISO timestamp + reason.
- *  `changed_at` is validated as an ISO 8601 datetime string (control.md §4). */
+ *  `changed_at` is validated as an ISO 8601 datetime string (control.md §4).
+ *  The schema accepts any sub-second precision — including the millisecond
+ *  form `2026-09-05T10:00:00.123Z` that `Date.prototype.toISOString()`
+ *  always emits — but stays UTC-only (offsets like `+00:00` are rejected).
+ *  We pass `{ precision: null }` explicitly so the contract is unambiguous
+ *  to readers and survives any future zod default-precision changes; the
+ *  current zod default already accepts any precision, but spelling it out
+ *  documents intent. Offset forms are out of v1 scope. */
 export const BridgeStatusPayloadSchema = z.object({
   online: z.boolean(),
-  changed_at: z.string().datetime(),
+  changed_at: z.string().datetime({ precision: null }),
   reason: z.enum(BRIDGE_STATUS_REASONS),
 });
 export type BridgeStatusPayload = z.infer<typeof BridgeStatusPayloadSchema>;
@@ -121,7 +137,7 @@ const EnvelopeBase = {
   id: z.string().min(1),
   session: z.string().optional(),
   reply_to: z.string().optional(),
-} as const;
+};
 
 export const HandshakeEnvelope = z.object({
   ...EnvelopeBase,
