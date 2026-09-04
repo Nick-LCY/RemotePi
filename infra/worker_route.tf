@@ -7,7 +7,7 @@
 #   `remotepi-hello` 部署到该 CF 账户）。M1 阶段 worker script 由 wrangler
 #   上传，不由 TF 管理，避免双写同一资源。
 #   首次部署顺序：
-#     1) pnpm --filter worker deploy              # wrangler 上传 remotepi-hello
+#     1) pnpm --filter worker run deploy:cf      # wrangler 上传 remotepi-hello
 #     2) terraform apply                          # 创建 route 指向已存在的 script
 #
 # pattern 用 `remote-pi.sankabox.com/*` 匹配所有该子域的请求，转给 remotepi-hello。

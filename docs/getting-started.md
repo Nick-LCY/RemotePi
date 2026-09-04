@@ -158,7 +158,7 @@ pnpm --filter worker dev:inspector
 pnpm --filter worker exec wrangler login
 
 # 部署 hello worker
-pnpm --filter worker deploy
+pnpm --filter worker run deploy:cf
 # 等价于 wrangler deploy，部署名取 worker/wrangler.toml 的 name = "remotepi-hello"
 ```
 
