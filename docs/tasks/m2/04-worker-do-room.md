@@ -1,6 +1,6 @@
 ---
 prd: prds/m2-tunnel.md
-status: todo
+status: done
 ---
 # 任务：worker + DO Room（路由 / 鉴权 / 广播 / 判死 / 错误码）
 

@@ -1,6 +1,6 @@
 ---
 prd: prds/m2-tunnel.md
-status: todo
+status: done
 ---
 # 任务：bridge 客户端（token / WSS / handshake / 心跳 / 重连）
 

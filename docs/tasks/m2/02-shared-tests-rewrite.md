@@ -1,6 +1,6 @@
 ---
 prd: prds/m2-tunnel.md
-status: todo
+status: done
 ---
 # 任务：shared 测试重写（17 条）
 

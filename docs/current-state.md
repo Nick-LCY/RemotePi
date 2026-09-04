@@ -5,7 +5,7 @@
 ## 活跃需求
 - [[roadmap.md]] — 路线图 M1–M4 已定稿（**2026-09-04 用户定稿**：基建 → 通路 → 单 session 闭环 → 多 session 管理）。下一步按里程碑逐个出 [[prds/README.md|PRD]]。
 - [[prds/m1-infrastructure.md|M1 PRD]] 已定稿（基础设施基座，2026-09-04 落盘）；任务已拆至 [[tasks/m1/01-monorepo-scaffold.md|tasks/m1/01]] ~ [[tasks/m1/05-github-actions-ci.md|05]]，已全部 done（5/5 任务 + CI 双绿 + 真实环境闭环，2026-09-05 收官），详见 [[tasks/README.md|任务索引]]。
-- [[prds/m2-tunnel.md|M2 PRD]] 已定稿落盘（2026-09-05，基于协议 v1）；任务已拆至 [[tasks/m2/01-shared-envelope-v1.md|tasks/m2/01]] ~ [[tasks/m2/06-deploy-and-validation.md|06]]（6 个，03/04/05 可并行），全部 todo。交付约定：本地 commit 不 push，push 由用户验证后手动触发 CI。
+- [[prds/m2-tunnel.md|M2 PRD]] 已定稿落盘（2026-09-05，基于协议 v1）；任务已拆至 [[tasks/m2/01-shared-envelope-v1.md|tasks/m2/01]] ~ [[tasks/m2/06-deploy-and-validation.md|06]]（6 个，03/04/05 可并行），01–05 done，06 待用户本地联调验收。交付约定：本地 commit 不 push，push 由用户验证后手动触发 CI。
 - [[architecture/protocol/README.md|architecture/protocol/]] —— RemotePi 隧道协议唯一真相源，**v1 已定稿**（2026-09-05）：信封 {v, kind(control|pi), type, id, session?, reply_to?, payload}；control 8 个 type（handshake/ping/pong/bridge_status/session_state/session_list/result/error）、pi 9 个 type（prompt/steer/follow_up/abort/get_messages/extension_ui_response/command_result/snapshot/event）；中间层只深度处理 handshake（鉴权）、bridge_status 与 error（自己生成），其余一律转发。
 
 ## 任务看板
@@ -16,19 +16,20 @@
 | [[tasks/m1/03-hello-worker.md\|03 hello worker]] | done | 返回文案对齐 + wrangler dev curl 实测 + getting-started/README 落地 |
 | [[tasks/m1/04-terraform-cloudflare.md\|04 Terraform CF]] | done | 代码交付 + 无凭据验证全绿；5.x 资源名适配 + 防御性 account filter；用户已本地 apply 成功，remote-pi.sankabox.com 实测返回 hello |
 | [[tasks/m1/05-github-actions-ci.md\|05 CI 骨架]] | done | 两 workflow 首跑 terraform 绿/ci 红于双重版本指定，修复后 aa87770 双绿（CI + Terraform）|
-| [[tasks/m2/01-shared-envelope-v1.md\|01 shared envelope v1]] | todo | 重写 envelope.ts：v1 信封 + control 5 type discriminated + pi z.never() 占位；删 M1 hello/echo；命名契约沿用 |
-| [[tasks/m2/02-shared-tests-rewrite.md\|02 shared tests rewrite]] | todo | 17 条 vitest 重写 M1 5 条；删 hello/echo 测试；用例编号与 PRD §6 一一对应 |
-| [[tasks/m2/03-bridge-client.md\|03 bridge client]] | todo | token/WSS/handshake/心跳/重连；stdout 分享 URL；8 条单测（依赖 01） |
-| [[tasks/m2/04-worker-do-room.md\|04 worker+DO]] | todo | wrangler.toml 改名+DO binding+sqlite migration；types ^5；路由/鉴权/广播/判死/错误码（依赖 01） |
-| [[tasks/m2/05-web-components.md\|05 web 组件]] | todo | WsClient + TokenPrompt/StatusBar/PingTester/BroadcastLog；VITE_WSS_URL；_redirects（依赖 01） |
+| [[tasks/m2/01-shared-envelope-v1.md\|01 shared envelope v1]] | done | shared 协议 v1 重写完成；review 通过（无 Critical），修复 changed_at 毫秒精度显式契约等 5 项（d83ba61）|
+| [[tasks/m2/02-shared-tests-rewrite.md\|02 shared tests rewrite]] | done | 22 条测试全绿（17 条 PRD 对应 + 精度钉桩等 5 条）；与 01 同线完成 |
+| [[tasks/m2/03-bridge-client.md\|03 bridge client]] | done | bridge 客户端 + 8 单测；review 修复 nonce 升 full UUID / pong 严格配对 / 判死 close 1000（6d58727）|
+| [[tasks/m2/04-worker-do-room.md\|04 worker+DO]] | done | worker+Room DO / 路由鉴权 / 转发广播 / 探活判死 / 错误码矩阵；workers-types ^5；wrangler dry-run 通过（b912a5a）|
+| [[tasks/m2/05-web-components.md\|05 web 组件]] | done | web 四组件 + WsClient；token 仅内存+hash；build 过（1c252d8）|
 | [[tasks/m2/06-deploy-and-validation.md\|06 deploy+验证]] | todo | pages.tf/dns_web.tf + getting-started 三端联调手测脚本 + 用户操作清单（依赖 03+04+05） |
 
 依赖链：M1 全 done。M2 01 根任务；02 依赖 01；03/04/05 依赖 01 且可并行；06 依赖 03+04+05。
 
 ## TODO / 阻塞
-- [ ] M2 六任务执行（01→02→{03,04,05}→06）；完成后用户本地测试，再 push 触发 CI
+- [ ] M2 收尾：用户本地三端联调手测（PRD 验收清单）→ terraform apply + wrangler deploy + pages deploy（用户操作清单见 PRD §用户操作清单）→ 验收通过后 push 触发 CI
 
 ## 最近变更
+- 2026-09-05（M2 三端代码完成） — 任务 03/04/05 完成并通过跨组件联审（reviewer：无 Critical；修复 nonce 升 full UUID、bridge pong 严格配对、判死 close 1000、HANDSHAKE_TIMEOUT_MS 归位等）。bridge 6d58727 / worker b912a5a / web 1c252d8。根级 lint/typecheck/test/build 全绿（shared 22 测试 + bridge 32 测试）；worker bundle 138.62 KiB。待办：任务 06 infra 与 getting-started 落地后，用户本地三端联调手测。
 - 2026-09-05（M2 PRD 定稿 + 拆任务） — [[prds/m2-tunnel.md|M2 PRD]] 按协议 v1 修订定稿：M2 实现范围收敛为 control 5 type（handshake/ping/pong/bridge_status/error），session_state/session_list/result 与 pi 家族不在 M2；信封按 kind 二分两层 discriminated union（pi 空位 z.never() 占位）；bridge 握手不等 ack（bridge_status 只发网页）、token 只走 subprotocol 不进 query、web WSS 连 worker 域；DO 主动探活作为 control.md §2 兼容补充落备注。拆 6 任务，03/04/05 可并行；交付约定本地 commit 不 push。
 - 2026-09-05（协议 v1 定稿） — [[architecture/protocol/README.md|隧道协议]] 经多轮评审定稿并落盘 README / envelope / control / pi 四文档。要点：kind 二分为 control（连接与会话生命周期）/ pi（对话内容）；reply_to 仅限回执类（control 的 result、pi 的 command_result 与 snapshot）；不设 bye（离线不区分正常关闭与崩溃）；session_state 按会话一条（一个 bridge 可对应多个 pi 进程）；session_list 归 control、列表项带 running 简化状态；error 定向发送、terminal 标志、关闭码 1008；网页渲染规则（message_end 快照为权威、agent_settled 收尾）写进协议；评审中裁撤 capabilities 与 idle_remaining_s。v1 锁版承诺见 envelope.md。
 - 2026-09-05（M1 真实环境闭环） — 用户本地完成 wrangler deploy（改用 CLOUDFLARE_API_TOKEN 环境变量认证）+ `terraform apply`（DNS + workers route 创建成功）；`curl https://remote-pi.sankabox.com/` 实测返回 `hello from remotepi worker v1`。**M1 里程碑完整收官**。顺带：worker `deploy` script 更名 `deploy:cf`（避开 pnpm 内置 deploy 命令），新增 `infra/terraform.tfvars.example` 并修复 `.gitignore` 行内注释失效（`*.tfvars` 此前实际未被忽略）。

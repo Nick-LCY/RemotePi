@@ -114,6 +114,51 @@ pnpm --filter worker dev:inspector
 
 > **端口被占用**：`wrangler dev` 默认绑 8787，被占用就报 `EADDRINUSE`。换端口：把 worker `package.json` 的 `dev` script 改成 `wrangler dev --port 8788`（或直接 `wrangler dev --port 8788` 一次性用）；验证完改回默认配置即可。
 
+### 3.4 M2 三端齐起（本地联调 / 验收准备）
+
+M2 三端联调（web ↔ worker ↔ bridge）需要三个终端各起一个 dev 服务。**worker 先起**（触发 DO `new_sqlite_classes` migration），再起 bridge（生成 token），最后起 web（粘 token 进 URL）。
+
+**终端 A — worker**
+
+```bash
+pnpm --filter worker dev
+# 首次起会触发 new_sqlite_classes migration，wrangler 打 "Applying migrations" 后就绪
+# 默认 http://localhost:8787/；GET / 仍返回 hello；/web、/bridge 是 WS upgrade 入口
+```
+
+**终端 B — bridge**
+
+```bash
+pnpm --filter @remotepi/bridge dev
+# stdout 形如：
+#   token: x9Kq3v…（32 字符 base64url，192-bit 熵）
+#   share URL: https://web.remote-pi.sankabox.com/#x9Kq3v…
+#   WSS: ws://localhost:8787/bridge
+```
+
+**终端 C — web**
+
+```bash
+pnpm --filter @remotepi/web dev
+# 默认 http://localhost:5173/
+```
+
+把终端 B 的 `share URL` 复制出来（dev 用 `http://localhost:5173/#<token>` 替换域名也行），浏览器开：
+
+```
+http://localhost:5173/#<token>
+```
+
+**验证要点**（按 [[prds/m2-tunnel.md#验收清单|M2 PRD 验收清单]]）：
+
+- **StatusBar 绿** — 状态条出现 `online` + `bridge_status.reason='connected'`，表示 handshake 通过。
+- **PingTester 往返** — 点 PingTester 发 `control/ping`，收到 `control/pong` 显示 nonce 与 RTT（ms）。
+- **双 tab 广播** — 开两个 tab 都粘同一 token，两边 `<BroadcastLog />` 互收对方/bridge 消息。
+- **杀 bridge 变离线** — 在终端 B 按 `Ctrl+C`，两 tab 5 秒内 StatusBar 变 `offline` + `reason='closed'`。
+- **心跳判死** — 在终端 B `kill -STOP $(pgrep -f '@remotepi/bridge')`，两 tab 90 秒内 `reason='stale'`；再 `kill -CONT` → 自动重连恢复 `connected`。
+
+> bridge 端 PID 取法：`pgrep -f 'remotepi/bridge'` 或 `ps aux | grep bridge` 都行；`tsx watch` 起的进程组是同一棵，`kill -- -<pgid>` 可一并清掉子进程。
+
 ---
 
 ## 4. VS Code 一键启动（推荐）
@@ -276,3 +321,68 @@ pnpm run format:check # prettier --check
 - 想了解项目蓝图？→ [[roadmap.md]]
 - 想看 M1 PRD 的设计细节？→ [[prds/m1-infrastructure.md]]
 - 想理解 RemotePi 隧道协议？→ [[architecture/protocol/README.md]]
+
+---
+
+## 10. M2 部署到 Cloudflare
+
+M1 的 hello worker 仍可保留作 ops smoke；M2 把业务切到 `remotepi-worker` + Pages + web 子域。**部署顺序很关键**——先 worker 上线，再切 route + Pages 项目 + web CNAME，最后上 web；任一环节顺序错了都会触发域名空窗（route 指向尚未 deploy 的 worker → 522，或 Pages 项目未创建 → wrangler pages deploy 失败）。
+
+### 10.1 CF Token 补 Pages:Edit
+
+M1 §6.1 的 CF API Token 需新增一个权限，否则 `terraform apply` 与 `wrangler pages deploy` 都会 403：
+
+| 额外权限 | 用途 |
+|---------|------|
+| Account-level: **Pages:Edit** | TF 创建 Pages 项目；wrangler pages deploy 上传产物 |
+
+模板汇总：Edit zone DNS（zone: sankabox.com）+ Workers Routes: Edit + Workers Scripts: Read + **Pages:Edit**。
+
+### 10.2 部署顺序（用户本地执行）
+
+```bash
+# ① 先把新名 worker 上线——哪怕暂时没业务路由到它，也避免后面 route 切到空 worker 触发 522
+pnpm --filter worker run deploy:cf
+# 部署名取 worker/wrangler.toml 的 name = "remotepi-worker"
+# 上线后 worker URL：https://remotepi-worker.<your-subdomain>.workers.dev
+
+# ② terraform apply：route 切到 remotepi-worker + Pages 项目 + web CNAME 一并落
+cd infra
+terraform apply
+# 落地三件事：
+#   - cloudflare_workers_route：script 字段切到 remotepi-worker
+#   - cloudflare_pages_project.remotepi_web：Pages 项目创建（部署动作不入 TF）
+#   - cloudflare_dns_record.web：CNAME → remotepi-web.pages.dev（proxied）
+
+# ③ 上 web：build + wrangler pages deploy
+cd ..
+pnpm --filter @remotepi/web run build
+pnpm --filter @remotepi/web exec wrangler pages deploy dist --project-name=remotepi-web
+# 产物指向 packages/web/dist/；首次 deploy 时 wrangler 会确认 Pages 项目存在（与 TF 项目名一致）
+
+# ④ 浏览器验证
+# https://web.remote-pi.sankabox.com/#<token>
+```
+
+### 10.3 可选清理
+
+旧 M1 hello worker `remotepi-hello` 不再被 route 引用；想清理可在 CF Dashboard → Workers & Pages → 找到 `remotepi-hello` → Delete。**不动也可以**，不影响 M2 业务（CF 不会主动回收未引用 worker）。
+
+### 10.4 wscat 冒烟（无 Pages 也可验 worker 路由）
+
+[wscat](https://github.com/websockets/wscat) 是 Node 的 WS REPL（`npm i -g wscat`）。没有 browser、没有 web bundle 也能直接打 worker 验握手与错误码——所有错误码矩阵的「wscat」验收路径都走这里：
+
+```bash
+# (a) 不带 subprotocol → 401
+wscat -c ws://remote-pi.sankabox.com/bridge
+# Expected：拒绝连接（worker index.ts 在 upgrade 阶段 token 缺失返 401）
+
+# (b) 带 ["remotepi.v1", token] 完成 handshake
+#     token 必须由 bridge 启动生成；这里以占位 token 演示请求格式
+wscat -c ws://remote-pi.sankabox.com/bridge -s "remotepi.v1,REPLACE_WITH_BRIDGE_TOKEN"
+# Connected；服务端 5 秒内等 handshake，首帧发：
+#   {"v":1,"kind":"control","type":"handshake","id":"h1","payload":{"role":"bridge","token":"REPLACE_WITH_BRIDGE_TOKEN"}}
+# 校验通过后无 error 帧 = handshake 成功；bridge 端 keep-alive 即视为握手通过（不等待 ack）
+```
+
+> `-s "remotepi.v1,token"` 是 wscat 传 subprotocol 数组的语法（逗号分隔）；位置 0 是版本号、位置 1 是 token，详见 [[architecture/protocol/envelope.md#锁版承诺v1-存续期内不可变]]。其他错误码路径（5s 无 handshake → `auth_failed` + close 1008；role 与路径不符 → `auth_failed`；畸形帧 → `invalid_envelope`；`v=2` → `unsupported_version` + close 1008；第二 bridge → `duplicate_bridge` + close 1008）同样用 wscat 触发。
