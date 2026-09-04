@@ -17,6 +17,8 @@ build/
 *.tfstate.backup
 backend.hcl
 *.tfplan
+# terraform.tfvars 通常含真实 secret（真实凭据）；模板用 infra/terraform.tfvars.example 提交
+*.tfvars
 
 # Coverage / test
 coverage/

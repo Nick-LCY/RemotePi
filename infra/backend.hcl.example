@@ -15,3 +15,11 @@ encrypt        = true                                  # 推荐启用 server-sid
 # dynamodb_table = "..."                               # 旧式 lock，TF ≥ 1.10 + use_lockfile=true 时**不需要**；
 #                                                     # 如果你的 bucket 不支持 native lockfile，再回退到这里
 # profile        = "default"                           # 本地多 profile 时可显式指定 AWS CLI profile
+
+# ---- AWS 凭据（可选，见下方说明）----
+# 直接写在本文件即可生效；backend.hcl 已被 .gitignore 排除，不入 git。
+# 不填则走默认链：环境变量 AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY，
+# 或 ~/.aws/credentials 的 [default] / 自定义 profile。
+# Cloudflare token 不在本文件，见 getting-started §6.3（TF_VAR_cloudflare_api_token 或 terraform.tfvars）。
+access_key = "REPLACE_ME_AWS_ACCESS_KEY_ID"
+secret_key = "REPLACE_ME_AWS_SECRET_ACCESS_KEY"

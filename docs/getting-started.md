@@ -195,19 +195,42 @@ cp infra/backend.hcl.example infra/backend.hcl
 
 # 2. 编辑 infra/backend.hcl，填 bucket / region / key / use_lockfile
 #    真实 backend.hcl 已加入 .gitignore，不会被提交
+#    模板里含 AWS 凭据占位（access_key / secret_key），一并填掉即可，无需另设环境变量；
+#    想继续走 env / ~/.aws/credentials 默认链也行，把这两行留空或删掉即可。
 ```
 
 ### 6.3 注入凭据
 
+**（a）推荐——AWS 写进 backend.hcl，CF token 走 env 或 terraform.tfvars：**
+
+```bash
+# AWS：填进 infra/backend.hcl 的 access_key / secret_key（见 §6.2）
+#      该文件已被 .gitignore 排除（backend.hcl + *.tfvars 两条规则），不入库。
+
+# Cloudflare token：二选一
+#   方案 1：环境变量
+export TF_VAR_cloudflare_api_token="cf-token"
+export TF_VAR_cloudflare_account_id="cf-account-id"
+
+#   方案 2：infra/terraform.tfvars（推荐，从模板复制后填值）
+cp infra/terraform.tfvars.example infra/terraform.tfvars
+# 然后编辑 infra/terraform.tfvars：
+#   cloudflare_api_token  = "你的token"
+#   cloudflare_account_id = "你的account id"
+# terraform.tfvars 已被 .gitignore（*.tfvars 规则）排除，不入库。
+```
+
+**（b）全环境变量路线（备选，与原写法等价）：**
+
 ```bash
 # Cloudflare
-export TF_VAR_cloudflare_api_token="<cf-token>"
-export TF_VAR_cloudflare_account_id="<cf-account-id>"
+export TF_VAR_cloudflare_api_token="cf-token"
+export TF_VAR_cloudflare_account_id="cf-account-id"
 
-# AWS — 任选一种：环境变量、~/.aws/credentials、instance profile 都行
-export AWS_ACCESS_KEY_ID="<aws-key>"
-export AWS_SECRET_ACCESS_KEY="<aws-secret>"
+# AWS 也可走 ~/.aws/credentials 的 [default] / 自定义 profile，无需任何环境变量。
 ```
+
+> AWS key/secret 的优先级（Terraform 文档）：`backend.hcl` 的 `access_key` / `secret_key` > 环境变量 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` > `~/.aws/credentials` profile > EC2 instance / ECS task profile。
 
 ### 6.4 初始化 / 计划 / 应用
 

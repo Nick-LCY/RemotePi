@@ -1,0 +1,15 @@
+# Cloudflare provider 凭据模板
+# ------------------------------------------------------------------
+# 复制为 infra/terraform.tfvars 并填入真实值：
+#   cp infra/terraform.tfvars.example infra/terraform.tfvars
+#
+# infra/terraform.tfvars 已被仓库根 .gitignore 的 `*.tfvars` 规则排除，
+# 真实凭据不会被提交。
+#
+# 替代方案：不走 tfvars，改用环境变量——
+#   export TF_VAR_cloudflare_api_token="..."
+#   export TF_VAR_cloudflare_account_id="..."
+# （terraform.tfvars 的优先级高于默认值，低于显式 -var 参数）
+
+cloudflare_api_token  = "REPLACE_ME_CLOUDFLARE_API_TOKEN"
+cloudflare_account_id = "REPLACE_ME_CLOUDFLARE_ACCOUNT_ID"
