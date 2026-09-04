@@ -1,0 +1,226 @@
+/* RemotePi web — minimal native CSS. No UI library; only what the four
+   components need to look like an integrated page rather than a dev console.
+   Layout is a single column on narrow viewports; the broadcast log scrolls
+   horizontally inside its card on overflow. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f8;
+  --surface: #ffffff;
+  --surface-2: #f0f0f3;
+  --text: #1a1a1f;
+  --muted: #5a5a66;
+  --border: #d8d8de;
+  --accent: #2c5cff;
+  --accent-disabled: #b8c2dd;
+  --code-bg: #ececef;
+
+  --state-online: #1f9d55;
+  --state-offline: #c0392b;
+  --state-connecting: #6b6b76;
+
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14141a;
+    --surface: #1d1d25;
+    --surface-2: #25252f;
+    --text: #ececf1;
+    --muted: #9a9aa6;
+    --border: #34343f;
+    --accent: #6c8cff;
+    --accent-disabled: #3a3f55;
+    --code-bg: #2a2a35;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+h1 {
+  margin: 0 0 1rem;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--code-bg);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.app-shell {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.card h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+/* ---- StatusBar -------------------------------------------------------- */
+
+.status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+.status-meta {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.status-warning {
+  margin: 0 0 0 auto;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  color: white;
+}
+
+.badge-connecting {
+  background: var(--state-connecting);
+}
+
+.badge-online {
+  background: var(--state-online);
+}
+
+.badge-offline {
+  background: var(--state-offline);
+}
+
+/* ---- TokenPrompt ------------------------------------------------------- */
+
+.token-prompt {
+  max-width: 480px;
+  margin: 4rem auto;
+}
+
+.token-prompt form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.token-prompt label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.token-prompt input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.token-prompt input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---- Buttons ---------------------------------------------------------- */
+
+button {
+  font: inherit;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+button:disabled {
+  background: var(--accent-disabled);
+  border-color: var(--accent-disabled);
+  cursor: not-allowed;
+}
+
+/* ---- Tables ----------------------------------------------------------- */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+  background: var(--surface-2);
+}
+
+td.empty {
+  color: var(--muted);
+  text-align: center;
+}
+
+tr.timed-out td {
+  color: var(--state-offline);
+}
+
+td code {
+  word-break: break-all;
+  white-space: pre-wrap;
+  display: inline-block;
+  max-width: 100%;
+}
+
+/* Allow the broadcast log payload cell to wrap nicely — payloads can be
+   quite long JSON blobs. */
+.broadcast-log td:last-child {
+  max-width: 360px;
+}
+
+.ping-history td:nth-child(2) {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
