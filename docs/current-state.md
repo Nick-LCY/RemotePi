@@ -5,7 +5,7 @@
 ## 活跃需求
 - [[roadmap.md]] — 路线图 M1–M4 已定稿（**2026-09-04 用户定稿**：基建 → 通路 → 单 session 闭环 → 多 session 管理）。下一步按里程碑逐个出 [[prds/README.md|PRD]]。
 - [[prds/m1-infrastructure.md|M1 PRD]] 已定稿（基础设施基座，2026-09-04 落盘）；任务已拆至 [[tasks/m1/01-monorepo-scaffold.md|tasks/m1/01]] ~ [[tasks/m1/05-github-actions-ci.md|05]]，已全部 done（5/5 任务 + CI 双绿 + 真实环境闭环，2026-09-05 收官），详见 [[tasks/README.md|任务索引]]。下一步：拆 [[roadmap.md|M2 通路]] 的 PRD。
-- [[architecture/protocol/README.md|architecture/protocol/]] —— RemotePi 隧道协议（envelope / 握手 / token 配对 / 业务消息 / 错误码 / 版本化）的唯一真相源（骨架已立；envelope / 握手 / 版本化小节留待对应里程碑 PRD 填充，M1 阶段保持占位）。
+- [[architecture/protocol/README.md|architecture/protocol/]] —— RemotePi 隧道协议唯一真相源，**v1 已定稿**（2026-09-05）：信封 {v, kind(control|pi), type, id, session?, reply_to?, payload}；control 8 个 type（handshake/ping/pong/bridge_status/session_state/session_list/result/error）、pi 9 个 type（prompt/steer/follow_up/abort/get_messages/extension_ui_response/command_result/snapshot/event）；中间层只深度处理 handshake（鉴权）、bridge_status 与 error（自己生成），其余一律转发。
 
 ## 任务看板
 | Task | 状态 | 备注 |
@@ -19,9 +19,10 @@
 依赖链：01 必须先做；02 依赖 01；03 依赖 01+02；04 依赖 01+03；05 依赖 01+04。
 
 ## TODO / 阻塞
-- [ ] 拆分 M2（通路：web ↔ worker ↔ bridge）PRD；先敲定归属 M2 的待决问题：CF 套餐/DO 配额、token 安全细节、bridge 分发方式（见 [[roadmap.md#6-待决问题|roadmap §6]]）。
+- [ ] 拆分 M2（通路：web ↔ worker ↔ bridge）PRD 并拆任务。归属 M2 的三个待决问题已敲定（2026-09-05）：token=bridge 启动动态生成 + URL 携带 + 不持久化；CF 免费版（DO 用 SQLite storage class，实现时核实配额）；bridge 分发=GitHub Release 二进制（M2 先本地构建运行，Release 流水线独立任务）。协议基线见 [[architecture/protocol/README.md|协议 v1]]。
 
 ## 最近变更
+- 2026-09-05（协议 v1 定稿） — [[architecture/protocol/README.md|隧道协议]] 经多轮评审定稿并落盘 README / envelope / control / pi 四文档。要点：kind 二分为 control（连接与会话生命周期）/ pi（对话内容）；reply_to 仅限回执类（control 的 result、pi 的 command_result 与 snapshot）；不设 bye（离线不区分正常关闭与崩溃）；session_state 按会话一条（一个 bridge 可对应多个 pi 进程）；session_list 归 control、列表项带 running 简化状态；error 定向发送、terminal 标志、关闭码 1008；网页渲染规则（message_end 快照为权威、agent_settled 收尾）写进协议；评审中裁撤 capabilities 与 idle_remaining_s。v1 锁版承诺见 envelope.md。
 - 2026-09-05（M1 真实环境闭环） — 用户本地完成 wrangler deploy（改用 CLOUDFLARE_API_TOKEN 环境变量认证）+ `terraform apply`（DNS + workers route 创建成功）；`curl https://remote-pi.sankabox.com/` 实测返回 `hello from remotepi worker v1`。**M1 里程碑完整收官**。顺带：worker `deploy` script 更名 `deploy:cf`（避开 pnpm 内置 deploy 命令），新增 `infra/terraform.tfvars.example` 并修复 `.gitignore` 行内注释失效（`*.tfvars` 此前实际未被忽略）。
 - 2026-09-05 — task 05 完成，修复 `pnpm/action-setup` 双重版本指定后 aa87770 双 workflow 全绿。**M1 代码侧收官**。
 - 2026-09-05（task 05 CI 首跑 + 修复） — CI workflow 首跑：terraform workflow 绿；ci workflow 红于 `pnpm/action-setup@v4` 同时收到 `version` 输入与根 `package.json` 的 `packageManager` 字段，触发 "Multiple versions of pnpm specified"。裁定 **pnpm 版本唯一真相源为根 `package.json` 的 `packageManager` 字段**，workflow 不再传 `version` 输入（v4 action 二者并存必报错），改为让 action 从 `packageManager` 自动解析。修复后重推 ci workflow 验证绿。同步落 [[prds/m1-infrastructure.md#8-github-actions-ci-骨架|PRD §8]]：`ci.yml` 示例 YAML 的 `- uses: pnpm/action-setup@v4` 行去掉 `with: { version: 10 }`、只保留注释说明；§8 缓存 bullet 后新增 "pnpm 版本唯一真相源" bullet；验收条目的 `version: 10` 表述改为"读 `packageManager` 字段定位 pnpm 版本"。
