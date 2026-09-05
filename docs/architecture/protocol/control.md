@@ -32,6 +32,7 @@
   - `role`：`"web" | "bridge"`，必填。
   - `token`：string，必填，与连接升级时 WebSocket subprotocol 第 2 元素一致（见 [[architecture/protocol/envelope.md#锁版承诺v1-存续期内不可变]]）。
 - **规则**：
+  - 服务端在 101 升级响应中必须回显 Sec-WebSocket-Protocol: remotepi.v1（RFC 6455：客户端带 subprotocol 而服务端不回显/回显多项，浏览器会判握手失败——已实测 workerd 默认不回显，需显式设置；2026-09-05 M2 联调确认）。
   - 连接建立后 **5 秒内** 必须收到 handshake，超时则回 `error(auth_failed)` 并断开（见 [配套常量](#配套常量)）。
   - `role` 与连接入口路径（`/web` / `/bridge`）不符 → `error(auth_failed)`。
   - 同一 token 已有 bridge 在线，第二个 bridge → `error(duplicate_bridge)`。
