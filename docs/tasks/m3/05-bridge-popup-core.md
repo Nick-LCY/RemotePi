@@ -1,6 +1,6 @@
 ---
 prd: prds/m3-single-session.md
-status: todo
+status: done
 ---
 # 任务：bridge 弹窗核心（blocked_on 维护 + wire 翻译 + 广播原则）+ bridge 测试扩展（30+ 条）
 

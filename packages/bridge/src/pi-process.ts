@@ -63,6 +63,11 @@ import {
   type ExtensionUIResponsePayload,
   type SessionPhase,
 } from '@remotepi/shared';
+import {
+  ExtensionUIRouter,
+  type PiExtensionUIResponse,
+  buildExtensionUIRequestEnvelope,
+} from './extension-ui.js';
 import { logger } from './logger.js';
 import { authJsonExists, sessionArgv, sessionSubdir } from './pi-cwd-encoder.js';
 
@@ -298,12 +303,14 @@ export class PiProcessManager {
     { webEnvelopeId: string; command: string; bridgeInitiated: boolean }
   > = new Map();
 
-  /** Pending extension UI requests. Keyed by the pi-side `id` (the
-   *  same UUID web echoes back in `extension_ui_response.payload.request_id`).
-   *  Task 05 wires up the full flow; task 04 keeps the Map as a
-   *  placeholder so the broadcast payload has somewhere to read
-   *  `blocked_on` from (currently empty until task 05 populates it). */
-  private pendingExtensionUIs: Map<string, BlockedOnEntryPayload> = new Map();
+  /** Pending extension UI requests live on the `ExtensionUIRouter`
+   *  (task 05 split). The router owns the Map, the timeout handles,
+   *  and the wire translation; the manager queries
+   *  `extensionUIRouter.getBlockedOn()` whenever it needs to
+   *  build a `session_state` payload. The router is constructed
+   *  in `buildExtensionUIRouter()` (lazy because it closes over
+   *  the manager instance via callbacks). */
+  private extensionUIRouter!: ExtensionUIRouter;
 
   /** Monotonic counter of spawn attempts (the first spawn counts as
    *  1; subsequent crash-restarts increment). Tests use this to
@@ -331,6 +338,99 @@ export class PiProcessManager {
     this.baseEnv = options.baseEnv ?? process.env;
     this.onOutbound = options.onOutboundEnvelope ?? (() => undefined);
     this.onStderr = options.onStderr ?? ((chunk) => logger.warn(`pi stderr: ${chunk.trimEnd()}`));
+    this.extensionUIRouter = this.buildExtensionUIRouter(options);
+  }
+
+  /** Construct the extension UI router, wiring it to the manager's
+   *  callbacks. The router owns the `pending` Map, the timeout
+   *  handles, the wire translation, and the multi-web first-answer-
+   *  wins semantics; the manager owns the phase state machine, the
+   *  outbound sink, and the stdin writer. The split keeps the router
+   *  testable in isolation (no manager instance needed) and the
+   *  manager testable without instantiating a router.
+   *
+   *  We initialise the router AFTER the field assignments because the
+   *  closures reference `this.broadcastSessionState` (private) and
+   *  `this.writeToPiCommand` etc. — those methods don't read `this`
+   *  until invocation time, so constructor ordering is safe. */
+  private buildExtensionUIRouter(options: PiProcessOptions): ExtensionUIRouter {
+    return new ExtensionUIRouter({
+      broadcastSessionState: () => this.broadcastSessionState(),
+      emitEventEnvelope: (eventName, data) => {
+        if (eventName === 'extension_ui_request') {
+          this.onOutbound(buildExtensionUIRequestEnvelope(data as BlockedOnEntryPayload));
+        } else {
+          this.onOutbound({
+            v: PROTOCOL_VERSION,
+            kind: 'pi',
+            type: 'event',
+            id: randomUUID(),
+            payload: { event: eventName, data: data ?? null },
+          });
+        }
+      },
+      emitCommandResult: (replyTo, success, error) => {
+        const payload: {
+          command: 'extension_ui_response';
+          success: boolean;
+          error?: { code: string; message: string };
+        } = {
+          command: 'extension_ui_response',
+          success,
+          ...(error !== undefined ? { error } : {}),
+        };
+        this.onOutbound({
+          v: PROTOCOL_VERSION,
+          kind: 'pi',
+          type: 'command_result',
+          id: randomUUID(),
+          reply_to: replyTo,
+          payload,
+        });
+      },
+      writeToPi: (cmd) => this.writeExtensionUIResponseToPi(cmd),
+      forceExited: (reason) => this.forceExitedForExtensionUIFailure(reason),
+      setTimeout: options.setTimeout,
+      clearTimeout: options.clearTimeout,
+    });
+  }
+
+  /** Write the translated `extension_ui_response` to pi stdin.
+   *  Returns `false` when the child is dead (no live process) so
+   *  the router can route through `forceExited`. We use the same
+   *  try/catch-then-false pattern as `writeCommand` but expose the
+   *  boolean to the router so it can trigger the force-exited
+   *  broadcast explicitly (otherwise the entry would already be
+   *  cleared from pending and the manager would only learn about
+   *  the failure via a delayed exit event). */
+  private writeExtensionUIResponseToPi(cmd: PiExtensionUIResponse): boolean {
+    const child = this.child;
+    if (child === null) {
+      logger.warn(`dropping ${cmd.type} — no live child`);
+      return false;
+    }
+    try {
+      child.stdin.write(JSON.stringify(cmd) + '\n');
+      return true;
+    } catch (err) {
+      logger.warn(`stdin write failed for ${cmd.type}: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /** Force phase = 'exited' on stdin write failure from the
+   *  extension UI path. The router invokes this when
+   *  `writeToPi` returns false; we log + transitionTo so the
+   *  phase state machine records the new phase and broadcasts
+   *  `session_state{phase:'exited'}`. The router's own
+   *  broadcastSessionState callback then fires the second
+   *  broadcast (post-cleared blocked_on); both broadcasts are
+   *  idempotent from web's perspective (the second one carries
+   *  the cleared blocked_on, the first one carries it too since
+   *  the router cleared it before calling forceExited). */
+  private forceExitedForExtensionUIFailure(reason: string): void {
+    logger.error(`forcing exited due to extension UI stdin failure: ${reason}`);
+    this.transitionTo('exited');
   }
 
   // ----------------------------------------------------------------
@@ -381,6 +481,12 @@ export class PiProcessManager {
     // Combined with `handleExit`'s own clear, this guarantees no
     // outbound frame is produced after `stop()` returns.
     this.outstandingCommands.clear();
+    // Task 05: drop any pending extension UI requests + their
+    // timeout mirrors. clearAll() emits a final broadcast so web
+    // sees `blocked_on: []` (or absent) before the bridge shuts
+    // down — otherwise a stopping bridge could leave stale dialogs
+    // pinned in the UI for the duration of the WSS close handshake.
+    this.extensionUIRouter.clearAll();
     const child = this.child;
     if (child !== null) {
       // Bridge-initiated stop is a self-kill (we want no restart
@@ -620,12 +726,12 @@ export class PiProcessManager {
     }
   }
 
-  /** `event` frame from pi. Currently we react to two events:
+  /** `event` frame from pi. Currently we react to three event names:
    *    - `agent_settled` → start idle timer (PRD §2.3 + ADR-0003).
+   *    - `extension_ui_request` → route to the `ExtensionUIRouter`
+   *      (4-class blocking or 5-class fire-and-forget, per PRD §2.4).
    *    - any other event → forwarded to caller as `pi/event` envelope.
-   *
-   *  Task 05 will extend this with the extension UI request queueing,
-   *  blocked_on broadcast, and the fire-and-forget local-digest path. */
+   */
   private handlePiEvent(frame: Extract<StdoutFrame, { type: 'event' }>): void {
     const eventName = frame.event;
     const data = frame.data;
@@ -634,6 +740,19 @@ export class PiProcessManager {
       // (auto-retry would re-fire agent_end and the idle timer would
       // never settle). Start the idle timer; transition to idle.
       this.startIdleTimer();
+      return;
+    }
+    if (eventName === 'extension_ui_request') {
+      // Task 05: route to the dedicated router. The router handles
+      // the 4-class blocking flow (add to pending → broadcast → forward
+      // to web → arm timeout mirror) and the 5-class fire-and-forget
+      // digest path (logger.info + drop, no blocked_on entry, no
+      // web forward). The router also owns the wire translation for
+      // web → pi on `extension_ui_response`.
+      this.extensionUIRouter.handleEventFromPi({
+        event: eventName,
+        data,
+      });
       return;
     }
     // Forward every other event verbatim — web layer routes by
@@ -679,6 +798,16 @@ export class PiProcessManager {
     // are still meaningful to web are recovered via §2.7 spawn
     // triggers on the next request, not via phantom replies.
     this.outstandingCommands.clear();
+    // Task 05: drop any pending extension UI requests + their
+    // timeout mirrors. Without this, a crash-restarted child would
+    // inherit a stale blocked_on set (pointers to a dead child's
+    // request ids) and web would see ghost dialogs in the next
+    // session_state broadcast. clearAll() emits one final broadcast
+    // so web sees the cleared state immediately (the
+    // transitionTo('exited') below emits a SECOND broadcast — both
+    // are valid; the first carries `blocked_on: []`, the second
+    // carries `phase: 'exited'` + cleared blocked_on).
+    this.extensionUIRouter.clearAll();
     // Drop the deferred queue (its commands never landed; web may
     // retry on the next spawn-trigger).
     const droppedDeferred = this.deferredCommands.length;
@@ -736,18 +865,21 @@ export class PiProcessManager {
   }
 
   /** Emit `session_state` with the current phase + blocked_on. Called
-   *  on every transition AND on demand when blocked_on changes (task
-   *  05 will trigger from the extension UI handler). The envelope
+   *  on every transition AND on demand when blocked_on changes (the
+   *  ExtensionUIRouter triggers this via the broadcastSessionState
+   *  callback when entries are added or removed). The envelope
    *  is a real `Envelope` value matching `SessionStateEnvelope` —
-   *  the shared zod schema will accept it downstream. */
+   *  the shared zod schema will accept it downstream.
+   *
+   *  `blocked_on` is read from the router, which is the single
+   *  source of truth for the pending set (task 05 split). When the
+   *  router has no pending entries we OMIT the field entirely so
+   *  the wire stays compact (PRD §1.2: "缺省视为空数组"). */
   private broadcastSessionState(): void {
-    const blockedOn =
-      this.pendingExtensionUIs.size === 0
-        ? undefined
-        : Array.from(this.pendingExtensionUIs.values());
+    const blockedOn = this.extensionUIRouter.getBlockedOn();
     const payload: SessionStatePayload = {
       phase: this.phase,
-      ...(blockedOn !== undefined ? { blocked_on: blockedOn } : {}),
+      ...(blockedOn.length > 0 ? { blocked_on: blockedOn } : {}),
     };
     this.onOutbound({
       v: PROTOCOL_VERSION,
@@ -908,15 +1040,13 @@ export class PiProcessManager {
 
   /** `control/get_state` — answer from memory (PRD §2.7: 永远由 bridge
    *  内存作答，永不 spawn). The reply is a `result` envelope with
-   *  `data = { phase, blocked_on? }`. */
+   *  `data = { phase, blocked_on? }`. The blocked_on set comes from
+   *  the extension UI router (task 05 split). */
   private handleGetState(requestId: string): void {
-    const blockedOn =
-      this.pendingExtensionUIs.size === 0
-        ? undefined
-        : Array.from(this.pendingExtensionUIs.values());
+    const blockedOn = this.extensionUIRouter.getBlockedOn();
     const data: SessionStatePayload = {
       phase: this.phase,
-      ...(blockedOn !== undefined ? { blocked_on: blockedOn } : {}),
+      ...(blockedOn.length > 0 ? { blocked_on: blockedOn } : {}),
     };
     this.onOutbound({
       v: PROTOCOL_VERSION,
@@ -1092,21 +1222,18 @@ export class PiProcessManager {
     this.writeCommand({ type: 'abort', id });
   }
 
-  /** `pi/extension_ui_response` — task 04 placeholder. Task 05 will
-   *  wire up the full flow: lookup the pending UI entry, translate
-   *  web wire shape → pi native three-state (cancelled / confirmed /
-   *  value), write to stdin, remove from the queue, broadcast
-   *  session_state. For now we just log the arrival so the test can
-   *  verify the dispatcher routes correctly.
+  /** `pi/extension_ui_response` — task 05 router delegation.
+   *  The router owns the wire translation (web shape → pi native
+   *  three-state), the pending Map lookup with atomic-clear, the
+   *  timeout cancellation, and the broadcast. The manager's only
+   *  responsibility is to forward the envelope to the router.
    *
-   *  W7 review follow-up: explicit TODO list for the task 05 work
-   *  so a reader picking up the file later doesn't have to infer
-   *  the stub contract. */
-  private handleExtensionUIResponse(_id: string, payload: ExtensionUIResponsePayload): void {
-    // TODO(task 05): from pendingExtensionUIs 移除 entry + 广播新 session_state
-    logger.info(
-      `extension_ui_response received (task 05 stub): request_id=${payload.request_id} cancelled=${payload.cancelled}`,
-    );
+   *  `env.id` is the web envelope id — the router uses it for the
+   *  `command_result.reply_to` field on the late-submission
+   *  (request_expired) path so web can correlate the error with the
+   *  original response attempt. */
+  private handleExtensionUIResponse(id: string, payload: ExtensionUIResponsePayload): void {
+    this.extensionUIRouter.handleWebResponse({ id, payload });
   }
 
   // ----------------------------------------------------------------
@@ -1153,9 +1280,11 @@ export class PiProcessManager {
     return this.selfKillFlag;
   }
 
-  /** Currently blocked-on entries (snapshot, not a live reference). */
+  /** Currently blocked-on entries (snapshot, not a live reference).
+   *  Reads from the router — the router is the single source of
+   *  truth for the pending set (task 05 split). */
   getBlockedOn(): BlockedOnEntryPayload[] {
-    return Array.from(this.pendingExtensionUIs.values());
+    return this.extensionUIRouter.getBlockedOn();
   }
 
   /** Quick assertion helper — every phase must be one of the lock-

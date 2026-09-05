@@ -75,11 +75,13 @@ export interface BridgeClientOptions {
   backoffCapMs?: number;
   /** Optional inbound-envelope sink. Fires for every envelope the
    *  client does NOT handle internally (i.e. anything that isn't
-   *  `ping`, `pong`, `bridge_status`, `error`, or `handshake`). The
-   *  wiring seam that connects the WSS loop to the pi subprocess
-   *  manager — M3 task 04 sets this to `manager.handleEnvelope`,
-   *  task 05 will expand the routing. Defaults to a no-op so this
-   *  option is opt-in (M2 client had no downstream consumer). */
+   *  `ping`, `pong`, `bridge_status`, or `error`). The wiring seam
+   *  that connects the WSS loop to the pi subprocess manager — M3
+   *  tasks 04 + 05 set this to `manager.handleEnvelope`, which
+   *  then routes by `kind` + `type` (control/get_state, the entire
+   *  pi family — prompt/steer/follow_up/abort/get_messages/
+   *  extension_ui_response). Defaults to a no-op so this option
+   *  is opt-in (M2 client had no downstream consumer). */
   onEnvelope?: (env: EnvelopeT) => void;
 }
 
@@ -385,12 +387,15 @@ export class BridgeClient {
         );
         break;
       default:
-        // M3 task 04: forward every other envelope (control/get_state,
-        // control/session_state from a misbehaving peer, the entire pi
-        // family — prompt/steer/follow_up/abort/get_messages/extension_ui_response)
-        // to the inbound sink. Task 05 will expand the routing once the
-        // dialog extension UI flow is in. The sink defaults to a no-op
-        // so M2 consumers (no `onEnvelope` set) see no behaviour change.
+        // M3 tasks 04 + 05: forward every other envelope
+        // (control/get_state, control/session_state from a
+        // misbehaving peer, the entire pi family —
+        // prompt/steer/follow_up/abort/get_messages/
+        // extension_ui_response) to the inbound sink. The manager
+        // routes by `kind` + `type` and handles extension UI
+        // requests via the ExtensionUIRouter. The sink defaults to
+        // a no-op so M2 consumers (no `onEnvelope` set) see no
+        // behaviour change.
         this.opts.onEnvelope?.(env);
         break;
     }

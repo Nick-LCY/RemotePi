@@ -1402,16 +1402,17 @@ describe('reply_to pairing + snapshot envelope (W2/W3 review)', () => {
     // already covered that path in 8a.3.
   });
 
-  it('8a.7 session_state broadcast payload has no blocked_on field at task 04 stage (S4 review)', () => {
-    // S4 review follow-up: at task 04 the extension UI flow is a
-    // stub (handleExtensionUIResponse only logs), so the
-    // pendingExtensionUIs map is always empty and every
-    // session_state broadcast must omit the `blocked_on` key
-    // entirely. Task 05 will start populating the map and the
-    // field will appear on the wire. The pinning here is a
-    // reminder for the next reviewer that "blocked_on is
-    // optional in v1" — the bridge may legitimately broadcast
-    // either shape depending on task progress.
+  it('8a.7 session_state broadcast payload omits blocked_on when no extension_ui_request has arrived (S4 review)', () => {
+    // S4 review follow-up: when no extension UI requests are
+    // pending, every session_state broadcast MUST omit the
+    // `blocked_on` field entirely (per PRD §1.2: "缺省视为空
+    // 数组"). At task 04 the pendingExtensionUIs map was always
+    // empty (the stub logged only); at task 05 the ExtensionUIRouter
+    // owns the pending set and still returns an empty array when
+    // no requests have arrived. The pinning here ensures the wire
+    // stays compact in the common case (no dialog open) — the
+    // optional-field shape is preserved either way (envelope
+    // evolution rule (a)).
     const { manager, spawnChildren, outbound } = makeManager();
     manager.start();
     manager.handleEnvelope({
@@ -1431,8 +1432,7 @@ describe('reply_to pairing + snapshot envelope (W2/W3 review)', () => {
     expect(states.length).toBeGreaterThan(0);
     for (const state of states) {
       if (state.type === 'session_state') {
-        // S4: blocked_on must NOT be in the payload — the
-        // pendingExtensionUIs map is empty at task 04.
+        // No blocked_on entry — the router's pending Map is empty.
         expect('blocked_on' in state.payload).toBe(false);
         expect(state.payload.blocked_on).toBeUndefined();
       }
@@ -1644,6 +1644,388 @@ describe('Stdio buffering (roadmap §4.2 ⚠)', () => {
 
   it('10.4 PHASES export mirrors the shared SESSION_PHASES literal', () => {
     expect(PiProcessManager.PHASES).toEqual(SESSION_PHASES);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Broadcast principle (PRD §2 / §6.2 — get_messages NEVER; writes DO)
+// ---------------------------------------------------------------------------
+//
+// The bridge's `session_state` broadcast is the single authoritative
+// signal web uses to render phase + blocked_on. Per PRD §2 "广播原则"
+// the broadcast is triggered by:
+//   - write operations (prompt / steer / follow_up / abort /
+//     extension_ui_response) when they cause a state change
+//   - phase transitions (state machine migration)
+//   - blocked_on changes (extension UI adds or removes entries)
+//
+// `get_messages` is a read and NEVER triggers a broadcast (the
+// recovery ceremony pulls history via snapshot, not session_state).
+//
+// These tests pin the broadcast count for each command path so a
+// future refactor of the state machine / router integration can't
+// silently start emitting extra broadcasts (or drop the ones web
+// relies on). Tests are organised by command; each test sets up the
+// manager in a specific phase, drives the command, and asserts the
+// exact broadcast delta.
+
+describe('Broadcast principle (PRD §2 / §6.2 — get_messages NEVER; writes DO)', () => {
+  /** Pull every session_state broadcast out of the outbound spy.
+   *  Reuses the helper above but exposed as a closure for the
+   *  "count before / count after" comparison idiom. */
+  function sessionStateCount(outbound: MockInstance<(env: EnvelopeT) => void>): number {
+    return outbound.mock.calls.filter((c) => {
+      const env = c[0];
+      return env.kind === 'control' && env.type === 'session_state';
+    }).length;
+  }
+
+  /** Drive the manager from `exited` → `running` so we have a
+   *  live child to send further commands to. Reused by the
+   *  broadcast tests below. */
+  function readyRunning(manager: PiProcessManager, spawnChildren: FakeChild[]): void {
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'warmup',
+      payload: { content: 'go' },
+    });
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
+    );
+  }
+
+  /** Drive to idle by emitting agent_settled after handshake. */
+  function readyIdle(manager: PiProcessManager, spawnChildren: FakeChild[]): void {
+    readyRunning(manager, spawnChildren);
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+    );
+  }
+
+  it('11.1 get_messages in running does NOT trigger a session_state broadcast (read-only invariant)', () => {
+    // Existing 1.8 covers the phase invariant; this test pins the
+    // broadcast count for explicit traceability.
+    const { manager, spawnChildren, outbound } = makeManager();
+    readyRunning(manager, spawnChildren);
+    const before = sessionStateCount(outbound);
+
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'get_messages',
+      id: 'gm-bp',
+      payload: {},
+    });
+    expect(sessionStateCount(outbound)).toBe(before);
+  });
+
+  it('11.2 prompt in idle triggers exactly one session_state broadcast (idle → running)', () => {
+    // S4 review: readyIdle arms a 5-min idle timer (real time);
+    // wrap in fake timers so the timer is sandboxed and can't
+    // leak into the next test or fire mid-run. Symmetric to the
+    // 1.4 / 1.5 wrap — vitest's fake-timer semantics are scoped
+    // per-it via useFakeTimers + useRealTimers in finally.
+    vi.useFakeTimers();
+    try {
+      const { manager, spawnChildren, outbound } = makeManager();
+      readyIdle(manager, spawnChildren);
+      const before = sessionStateCount(outbound);
+      manager.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'prompt',
+        id: 'p-bp',
+        payload: { content: 'wake up' },
+      });
+      expect(sessionStateCount(outbound)).toBe(before + 1);
+      expect(manager.getPhase()).toBe<SessionPhase>('running');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('11.3 steer in idle triggers exactly one session_state broadcast (idle → running)', () => {
+    // S4 review: see 11.2.
+    vi.useFakeTimers();
+    try {
+      const { manager, spawnChildren, outbound } = makeManager();
+      readyIdle(manager, spawnChildren);
+      const before = sessionStateCount(outbound);
+      manager.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'steer',
+        id: 's-bp',
+        payload: { content: 'mid-run insert' },
+      });
+      expect(sessionStateCount(outbound)).toBe(before + 1);
+      expect(manager.getPhase()).toBe<SessionPhase>('running');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('11.4 follow_up in idle triggers exactly one session_state broadcast (idle → running)', () => {
+    // S4 review: see 11.2.
+    vi.useFakeTimers();
+    try {
+      const { manager, spawnChildren, outbound } = makeManager();
+      readyIdle(manager, spawnChildren);
+      const before = sessionStateCount(outbound);
+      manager.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'follow_up',
+        id: 'f-bp',
+        payload: { content: 'queued message' },
+      });
+      expect(sessionStateCount(outbound)).toBe(before + 1);
+      expect(manager.getPhase()).toBe<SessionPhase>('running');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('11.5 abort in exited is a no-op: no session_state broadcast (phase unchanged, no transition)', () => {
+    // PRD §2.7: abort in exited is a no-op (回 command_result{
+    // success: true}). No phase transition → no broadcast.
+    const { manager, outbound } = makeManager();
+    manager.start();
+    const before = sessionStateCount(outbound);
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'abort',
+      id: 'ab-bp',
+      payload: {},
+    });
+    expect(sessionStateCount(outbound)).toBe(before);
+    expect(manager.getPhase()).toBe<SessionPhase>('exited');
+  });
+
+  it('11.6 abort in running writes to stdin but does NOT trigger a session_state broadcast (no transition)', () => {
+    // The manager writes abort to pi but doesn't transition phase
+    // — pi's reply (when it arrives) carries the actual settle
+    // event that drives the phase change. So no broadcast at
+    // abort-write time.
+    const { manager, spawnChildren, outbound } = makeManager();
+    readyRunning(manager, spawnChildren);
+    const before = sessionStateCount(outbound);
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'abort',
+      id: 'ab-bp',
+      payload: {},
+    });
+    expect(sessionStateCount(outbound)).toBe(before);
+  });
+
+  it('11.7 extension_ui_response handling triggers a session_state broadcast (blocked_on changes)', () => {
+    // The router owns this broadcast (it calls broadcastSessionState
+    // after every add/remove to its pending Map). This test
+    // exercises the integration: pi sends extension_ui_request →
+    // broadcast (entry added); web sends extension_ui_response →
+    // broadcast (entry removed). Two broadcasts total.
+    const { manager, spawnChildren, outbound } = makeManager();
+    readyRunning(manager, spawnChildren);
+    const before = sessionStateCount(outbound);
+
+    // pi emits an extension_ui_request event → broadcast #1.
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({
+        type: 'event',
+        event: 'extension_ui_request',
+        data: {
+          method: 'confirm',
+          id: 'extui-bp',
+          title: 'Are you sure?',
+          message: 'Do it?',
+        },
+      }) + '\n',
+    );
+    expect(sessionStateCount(outbound)).toBe(before + 1);
+    // The broadcast carried the new blocked_on entry.
+    const addedBroadcast = outbound.mock.calls
+      .map((c) => c[0])
+      .filter(
+        (env) =>
+          env.kind === 'control' &&
+          env.type === 'session_state' &&
+          env.payload.blocked_on !== undefined,
+      )
+      .pop();
+    expect(addedBroadcast).toBeDefined();
+    if (
+      addedBroadcast?.type === 'session_state' &&
+      addedBroadcast.payload.blocked_on !== undefined
+    ) {
+      expect(addedBroadcast.payload.blocked_on.map((e) => e.id)).toEqual(['extui-bp']);
+    }
+
+    // web submits extension_ui_response → broadcast #2 (entry removed).
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'extension_ui_response',
+      id: 'web-bp',
+      payload: { request_id: 'extui-bp', cancelled: false, value: true },
+    });
+    expect(sessionStateCount(outbound)).toBe(before + 2);
+    // The post-removal broadcast no longer carries blocked_on
+    // (empty pending → field omitted per PRD §1.2).
+    const lastState = outbound.mock.calls
+      .map((c) => c[0])
+      .filter((env) => env.kind === 'control' && env.type === 'session_state')
+      .pop();
+    expect(lastState?.type).toBe('session_state');
+    if (lastState?.type === 'session_state') {
+      expect(lastState.payload.blocked_on).toBeUndefined();
+    }
+
+    // S5 review: the broadcast side was covered above, but the
+    // actual manager→router→pi end-to-end handoff (the bit that
+    // matters: "did the translated pi command land on pi's
+    // stdin?") wasn't. Assert it explicitly so a future refactor
+    // that breaks the write path can't sneak through — this is
+    // the end-to-end handoff the §4 web→pi commit ceremony
+    // depends on. The line is a JSONL frame with the
+    // confirm→{confirmed:true} translation (PRD §1.6 wire
+    // translation table).
+    const stdinWrites = spawnChildren[0]?.stdinLines ?? [];
+    // The prompt from readyRunning (warmup) + the translated
+    // extension_ui_response — we want the LAST line, which is
+    // the response just committed.
+    const lastWrite = stdinWrites[stdinWrites.length - 1];
+    expect(lastWrite).toBeDefined();
+    const parsed = JSON.parse(lastWrite ?? '{}') as {
+      type?: string;
+      id?: string;
+      confirmed?: boolean;
+    };
+    expect(parsed).toEqual({
+      type: 'extension_ui_response',
+      id: 'extui-bp',
+      confirmed: true,
+    });
+  });
+
+  it('11.8 fire-and-forget extension_ui_request does NOT trigger a session_state broadcast (PRD §6 fire-and-forget)', () => {
+    // §6.2: "5 fire-and-forget 不入列". The router digests locally
+    // and does NOT call broadcastSessionState, so the manager's
+    // outbound sink stays silent for these events.
+    const { manager, spawnChildren, outbound } = makeManager();
+    readyRunning(manager, spawnChildren);
+    const before = sessionStateCount(outbound);
+
+    for (const method of ['notify', 'setStatus', 'setWidget', 'setTitle', 'set_editor_text']) {
+      spawnChildren[0]?.stdout.write(
+        JSON.stringify({
+          type: 'event',
+          event: 'extension_ui_request',
+          data: { method, id: `${method}-1` },
+        }) + '\n',
+      );
+    }
+    expect(sessionStateCount(outbound)).toBe(before);
+    // pendingExtensionUIs stays empty (the router stored nothing).
+    expect(manager.getBlockedOn()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. §6.2 exited semantics — get_messages in exited spawns with --session
+// ---------------------------------------------------------------------------
+//
+// Task 04 already covered the spawn-count invariant (§5.1) and
+// abort no-op (§5.3). Task 05 adds the "get_messages in exited
+// spawns WITH --session flag" assertion — the recovery ceremony
+// (PRD §4.4) uses get_messages to pull history, and that path
+// must always land on a spawn that includes the --session flag
+// when the session subdir contains a latest file. This guards
+// against a future bug where the spawn argv builder drops the
+// --session flag because the queue path differs from the prompt
+// path.
+
+describe('§6.2 exited semantics — get_messages triggers spawn with --session', () => {
+  it('12.1 get_messages in exited phase triggers a spawn AND the spawn carries --session when a latest session file exists', () => {
+    // Set up the on-disk session subdir with one file. Mirror of
+    // 7.1 but the trigger is get_messages instead of prompt.
+    const isoDir = path.join(
+      mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-')),
+      'pi-agent',
+    );
+    trackTmpDir(path.dirname(isoDir));
+    const cwd = '/home/test/proj';
+    const sessionDir = path.join(isoDir, 'sessions', '--2Fhome2Ftest2Fproj--');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const sessionFile = path.join(sessionDir, '2026-01-01T00-00-00_uuid.jsonl');
+    fs.writeFileSync(sessionFile, '');
+
+    const spawnArgs: Array<{ cmd: string; args: readonly string[] }> = [];
+    const spawn = (cmd: string, args: readonly string[]): PiChild => {
+      spawnArgs.push({ cmd, args });
+      return new FakeChild();
+    };
+    const manager = new PiProcessManager({
+      isolationDir: isoDir,
+      workDir: cwd,
+      authJsonPath: path.join(isoDir, 'auth.json'),
+      spawn,
+      onOutboundEnvelope: () => undefined,
+    });
+    manager.start();
+    // Trigger get_messages while in exited — should spawn with --session.
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'get_messages',
+      id: 'gm-exit',
+      payload: {},
+    });
+    expect(manager.getSpawnCount()).toBe(1);
+    expect(spawnArgs).toHaveLength(1);
+    expect(spawnArgs[0]?.cmd).toBe('pi');
+    expect(spawnArgs[0]?.args).toEqual(['--mode', 'rpc', '--session', sessionFile]);
+  });
+
+  it('12.2 get_state in exited answers from memory AND does NOT spawn (PRD §2.7: control get_state 永不 spawn)', () => {
+    // task 04 already covered this in 5.2 — task 05 pins the
+    // "no spawn" invariant under the §6.2 acceptance case
+    // ("get_state 内存作答不 spawn").
+    const { manager, spawnChildren } = makeManager();
+    manager.start();
+    expect(manager.getSpawnCount()).toBe(0);
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'get_state',
+      id: 'gs-exit',
+      payload: {},
+    });
+    expect(manager.getSpawnCount()).toBe(0);
+    expect(spawnChildren).toHaveLength(0);
+  });
+
+  it('12.3 abort in exited is a no-op: command_result{success: true} returned AND no spawn (PRD §2.7)', () => {
+    // 5.3 already covered this; task 05 pins it under §6.2.
+    const { manager, spawnChildren } = makeManager();
+    manager.start();
+    expect(manager.getSpawnCount()).toBe(0);
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'abort',
+      id: 'ab-exit',
+      payload: {},
+    });
+    expect(manager.getSpawnCount()).toBe(0);
+    expect(spawnChildren).toHaveLength(0);
+    expect(manager.getPhase()).toBe<SessionPhase>('exited');
   });
 });
 
