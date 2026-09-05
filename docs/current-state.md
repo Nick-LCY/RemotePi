@@ -27,6 +27,7 @@
 
 ## TODO / 阻塞
 - [ ] M2 收尾：用户本地三端联调手测（PRD 验收清单）→ terraform apply + wrangler deploy + pages deploy（用户操作清单见 PRD §用户操作清单）→ 验收通过后 push 触发 CI
+- [ ] 修复 pnpm dev 启动方式下 bridge 偶发僵尸问题（tsx watch 对脚本崩溃不重启、栈被吞；候选方案：换 node --watch / 外层监督重启 / 根因排查顶层异常；本地联调暂用三终端或 --worker-url 单起绕过）
 
 ## 最近变更
 - 2026-09-05（bridge 本地联调踩坑修复） — 用户实测发现按文档启动的 bridge 默认连生产域（wss://remote-pi.sankabox.com/bridge），本地 DO 房间无桥（bridge_status online:false、手动 ping 全超时）。根因：默认 URL 指生产 + getting-started 命令缺 --worker-url + 启动/断连日志不含目标 URL。修复（1410e60）：bridge 解析链加 REMOTEPI_WORKER_URL（flag > env > 默认）、启动打印 worker URL 与生产默认 hint、断连日志带 close code/reason、onerror 不再静默；getting-started §3.4 命令更正（上一次的 docs 更正被并行 revert，本次按实机输出重写）。
