@@ -48,14 +48,14 @@ v1 一旦发布，以下几项即固化，存续期内不再变更：
 
 - 信封字段名：`v` / `kind` / `type` / `id` / `payload`（`session` / `reply_to` 为新增可选字段时不受此限）。
 - `v` 字面量值：`1`。
-- [[architecture/protocol/control.md]] 全部 8 个 type 名及其 payload 字段集。
+- [[architecture/protocol/control.md]] 全部 9 个 type 名（含 M3 破锁新增的 `get_state`，见 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]）及其 payload 字段集。
 - 连接升级时 WebSocket subprotocol 携带格式：`["remotepi.v1", token]`——**位置 0** 为版本号，**位置 1** 为鉴权 token（与 [[architecture/protocol/control.md#1-handshake|handshake]] payload 中的 `token` 字段一致）。
 - fatal 关闭的统一 WebSocket 关闭码：`1008`。
 
 ### 演进规则（v1 存续期内允许）
 
-- **(a) 新增可选字段**：信封与各 type 的 payload 均可新增可选字段，已知消费者必须忽略未知字段。
-- **(b) 扩充 type 集合**：可向 `pi` 家族新增 type（见 [[architecture/protocol/pi.md]]）；`control` 家族 v1 内不再新增 type（错误码 `unsupported_type` 触发时另议，见 [[architecture/protocol/control.md#8-error]]）。
+- **(a) 新增可选字段**：信封与各 type 的 payload 均可新增可选字段，已知消费者必须忽略未知字段。M3 依据本规则新增：`session_state.payload.blocked_on`（数组，可选；元素为 4 类 `extension_ui_request` 阻塞方法之一，见 [[architecture/protocol/control.md#5-session_state|control §5]]）；`result.data.phase` / `result.data.blocked_on`（`get_state` 回执新增可选字段，与 `session_state.payload` 同形状，见 [[architecture/protocol/control.md#65-get_state|control §6.5]]）。
+- **(b) 扩充 type 集合**：可向 `pi` 家族新增 type（见 [[architecture/protocol/pi.md]]）；`control` 家族 v1 内除已破锁的 `get_state` 外不再新增 type（破锁依据见 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]；错误码 `unsupported_type` 触发时另议，见 [[architecture/protocol/control.md#8-error]]）。
 - **(c) pi/event 的 event 名开放集合**：`event` 的 `event` 字段名集合开放，pi 升级新增事件无须改本协议。
 
 ### 未知项处理
@@ -68,3 +68,8 @@ v1 一旦发布，以下几项即固化，存续期内不再变更：
 - `v` 字段升级必须连带 subprotocol 升级（如 `remotepi.v2`），握手前完成版本协商。
 - 协商失败（任一端不支持对方版本）即 [[architecture/protocol/control.md#1-handshake|handshake 失败]]，连接断开。
 - 老版本兼容期的灰度流程届时另定。
+
+### 相关
+
+- 破锁依据：[[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006（control 8 → 9 type）]]
+- 与锁版承诺协同的家族文档：[[architecture/protocol/control.md]]（含 M3 `get_state` / `result.data.phase` / `result.data.blocked_on`）、[[architecture/protocol/pi.md]]（含 M3 9 type 与 `extension_ui_response` web wire 形状）

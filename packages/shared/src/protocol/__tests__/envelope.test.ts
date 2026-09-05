@@ -12,21 +12,23 @@
 import { describe, expect, it } from 'vitest';
 import {
   BRIDGE_STATUS_REASONS,
-  BridgeStatusPayloadSchema,
   CONTROL_TYPES,
   Envelope,
   ERROR_CODES,
+  PROTOCOL_VERSION,
+  ROLES,
+} from '../envelope.js';
+import {
+  BridgeStatusPayloadSchema,
   ErrorPayloadSchema,
   HandshakePayloadSchema,
   PingPayloadSchema,
   PongPayloadSchema,
-  PROTOCOL_VERSION,
-  ROLES,
   type BridgeStatusEnvelope,
   type ErrorEnvelope,
   type HandshakeEnvelope,
   type PingEnvelope,
-} from '../envelope.js';
+} from '../control.js';
 
 // ----- helpers -----
 
@@ -305,10 +307,14 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
     expect(result.success).toBe(false);
   });
 
-  it('13. rejects any envelope whose `kind` is `pi` (pi placeholder semantics)', () => {
-    // Pi is the M2 placeholder — every pi-shaped frame must fail. We sweep
-    // through both legal and illegal types to confirm the rejection is on
-    // `kind`, not on `type` content.
+  it('13. rejects any envelope whose `kind` is `pi` but `type` is a control-family or arbitrary type', () => {
+    // From M3 onward `PiBranch` is a real `z.discriminatedUnion('type', [...9
+    // pi schemas...])` — see `pi.ts`. We sweep control-family types AND an
+    // arbitrary type, all with `kind: 'pi'`, and confirm each fails: the
+    // pi discriminator union only accepts the 9 pi types (`prompt`, `steer`,
+    // `follow_up`, `abort`, `get_messages`, `extension_ui_response`,
+    // `command_result`, `snapshot`, `event`), so control-family and
+    // arbitrary `type` values must be rejected at the boundary.
     for (const type of [...CONTROL_TYPES, 'something_arbitrary']) {
       const result = parseEnvelope({
         v: 1,
@@ -322,8 +328,8 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
 
     // Additional negative case: even a payload that is *legal* for the
     // control kind (a real handshake payload) must still be refused when
-    // `kind` is `pi`. Proves the rejection happens on the `kind` gate
-    // (PiBranch = z.never()) and not on payload semantics.
+    // `kind` is `pi`. Proves the rejection happens on the kind / type gate
+    // (PiBranch only accepts the 9 pi types) and not on payload semantics.
     const legalControlPayloadWithPiKind = parseEnvelope({
       v: 1,
       kind: 'pi',
@@ -333,7 +339,7 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
     });
     expect(
       legalControlPayloadWithPiKind.success,
-      'kind=pi with a legal control payload must still fail (gate is on kind, not payload)',
+      'kind=pi with a legal control payload must still fail (pi branch only accepts the 9 pi types)',
     ).toBe(false);
   });
 

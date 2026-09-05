@@ -66,7 +66,7 @@
 
 ### extension_ui_response
 
-回应阻塞弹窗。
+回应阻塞弹窗（web wire 形状）。
 
 ```json
 {
@@ -74,15 +74,22 @@
   "kind": "pi",
   "type": "extension_ui_response",
   "id": "c6",
-  "payload": { "request_id": "…", "value": … }
+  "payload": { "request_id": "…", "cancelled": false, "value": "…" }
 }
 ```
 
-- **payload**：
-  - `request_id`：弹窗请求事件中的 pi 原生 `id`，**原样带回**。
-  - `value`：用户选择 / 填入的值，形态由弹窗类型决定。
+- **payload**（web wire 形状）：
+  - `request_id`：弹窗请求事件中的 pi 原生 `id`，**原样带回**（pi v0.85.1 已实证所有 9 类 `extension_ui_request` 方法均携带稳定 UUID `id`，无须兜底关联）。
+  - `cancelled`：boolean。`true` 表示用户取消（不附 `value`）；`false` 表示用户提交（`value` 必填）。
+  - `value`：可选；类型为 `string | boolean`。`cancelled: true` 时不出现；`cancelled: false` 时必须出现：
+    - `confirm` 走 `boolean`——`true` 确认、`false` 拒绝（这是 confirm 表达"否"的唯一通道，详见 [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]]）；
+    - `select` / `input` / `editor` 走 `string`。
+- **bridge 翻译注记**：bridge 收 web wire 后翻译为 pi 原生三态（web 端统一布尔取消语义，pi 原生 schema 封装在 bridge 内部）：
+  - `cancelled: true` → 写 `{ type: 'extension_ui_response', id, cancelled: true }`；
+  - `cancelled: false` + 原 method 为 `confirm` → 写 `{ id, confirmed: value as boolean }`；
+  - `cancelled: false` + 原 method 为 `select` / `input` / `editor` → 写 `{ id, value: value as string }`。
 
-> 实现时核实：pi 的 `extension_ui_request` 事件是否携带稳定 `id` 字段；若不带，单进程同时只有**一个**阻塞弹窗可作为兜底关联。
+> `value` 类型放宽为 `string | boolean` 是为 confirm 的"否"提供语义通道（`value: false`）。shared 层不做 `confirm` / 其他方法的 `value` 类型区分——bridge 维护原 method 信息，按对应分支配对即可。
 
 ---
 
@@ -146,17 +153,18 @@ pi 事件原样装填。
   - `event`：事件名，**集合开放**——pi 升级新增事件无须改本协议，未识别事件网页端忽略。
   - `data`：事件负载，结构随事件名变化。
 
-常见事件名（与 pi v0.84.4 对齐，**实现时核实**）：
+常见事件名（与 pi v0.85.1 对齐，已实证存在）：
 
 | 事件 | 含义 |
 |------|------|
-| `agent_start` / `agent_end` / `agent_settled` | agent 进程粒度的起止与一轮对话结束 |
+| `agent_start` / `agent_end` / `agent_settled` | agent 进程粒度的起止与一轮对话结束（agent_settled 触发 bridge 启动 5min idle 计时，详见 ADR-0003） |
 | `turn_start` / `turn_end` | 一轮 turn 的起止 |
-| `message_start` / `message_update` / `message_end` | 一条消息的起 / 流式增量 / 终 |
+| `message_start` / `message_update` / `message_end` | 一条消息的起 / 流式增量（text_delta 等，仅用于打字机暂显）/ 终（权威覆盖） |
 | `tool_execution_start` / `tool_execution_update` / `tool_execution_end` | 一次工具调用的起 / 流式增量 / 终 |
-| `queue_update` | 队列变化 |
+| `queue_update` | steering + follow_up 队列变化（web 端据比显示队列条数） |
 | `entry_appended` | 日志条目追加 |
-| `extension_ui_request` | 阻塞式弹窗请求（要求网页响应） |
+| `extension_ui_request` | 阻塞式弹窗请求（要求网页响应；所有 9 类方法携带稳定 UUID `id` 字段） |
+| `ui_prompt_start` / `ui_prompt_end` | 一次阻塞交互的起 / 终（与 `extension_ui_request` 互补；用于 UI 帧状态补全） |
 
 > 上述集合**不封闭**：pi 升级新增事件无须改协议，未识别事件网页忽略。
 
@@ -187,4 +195,4 @@ pi 事件原样装填。
 
 - 在 `pi` 家族新增 type（如 `new_session` / `switch_session` / `list_directories` 等）及其 `command_result` 回执。
 - envelope `session` 字段**必填**以区分会话。
-- `control` 家族 v1 内不再新增 type（会话列表 session_list 已在其内）；会话的新建 / 切换 / 目录浏览等操作在 `pi` 家族内表达。
+- `control` 家族 v1 内除已破锁的 `get_state` 外不再新增 type（破锁依据见 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]；会话列表 session_list 已在其内）；会话的新建 / 切换 / 目录浏览等操作在 `pi` 家族内表达。

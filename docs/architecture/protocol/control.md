@@ -6,7 +6,7 @@
 
 `control` 家族承载**连接建立、保活、在位状态与会话管理**，是控制面而非对话面。中间层只深度理解其中 3 个 type——`handshake`（鉴权）、`bridge_status`（自己生成）、`error`（自己生成）——其余一律原样转发。详见 [中间层处理规则](#中间层处理规则)。
 
-共 8 个 type：`handshake` / `ping` / `pong` / `bridge_status` / `session_state` / `session_list` / `result` / `error`。
+共 9 个 type：`handshake` / `ping` / `pong` / `bridge_status` / `session_state` / `session_list` / `get_state` / `result` / `error`。M3 起 `get_state` 加入（破锁 control 家族 v1 内不再新增 type 的承诺，理由见 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]）。
 
 ---
 
@@ -106,7 +106,12 @@ bridge 在不在线（由中间层生成）。
   "type": "session_state",
   "id": "…",
   "session": "…",
-  "payload": { "phase": "idle" }
+  "payload": {
+    "phase": "idle",
+    "blocked_on": [
+      { "method": "confirm", "id": "…", "title": "…", "message": "…", "timeout": 30000 }
+    ]
+  }
 }
 ```
 
@@ -114,8 +119,9 @@ bridge 在不在线（由中间层生成）。
 - **会话字段**：一条消息对应一个 pi 进程；envelope `session` 字段区分；单进程阶段可省略。
 - **payload**：
   - `phase`：`"spawning"`（启动中）/ `"ready"`（可用）/ `"running"`（干活中）/ `"idle"`（空闲）/ `"exited"`（已退出）。
-- **规则**：一轮对话结束（pi 报 `agent_settled`）→ `idle`；空闲满 5 分钟 bridge 杀掉 pi 进程 → `exited`。
-- **设计理由**：状态属于 pi 进程而不属于 bridge（一个 bridge 可能同时管理多个 pi 进程），故按会话一条。
+  - `blocked_on`（M3 新增，可选）：未决阻塞弹窗数组；缺省视为空数组。每项是 [[architecture/protocol/pi.md#extension_ui_request|4 类 `extension_ui_request` 阻塞方法]]之一（`select` / `confirm` / `input` / `editor`），形状与 pi 原生 `extension_ui_request` 对应阻塞方法同形（`method` / `id` / `title` / 方法专属字段 / 可选 `timeout`，editor 无 `timeout`）；fire-and-forget 5 类（`notify` / `setStatus` / `setWidget` / `setTitle` / `set_editor_text`）不入此数组，详见 [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]]。
+- **规则**：一轮对话结束（pi 报 `agent_settled`）→ `idle`；空闲满 5 分钟 bridge 杀掉 pi 进程 → `exited`。`blocked_on` 在弹窗出现 / 提交 / 超时时同步增删。
+- **设计理由**：状态属于 pi 进程而不属于 bridge（一个 bridge 可能同时管理多个 pi 进程），故按会话一条。`blocked_on` 与 session_state 同帧广播是为了让 web 端弹窗组件仅由状态帧驱动渲染（无乐观 UI），详见 ADR-0004。
 
 ---
 
@@ -130,6 +136,43 @@ bridge 在不在线（由中间层生成）。
 - **方向**：web → bridge（中间层转发）。
 - **payload**：当前为空对象 `{}`；将来支持多工作目录时再加过滤字段。
 - **回执**：走 `result`（见 [§7](#7-result)）。
+
+---
+
+## 6.5 get_state
+
+拉取当前会话的 pi 进程状态 + 未决阻塞弹窗（由 bridge 发，回执走 `result`）。
+
+```jsonc
+// web → bridge
+{ "v": 1, "kind": "control", "type": "get_state", "id": "g1", "payload": {} }
+
+// bridge → web（result 回执）
+{
+  "v": 1,
+  "kind": "control",
+  "type": "result",
+  "id": "g2",
+  "reply_to": "g1",
+  "payload": {
+    "ok": true,
+    "data": {
+      "phase": "ready",
+      "blocked_on": [
+        // 可选；与 session_state.payload.blocked_on 同形状
+        { "method": "input", "id": "…", "title": "…", "placeholder": "…" }
+      ]
+    }
+  }
+}
+```
+
+- **方向**：web → bridge（中间层转发到 bridge），bridge → web 走 `result`（与 `session_list` 同形态）。
+- **payload**：当前为空对象 `{}`；将来加过滤字段时按 [[architecture/protocol/envelope.md#演进规则v1-存续期内允许|envelope 演进规则 (a)]] 新增可选字段。
+- **回执**：`result.data = { phase: SessionPhase, blocked_on?: BlockedOnEntry[] }`；`phase` 取值沿用 [§5](#5-session_state) 已锁版的 5 相位枚举（不破锁）；`blocked_on` 与 `session_state.payload.blocked_on` 同形状（可选数组，元素为 4 类 `extension_ui_request` 阻塞方法之一），缺省视为空数组。
+- **回执失败**：`result.ok = false` 时 `error.code` 复用 [§8](#8-error) 已锁版的 6 个 code 集合（不允许新增）。
+- **exited 语义**：bridge 永远由内存作答（phase / blocked_on 的当前值），**永不 spawn**——即使当前 phase 为 `exited`，也即时回执不触发重启；详见 ADR-0003 末尾 "exited 状态 spawn 触发集"。
+- **破锁依据**：M3 新增，破锁 control 家族 v1 内不再新增 type 的承诺，理由见 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]。
 
 ---
 
@@ -166,6 +209,7 @@ control 请求的通用回执。
   | `message_count` | number | 消息数 |
   | `first_message` | string \| null | 首条消息摘要，可空 |
   | `running` | boolean | 该会话的 pi 进程是否存活（含空闲）；正在干活与否看 `session_state` |
+- **`get_state` 回执**（M3 新增）：`data = { phase, blocked_on? }`；`phase` 取值见 [§5](#5-session_state) 5 相位枚举；`blocked_on` 与 `session_state.payload.blocked_on` 同形状（可选数组，元素为 4 类 `extension_ui_request` 阻塞方法之一）。
 
 ---
 
@@ -222,4 +266,4 @@ control 请求的通用回执。
 2. **bridge_status** —— 自己生成，触发条件见 §4。
 3. **error** —— 自己生成，触发条件见 §8。
 
-其余消息一律原样转发：`ping` / `pong` / `session_list` / `result` / `session_state` 以及整个 [[architecture/protocol/pi.md|pi 家族]]。
+其余消息一律原样转发：`ping` / `pong` / `session_list` / `get_state` / `result` / `session_state` 以及整个 [[architecture/protocol/pi.md|pi 家族]]。其中 `get_state` 由 web 发到 bridge，bridge 用本地内存作答（phase / blocked_on 的当前值），中间层不参与；result 是其回执。

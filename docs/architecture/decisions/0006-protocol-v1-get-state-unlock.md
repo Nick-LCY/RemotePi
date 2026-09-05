@@ -23,6 +23,9 @@
   - worker 维持中间层规则（透传 get_state + 透传 result 回执），零业务改动。
   - 与 ADR-0003 协同：get_state 是其"恢复仪式"（双查询之一）的载体；与 ADR-0004 协同：get_state 回执中的 `blocked_on` 是弹窗模型状态帧驱动的真相源。
 
----
+## 双向引用
 
-> 本文件由 M3 PRD `prds/m3-single-session.md` 落盘时同步创建（占位），task 01 将按"决策"小节落完整内容（含双向引用核对）。
+- [[architecture/protocol/envelope.md#锁版承诺v1-存续期内不可变]] —— 锁版承诺清单（control 8 → 9 type）与演进规则 (a)/(b) 同步修订的承载点。
+- [[architecture/decisions/0003-session-lifecycle-and-history-source.md|ADR-0003]] —— 末尾注明：恢复仪式中 web 端握手后并行发 `pi/get_messages` + `control/get_state`（本 ADR 增补的 `get_state` 即其中之一）；自主 kill 标记 + exited 后 spawn 触发集 + get_state 永不 spawn 协同语义在此协同。
+- [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]] —— 末尾注明：弹窗模型升级为 `session_state.blocked_on` 状态帧驱动；`get_state` 回执中的 `blocked_on` 字段是弹窗模型状态帧驱动的真相源之一（与事件流 `pi/event` 双路并行）。
+

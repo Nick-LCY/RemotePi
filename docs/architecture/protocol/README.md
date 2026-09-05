@@ -17,11 +17,11 @@
 
   | kind | 范围 | 本文 |
   |------|------|------|
-  | `control` | 连接与会话生命周期（8 个 type） | [[architecture/protocol/control.md]] |
+  | `control` | 连接与会话生命周期（9 个 type，含 M3 破锁新增的 `get_state`） | [[architecture/protocol/control.md]] |
   | `pi` | 对话内容（9 个 type，镜像 pi 命令与事件） | [[architecture/protocol/pi.md]] |
 
-- **中间层处理规则一句话**：只深度处理 `handshake`（鉴权）、`bridge_status` 与 `error`（自己生成），其余一律转发。
-- **扩展原则**：将来扩展只往 `pi` 家族加 type；`control` 在 v1 内不再新增 type。
+- **中间层处理规则一句话**：只深度处理 `handshake`（鉴权）、`bridge_status` 与 `error`（自己生成），其余一律转发（含 `get_state`）。
+- **扩展原则**：将来扩展只往 `pi` 家族加 type；`control` v1 内除已破锁的 `get_state` 外不再新增 type（破锁依据见 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]）。
 
 ## 文档索引
 
