@@ -148,7 +148,33 @@ export class BridgeClient {
 
   private connect(): void {
     if (this.stopped) return;
-    const ws = this.opts.createSocket(this.url, ['remotepi.v1', this.token]);
+    // `new WebSocket(...)` throws synchronously for inputs the URL
+    // parser rejects (e.g. plain strings that don't parse as ws/wss
+    // URLs, IPv6 brackets malformed, etc.). Without this try/catch the
+    // throw bubbles out of the reconnect timer callback and the
+    // bridge sits idle: the timer has fired but no replacement is
+    // scheduled, so no further retries happen until the process is
+    // restarted externally (which is the silent-death the fix is
+    // about). Catch → log → route through the same backoff path a
+    // normal close uses, so a malformed URL is just another reason
+    // to retry with the next backoff slot.
+    let ws: WebSocketLike;
+    try {
+      ws = this.opts.createSocket(this.url, ['remotepi.v1', this.token]);
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      logger.error(`socket construction failed: ${e.message}`);
+      // `this.ws` was never assigned, but be defensive — if a future
+      // refactor leaves a stale handle behind, handleClose should
+      // still see null and skip the close() call.
+      this.ws = null;
+      // Synthesise a close so we re-enter the same backoff path a
+      // remote-initiated drop would take. handleClose's own log line
+      // then surfaces the URL + attempt + delay, giving operators
+      // both "why" (the error above) and "what's next" in one place.
+      this.handleClose(undefined);
+      return;
+    }
     this.ws = ws;
     ws.onopen = () => this.handleOpen();
     ws.onmessage = (ev) => this.handleMessage(ev);

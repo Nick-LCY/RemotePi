@@ -36,6 +36,7 @@ class NoopSocket implements WebSocketLike {
 // `logger.info` etc. (the rule fires when you read a method off an
 // object literal; holding it in a typed local sidesteps that).
 let infoSpy: MockInstance<typeof logger.info>;
+let errorSpy: MockInstance<typeof logger.error>;
 // Save & restore the env var so tests don't leak state to each other
 // (or to the user's shell, if they happen to have it set when running
 // `pnpm test`).
@@ -44,7 +45,7 @@ const ORIGINAL_ENV_WORKER_URL = process.env['REMOTEPI_WORKER_URL'];
 beforeEach(() => {
   infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
   vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-  vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+  errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
   // Reset to the original value captured at module load. Tests that
   // need a specific value set it explicitly after this hook.
   if (ORIGINAL_ENV_WORKER_URL === undefined) {
@@ -183,5 +184,123 @@ describe('start (1 case per M2 PRD §6)', () => {
     });
     expect(result.workerUrl).toBe(DEFAULT_WORKER_URL);
     result.client.stop();
+  });
+});
+
+// ----- Crash observability (index.ts process handlers) ----------------------
+//
+// The handlers are installed once at module load (top of `index.ts`),
+// not at the start of `start()` — so we drive them with `process.emit`
+// rather than calling private symbols. `process.exit` is mocked so a
+// successful handler call doesn't tear down the vitest worker.
+
+describe('crash handlers (installed at module load)', () => {
+  it('unhandledRejection logs the rejection with its stack and does not exit', () => {
+    // The reason is anything async code rejected with — typed as `any`
+    // by Node. We pass a real Error so we can assert the stack landed
+    // in the log, and we use `Promise.reject(reason)` only as the
+    // second arg (matching Node's signature) — the handler ignores it.
+    const exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation(() => undefined as never);
+
+    const reason = new Error('async boom from a stray promise');
+    process.emit('unhandledRejection', reason, Promise.reject(reason));
+
+    // The handler must have logged something containing both the tag
+    // and the underlying message — the `stringContaining` form lets us
+    // assert "reason made it into the line" without depending on the
+    // exact stack-string format (which V8 may vary).
+    const errorCalls = errorSpy.mock.calls.map((args) =>
+      args.map((a) => String(a)).join(' '),
+    );
+    const matched = errorCalls.some(
+      (line) => line.includes('unhandledRejection') && line.includes('async boom from a stray promise'),
+    );
+    expect(matched).toBe(true);
+
+    // Critical invariant: we keep running. A handler that calls exit(1)
+    // on rejection would prevent any future retry / re-flush, and
+    // would also tear down the vitest worker — so the assertion is
+    // both behavioural and a test-isolation tripwire.
+    expect(exitSpy).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+  });
+
+  it('uncaughtException logs the stack, closes the active client, and exits with code 1', () => {
+    // We need a real BridgeClient instance so the handler's
+    // `activeClient.stop()` path actually executes — otherwise the
+    // close branch is dead code in this test. We use `start()` so
+    // `activeClient` is set the way production sets it.
+    const createSocket = (): WebSocketLike => new NoopSocket();
+    const token = 'g'.repeat(32);
+    const result = start({
+      token,
+      createSocket,
+      argv: [],
+      workerUrl: 'wss://example.test/bridge',
+    });
+
+    const exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation(() => undefined as never);
+    const stopSpy = vi.spyOn(result.client, 'stop');
+
+    // Drive the handler synthetically. Real Node `uncaughtException`
+    // fires from V8's exception machinery, which isn't reachable from
+    // a test — `process.emit` is the standard escape hatch for
+    // asserting on registered listeners.
+    process.emit('uncaughtException', new Error('sync boom from a stray timer'));
+
+    // 1. The error was logged with the stack (or at least the message,
+    //    if V8's stack format varies — we accept either, but the
+    //    `uncaughtException` tag MUST be present).
+    const errorCalls = errorSpy.mock.calls.map((args) =>
+      args.map((a) => String(a)).join(' '),
+    );
+    expect(
+      errorCalls.some(
+        (line) =>
+          line.includes('uncaughtException') && line.includes('sync boom from a stray timer'),
+      ),
+    ).toBe(true);
+
+    // 2. The explicit "bridge crashed, exiting" line landed — this
+    //    is the line operators grep for to confirm we tried to clean
+    //    up rather than dying on the raw exception.
+    expect(errorSpy).toHaveBeenCalledWith('bridge crashed, exiting');
+
+    // 3. The active client's stop() ran (best-effort socket close).
+    //    The handler must call exactly the returned client — not a
+    //    stale handle — so this also guards against accidentally
+    //    caching the wrong reference.
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+
+    // 4. exit(1) was called. Vitest is normally the only thing that
+    //    gets to terminate the worker process; the handler calling
+    //    exit itself means the bridge decides when it's done.
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    exitSpy.mockRestore();
+    // The handler cleared activeClient but our local `result.client`
+    // is unaffected — we don't call stop() again because the spy
+    // already captured the call and a second stop would just be
+    // noise in the test logs.
+  });
+
+  it('uncaughtException exits even when no client was ever started', () => {
+    // Edge case: a process that imports the module for the handlers
+    // (or somehow loses its activeClient) must still exit cleanly.
+    // The handler tolerates `activeClient === null` without throwing.
+    const exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation(() => undefined as never);
+
+    process.emit('uncaughtException', new Error('boom before start()'));
+
+    expect(errorSpy).toHaveBeenCalledWith('bridge crashed, exiting');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    exitSpy.mockRestore();
   });
 });

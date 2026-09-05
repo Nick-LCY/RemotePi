@@ -25,6 +25,67 @@ import { logger } from './logger.js';
  *  the Terraform config creates in [[prds/m2-tunnel.md#§5-infra]]. */
 export const DEFAULT_WORKER_URL = 'wss://remote-pi.sankabox.com/bridge';
 
+/** Tracks the auto-run client's lifecycle so `uncaughtException` can close
+ *  its socket before we exit. Tests hold their own reference via the
+ *  return value of `start()` and don't rely on this — it only affects the
+ *  "this file is the main entry" code path. */
+let activeClient: BridgeClient | null = null;
+
+/** Coerce a thrown value into an `Error`. Some async paths surface
+ *  non-Error rejections (raw strings, plain objects); we want a stack
+ *  trace in the log regardless. */
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+/** Install the bridge's crash handlers exactly once at module load.
+ *
+ *  Without these, two failure modes are silently fatal:
+ *   - top-level `start()` throws synchronously (e.g. a future seam
+ *     surfaces a bug). Node prints + exits, but our logger format
+ *     never fires — operators see a raw stack instead of the
+ *     `[bridge] error` line every other lifecycle event uses.
+ *   - an async rejection / sync exception during the connect loop
+ *     throws out of a timer callback. The reconnect timer chain
+ *     dies and the bridge sits idle with no log evidence of why.
+ *
+ *  Behaviour:
+ *   - `unhandledRejection`: log + keep running. Reconnects stay alive.
+ *   - `uncaughtException`: log + close the active socket + exit(1).
+ *     The socket close is best-effort — we're already crashing, we
+ *     just want a clean TCP FIN before we go.
+ *
+ *  Wrapped in a function so future re-loads (tsx watch re-imports) don't
+ *  pile up duplicate listeners on `process`. */
+function installProcessHandlers(): void {
+  process.on('unhandledRejection', (reason) => {
+    const err = toError(reason);
+    // `err.stack` is set for Error instances; for coerced non-Error values
+    // we only have the message. Print both when present so a stack is
+    // never silently dropped.
+    logger.error(`unhandledRejection: ${err.stack ?? err.message}`);
+  });
+  process.on('uncaughtException', (err) => {
+    const e = toError(err);
+    logger.error(`uncaughtException: ${e.stack ?? e.message}`);
+    if (activeClient !== null) {
+      try {
+        activeClient.stop();
+      } catch {
+        // Best-effort cleanup — we're already in a crash path and the
+        // stop() call itself could throw if the socket is in a weird
+        // state. Don't let cleanup failure mask the original error.
+      }
+      activeClient = null;
+    }
+    // Explicit log line so operators can grep for the exact moment we
+    // gave up — distinct from the uncaughtException stack above.
+    logger.error('bridge crashed, exiting');
+    process.exit(1);
+  });
+}
+installProcessHandlers();
+
 export interface StartOptions {
   /** Override the worker URL (env-var, CLI flag, test seam). */
   workerUrl?: string;
@@ -104,6 +165,13 @@ export function start(options: StartOptions = {}): {
     createSocket: options.createSocket,
   });
   client.start();
+  // Track the auto-run instance so uncaughtException can close it on
+  // crash. Tests that call start() directly hold their own reference
+  // via the return value and never read this — assignment is harmless
+  // for them (it just leaves a stale pointer that .stop() doesn't
+  // touch, since tests call stop() on their local handle, not on
+  // activeClient).
+  activeClient = client;
 
   return { token, shareUrl: shareLink, client, workerUrl };
 }
@@ -126,6 +194,20 @@ if (argv1 !== undefined) {
   // both set argv[1] to the `.ts` path.
   const argvBase = argv1.endsWith('.ts') ? argv1.replace(/\.ts$/, '.js') : argv1;
   if (argvBase === resolvedArgv1 || argv1 === resolvedArgv1) {
-    start();
+    // Top-level safety net: if anything in `start()` throws
+    // synchronously (a bad factory call, a future config-validation
+    // error, etc.), Node would print + exit with the raw stack. The
+    // `tsx watch` parent would see non-zero exit and restart, but the
+    // operator wouldn't see it through our `[bridge] error` log format
+    // — they'd see a stack trace. Catch + log + set exitCode so the
+    // process exits with code 1 (for tsx watch to detect) AND the log
+    // line matches the format the rest of the daemon uses.
+    try {
+      start();
+    } catch (err) {
+      const e = toError(err);
+      logger.error(`bridge start failed: ${e.stack ?? e.message}`);
+      process.exitCode = 1;
+    }
   }
 }

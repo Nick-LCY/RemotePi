@@ -353,4 +353,60 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
 
     client.stop();
   });
+
+  it('a synchronous throw from createSocket() logs an error and routes through the reconnect backoff', () => {
+    // `new WebSocket(...)` throws synchronously for inputs the URL
+    // parser rejects (e.g. raw strings without `ws://` / `wss://`).
+    // Before the fix, the throw bubbled out of the reconnect timer
+    // callback and the bridge sat idle: the timer had fired but no
+    // replacement was scheduled, so the loop died silently. The fix
+    // routes the failure through `handleClose()` so the next backoff
+    // slot fires a fresh attempt — same code path as a remote drop.
+    installLoggerSpies();
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(logger, 'error');
+    let calls = 0;
+    const createSocket: (url: string, protocols: string[]) => WebSocketLike = (
+      url,
+      protocols,
+    ) => {
+      calls += 1;
+      if (calls === 1) {
+        // Mirror what `new WebSocket('not-a-url')` throws in Node.
+        throw new Error('Invalid URL: not-a-url');
+      }
+      // Subsequent attempts succeed — proves the retry loop re-armed.
+      return new MockSocket(url, protocols);
+    };
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket,
+      // Pin jitter to the bottom of the band so the timer advance is
+      // deterministic (800ms for attempt 1 with rng=()=>0).
+      rng: () => 0,
+    });
+
+    client.start();
+
+    // First attempt threw synchronously — no MockSocket was constructed,
+    // but the error was logged and a backoff timer was scheduled.
+    expect(calls).toBe(1);
+    expect(MockSocket.instances).toHaveLength(0);
+    expect(errorSpy).toHaveBeenCalledWith(
+      'socket construction failed: Invalid URL: not-a-url',
+    );
+    // handleClose also emits the reconnect line so operators see
+    // "why" (this log line) AND "what's next" (the disconnect line).
+    expect(infoSpy).toHaveBeenCalledWith(
+      "disconnected from wss://example.test/bridge (code=undefined, reason='') — reconnecting in 800ms (attempt 1)",
+    );
+
+    // Advance just past the smallest possible backoff — the next
+    // createSocket call should now fire and succeed (counter > 1).
+    vi.advanceTimersByTime(BACKOFF_BASE_MS);
+    expect(calls).toBe(2);
+    expect(MockSocket.instances).toHaveLength(1);
+
+    client.stop();
+    vi.useRealTimers();
+  });
 });
