@@ -4,12 +4,14 @@ status: done
 ---
 # 任务：bridge 客户端（token / WSS / handshake / 心跳 / 重连）
 
+> **2026-09-05 修订（部署形态改定，task 06 处理）**：网页合并进主域，bridge `shareUrl()` 默认 base 从 `https://web.remote-pi.sankabox.com` 改为 `https://remote-pi.sankabox.com`（对应单测断言同步）。本任务交付的代码（WSS / handshake / 心跳 / 重连 / token 生成）不变，base 常量与测试在 task 06 调整。
+
 ## 目标
 按 [[prds/m2-tunnel.md|M2 PRD §2 bridge]] 实现 `packages/bridge` 守护进程：启动生成 token → stdout 打印分享 URL → 连 WSS → handshake → 心跳 → 收 ping 回 pong → 退避重连。包结构 `index.ts` / `token.ts` / `client.ts` / `logger.ts`；写 8 条 vitest 单测。
 
 关键要点：
 
-- `token.ts`：`generateToken()` 用 `crypto.randomBytes(24).toString('base64url')`（32 字符；base64url 字符集 ⊆ [A-Za-z0-9_-]）；`shareUrl(token, base?)` 拼 `https://web.remote-pi.sankabox.com/#<token>`，`base` 可覆盖（dev 默认 `http://localhost:5173`）
+- `token.ts`：`generateToken()` 用 `crypto.randomBytes(24).toString('base64url')`（32 字符；base64url 字符集 ⊆ [A-Za-z0-9_-]）；`shareUrl(token, base?)` 拼 `https://remote-pi.sankabox.com/#<token>`，`base` 可覆盖（dev 默认 `http://localhost:5173`）。> **2026-09-05 修订**：网页已合并进主域（见 [[prds/m2-tunnel.md|M2 PRD]]），原 `web.remote-pi.sankabox.com` 方案作废，默认 base 改为主域
 - `logger.ts`：极简 logger，info/warn/error 三级，stdout 输出；不引入 pino / winston
 - `client.ts`：核心 WSS 客户端类（不直接 spawn 进程，便于单测）：
   - 构造时 `new WebSocket(url, ["remotepi.v1", token])`
@@ -23,7 +25,7 @@ status: done
 - 单测 8 条（PRD §6 列出的清单，下文为复述）：
   1. token 长度 === 32 且字符集 ⊆ base64url（`/^[A-Za-z0-9_-]{32}$/`）
   2. 两次 `generateToken()` 结果不等
-  3. `shareUrl('abc')` === `'https://web.remote-pi.sankabox.com/#abc'`（默认 base）
+  3. `shareUrl('abc')` === `'https://remote-pi.sankabox.com/#abc'`（默认 base）
   4. `Client` 构造时 WSS 用 `subprotocols: ['remotepi.v1', token]` 参数（可用 fake/mocked WebSocket 校验）
   5. 收到 `control/ping {nonce:'n1'}` → 发 `control/pong {nonce:'n1'}`（nonce 一致）
   6. 退避序列 ≈ 1/2/4/8/16/30/30 + jitter（±20% 范围断言：assert delay >= base*0.8 && delay <= base*1.2，cap 30）

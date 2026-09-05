@@ -59,6 +59,7 @@ RemotePi 让用户在浏览器中远程使用跑在自有服务器上的 pi codi
 | [[architecture/decisions/0002-monorepo-and-tech-stack.md\|0002]] | 采用 pnpm workspaces monorepo |
 | [[architecture/decisions/0003-session-lifecycle-and-history-source.md\|0003]] | DO 不持久化；session 生命周期与历史来源 |
 | [[architecture/decisions/0004-extension-ui-dialog-forwarding.md\|0004]] | 扩展 UI 对话框转发到 web 弹窗 |
+| [[architecture/decisions/0005-unified-domain-with-worker-static-assets-and-actions-cd.md\|0005]] | 部署形态：主域统一 + Worker Static Assets + GitHub Actions CD |
 
 完整清单与模板见 [[architecture/decisions/README.md]]。
 

@@ -14,11 +14,11 @@ M1 收官：monorepo 四包 + CI 双绿 + remote-pi.sankabox.com hello 闭环。
 4. **广播**：单 bridge 多 web；bridge 出站广播给所有 web；web↔web 不互通
 5. **错误码全集**：6 个 code 全部落地，terminal=true 关 1008
 6. **web 验证面**：TokenPrompt / StatusBar / PingTester / BroadcastLog 四组件
-7. **真实环境闭环**：web.remote-pi.sankabox.com 能连上本机 bridge 并显示在线
+7. **真实环境闭环**：remote-pi.sankabox.com 网页能连上本机 bridge 并显示在线
 
 ## 非目标
 
-pi 进程管理与 JSONL 解析；session_state / session_list / result（无 pi 进程即无会话数据）；pi 家族 9 个 type；Hibernation；CI 自动部署（terraform apply / wrangler deploy 全部用户手动）；bridge systemd unit 与 Release 流水线；token 持久化与吊销；多房间；web 间私聊。
+pi 进程管理与 JSONL 解析；session_state / session_list / result（无 pi 进程即无会话数据）；pi 家族 9 个 type；Hibernation；bridge systemd unit 与 Release 流水线；token 持久化与吊销；多房间；web 间私聊。> **2026-09-05 修订**：CI 自动部署不再是非目标——`terraform apply` 与 `wrangler deploy` 由 deploy.yml 在 push main 时自动跑（CD），用户仅需配置 GitHub Secrets。
 
 ## 方案
 
@@ -32,7 +32,7 @@ pi 进程管理与 JSONL 解析；session_state / session_list / result（无 pi
 
 ### §2 bridge
 
-- 启动：`crypto.randomBytes(24).toString('base64url')`（32 字符）→ stdout 打印 token 与分享 URL `https://web.remote-pi.sankabox.com/#<token>` → 立即连 WSS
+- 启动：`crypto.randomBytes(24).toString('base64url')`（32 字符）→ stdout 打印 token 与分享 URL `https://remote-pi.sankabox.com/#<token>` → 立即连 WSS
 - 连接：`wss://remote-pi.sankabox.com/bridge`（`--worker-url` 可配）；subprotocol 必须传 `["remotepi.v1", token]`
 - handshake：upgrade 成功即发 `control/handshake {role:'bridge', token}`。**连接保持即视为握手成功——bridge 不等待任何 ack（bridge_status 只广播给网页，bridge 收不到）；失败通过 error 帧或断连感知并走重连**
 - 心跳：20s 主动发 ping（nonce 用 nanoid(8)），30s × 3 无 pong → close → 重连
@@ -42,9 +42,9 @@ pi 进程管理与 JSONL 解析；session_state / session_list / result（无 pi
 
 ### §3 worker + DO
 
-- wrangler.toml：name 由 `remotepi-hello` 改为 `remotepi-worker`（**部署顺序**：先 deploy 新名 worker，再更新 infra route 的 script 引用并 apply，避免域名空窗）；新增 TOML 表 `[durable_objects.bindings]`（name="ROOM" / class_name="Room"）与 `[migrations]`（new_sqlite_classes=["Room"]）；compatibility_date 不变
+- wrangler.toml：name 由 `remotepi-hello` 改为 `remotepi-worker`（**部署顺序**：先 deploy 新名 worker，再更新 infra route 的 script 引用并 apply，避免域名空窗；顺序已编码进 deploy.yml，详见 §5 修订注记）；新增 TOML 表 `[durable_objects.bindings]`（name="ROOM" / class_name="Room"）与 `[migrations]`（new_sqlite_classes=["Room"]）与 `[assets]`（`directory = "../packages/web/dist"`、`not_found_handling = "single-page-application"`；`run_worker_first = ["/web", "/bridge", "/healthz"]` 数组形式强制这三条路径先进 Worker 代码，其他路径走 asset worker 的 SPA fallback；`assets.binding` 留空 —— 不需要从 Worker 调 `env.ASSETS.fetch()`，SPA fallback 由 asset worker 自动处理）；compatibility_date 不变
 - `@cloudflare/workers-types` ^4 → ^5
-- `index.ts`：`GET /` 保留 M1 hello 文本（ops smoke）；`/web` `/bridge` 非 upgrade 请求 → 426；upgrade 请求 → 从 `Sec-WebSocket-Protocol` 头提取 token（拆 "remotepi.v1, <token>" 取第 2 项）→ `idFromName(token)` → DO stub；其他路径 404。**token 只走 subprotocol，不引入 URL query**（协议锁版；若实测 CF 读不到该头，属协议偏离需显式记录再议）；token 缺失/非法 → 401
+- `index.ts`：`/web` `/bridge` 非 upgrade 请求 → 426；upgrade 请求 → 从 `Sec-WebSocket-Protocol` 头提取 token（拆 "remotepi.v1, <token>" 取第 2 项）→ `idFromName(token)` → DO stub；`/healthz` 返 `ok`（ops 探活，替代原 GET / 的 hello）；其他路径 404。**token 只走 subprotocol，不引入 URL query**（协议锁版；若实测 CF 读不到该头，属协议偏离需显式记录再议）；token 缺失/非法 → 401。`GET /` 让位 web SPA（assets fallback，run_worker_first 未覆盖 /，由静态资源处理）。> **2026-09-05 修订**：原计划保留 `GET /` hello 文本，现网页合并进主域后让位给 web 首页；ops smoke 挪到 `/healthz`（返纯文本 `ok`，避开 SPA fallback 与 WS 路径）。`/web` `/bridge` `/healthz` 配 `run_worker_first` 数组形式强制先进 Worker 代码，与 SPA fallback 共存。
 - `Room`：连接后启动 5s 握手 timer；首帧必须 handshake，role 与路径不符 → error(auth_failed, terminal)；同 token 已有 bridge → error(duplicate_bridge, terminal) + close 1008；校验通过 → 注册 + 清 timer + 广播 connected + 给该连接（web）补发当前状态
 - 转发：web 入站 → 只转发给 bridge；bridge 入站 → 广播给所有 webs；ping/pong 原样不解析 payload
 - **DO 主动探活**（协议 control.md §2 的兼容补充，见该文档备注）：每 20s 对各连接发自己的 ping，30s × 3 无 pong → 关闭该连接；被判死的是 bridge → 广播 stale
@@ -61,16 +61,20 @@ pi 进程管理与 JSONL 解析；session_state / session_list / result（无 pi
 - WsClient：单例（React Context）；20s 心跳；30s × 3 判死自愈（close + 退避重连）；入站解析失败 console.warn 丢弃（web 不发 error）
 - `public/_redirects` SPA fallback
 
+> **2026-09-05 修订**：网页合并进主域后，静态资源由 Worker Static Assets 托管，`public/_redirects` 可保留作占位（CF Static Assets 自带 SPA fallback，落到 `wrangler.toml` 的 `[assets]` 配置）。WSS 目标 `wss://remote-pi.sankabox.com/web` 不变；token 走 URL fragment `https://remote-pi.sankabox.com/#<token>`（与 §2 bridge 分享 URL 同步）。
+
 ### §5 infra（Terraform）
 
 - `pages.tf` 新增 `cloudflare_pages_project.remotepi_web`（production_branch=main；部署由 wrangler pages deploy 执行，不入 TF）
 - `dns_web.tf` 新增 `web` CNAME → `remotepi-web.pages.dev`（proxied；**注意**：Pages 侧还需绑定自定义域，实现时核实走 TF 资源还是 Dashboard）
 - 其余沿用 M1
 
+> **修订（2026-09-05，用户改定部署形态）**：以上 `pages.tf` 与 `dns_web.tf` 方案作废——web 不再独立 `web.` 子域 + Pages 托管，改为合并进主域 `remote-pi.sankabox.com`，由 **Worker Static Assets** 托管 SPA（`wrangler.toml` 的 `[assets]` 表，`directory = "../packages/web/dist"`；`not_found_handling = "single-page-application"`；`/web` `/bridge` `/healthz` 配 `run_worker_first = ["/web", "/bridge", "/healthz"]` 数组形式强制先进 Worker 代码；其他路径走 SPA fallback）。TF 文件已删（**未曾 apply，零迁移**）。CD 改为 **GitHub Actions 自动化**：`push main` → Actions 自动 `pnpm install --frozen-lockfile` → `pnpm -r build`（含 web build）→ `wrangler deploy`（Worker + 静态资源）→ `terraform apply`（route 切换 / 基础设施；首次会把 `cloudflare_workers_route.script` 从 `remotepi-hello` 切到 `remotepi-worker`（**若 M2 期间未手动 apply 过 route 改名**），顺序已编码进 deploy.yml，worker 先行以避免空窗）。所需 GitHub Secrets：`CLOUDFLARE_API_TOKEN` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`。bridge 分享 URL 同步改为 `https://remote-pi.sankabox.com/#<token>`。
+
 ### §6 测试
 
 - **shared 17 条**（vitest，重写）：handshake 合法解析与窄化 / 缺 role / role 非法 / 缺 token；ping nonce 可选；pong nonce 必填（缺则拒）；bridge_status 三 reason 合法 / 非法 reason 拒；error 6 个 code 合法 / terminal 缺省可解析；v=2 拒；control 下未知 type 拒；kind=pi 当前任何 type 拒（空位）；kind 非 control|pi 拒；缺 id 拒；session/reply_to 缺省不影响解析
-- **bridge 8 条**：token 长度 32 且字符集 ⊆ base64url；两次生成不等；share URL 拼接；WSS 构造 subprotocol 参数正确；收 ping 回 pong nonce 一致；退避序列 ≈1/2/4/8/16/30/30 + jitter；30s×3 判死触发 close 重连；stdout 含 token 与 URL
+- **bridge 8 条**：token 长度 32 且字符集 ⊆ base64url；两次生成不等；share URL 拼接（默认 base `https://remote-pi.sankabox.com`，2026-09-05 起改主域）；WSS 构造 subprotocol 参数正确；收 ping 回 pong nonce 一致；退避序列 ≈1/2/4/8/16/30/30 + jitter；30s×3 判死触发 close 重连；stdout 含 token 与 URL
 - **DO / web 手测**：wrangler dev + 浏览器 + wscat 发畸形包，不写自动化测试
 
 ## 验收清单
@@ -79,7 +83,7 @@ pi 进程管理与 JSONL 解析；session_state / session_list / result（无 pi
 **心跳判死**：`kill -STOP` bridge → 90s 内广播 stale；`kill -CONT` → 自动重连恢复 connected
 **错误码路径**（wscat）：无 subprotocol → 401；subprotocol 缺 token → 401；5s 无 handshake → auth_failed + 1008；role 与路径不符 → auth_failed；第二 bridge → duplicate_bridge + 1008 且第一个不受影响；畸形帧 → invalid_envelope 不断开；v=2 → unsupported_version + 1008
 **技术**：shared 17 条 / bridge 8 条全绿；lint / typecheck / build 全绿；workers-types ^5 无 peer 警告；M1 hello/echo 无残留
-**真实环境**：`https://web.remote-pi.sankabox.com/#<token>` 连本机 bridge 显示在线
+**真实环境**：`https://remote-pi.sankabox.com/#<token>` 连本机 bridge 显示在线
 
 ## 任务拆分
 
@@ -90,23 +94,27 @@ pi 进程管理与 JSONL 解析；session_state / session_list / result（无 pi
 | 03 | bridge 客户端（token/WSS/handshake/心跳/重连）+ 8 条单测 | 01 |
 | 04 | worker + DO Room（路由/鉴权/广播/判死/错误码）+ types bump | 01 |
 | 05 | web 四组件 + WsClient | 01 |
-| 06 | Terraform Pages 资源 + 三端联调手测验收 + getting-started 更新 | 03/04/05 |
+| 06 | deploy.yml（CD）+ wrangler.toml assets / run_worker_first + /healthz + 三端联调手测验收 + getting-started 更新 | 03/04/05 |
 
 03 / 04 / 05 可并行。
 
 ## 交付约定
 
-**所有任务只在本地 commit，不 push**。push 由用户在本地验证（lint/typecheck/test/build 全绿 + 三端手测通过）后手动执行，触发 CI。CI 不做任何部署。
+> **修订（2026-09-05）**：随着 deploy.yml 上线，push 行为变更——不再是“仅触发 CI”，而是**直接触发 CD**（顺序：lint/typecheck/test/build → wrangler deploy → terraform apply）。 CI（lint/typecheck/test/build）作为 deploy.yml 的前置 job，失败则不进部署步。
+
+**所有任务（01–05）只在本地 commit，不 push**。task 06（deploy.yml + worker 调整 + getting-started 更新）落地后，用户本地验证（lint/typecheck/test/build 全绿 + 三端手测通过）→ 用户手动 `git push origin main` → Actions 首跑 CD（需仓库已配 Secrets；详见 §用户操作清单）。
 
 ## 用户操作清单
 
-- CF API Token 补 Pages:Edit 权限
-- 部署顺序：`cd infra && terraform apply`（Pages 项目 + CNAME）→ `pnpm --filter worker run deploy:cf`（remotepi-worker 上线）→ 更新 infra route script 引用后再 apply → web `build` + `wrangler pages deploy dist --project-name=remotepi-web` → 浏览器验证
-- Pages 自定义域若需 Dashboard 绑定，apply 后在 CF Dashboard 操作（实现时核实）
+> **修订（2026-09-05）**：原 Pages 部署步骤作废；CD 全自动化，本地手动部署保留为备选。
+
+- **CD（首选）**：在 GitHub 仓库配置 Secrets（`CLOUDFLARE_API_TOKEN` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`）→ `git push origin main` → Actions 自动跑 deploy.yml（build web → wrangler deploy → terraform apply；顺序已编码，worker 先行；首次会把 route 从 `remotepi-hello` 切到 `remotepi-worker`）。验证：`curl https://remote-pi.sankabox.com/healthz` 返 `ok`；`https://remote-pi.sankabox.com/` 打开 web SPA；bridge 不带参数直连生产。
+- **本地手动部署（备选）**：`pnpm --filter worker run deploy:cf`（会先 build web）→ `cd infra && terraform apply`。
+- CF API Token 权限汇总（CD 与本地共用）：Edit zone DNS + Workers Routes: Edit + **Workers Scripts: Edit**（**注意**：M1 §6.1 原裁定的「Workers Scripts: Read」不再适用——M2 由 wrangler deploy 上传 worker script）；AWS 凭据供 TF S3 backend（state + lock file）。
 
 ## 风险与实现时核实
 
-CF Workers 能否读 Sec-WebSocket-Protocol 头（读不到则 query 兜底属协议偏离需记录）；免费版 DO 配额数字；new_sqlite_classes 实际行为；cloudflare_pages_project 5.x 必填字段；Pages 自定义域绑定方式；DO 常驻 setInterval 与平台驱逐（手测 10 分钟空闲）；浏览器 subprotocol 数组兼容性；worker bundle 体积（zod ~50KB，上限 1MB）
+CF Workers 能否读 Sec-WebSocket-Protocol 头（读不到则 query 兜底属协议偏离需记录）；免费版 DO 配额数字；new_sqlite_classes 实际行为；DO 常驻 setInterval 与平台驱逐（手测 10 分钟空闲）；浏览器 subprotocol 数组兼容性；worker bundle 体积（zod ~50KB，上限 1MB）；Worker Static Assets run_worker_first + SPA fallback 路由优先级（实现时核实 `[assets]` 表与 run_worker_first 配置是否互斥/共存）；GitHub Actions 并发与超时（wrangler deploy + terraform apply 耗时）；Actions Secrets 与本地凭据漂移（CD 凭据失效时手动 deploy 需本地有同权限 token）。
 
 ## 相关
 

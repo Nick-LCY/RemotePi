@@ -4,6 +4,8 @@ status: done
 ---
 # 任务：worker + DO Room（路由 / 鉴权 / 广播 / 判死 / 错误码）
 
+> **2026-09-05 修订（部署形态改定，task 06 处理）**：网页合并进主域后，worker `GET /` 返 hello 让位给 web SPA（Worker Static Assets SPA fallback）；ops 探活挪到 `/healthz`（返 `ok`）。本任务原交付的「`GET /` 返回 hello」会被覆盖——task 06 在本任务产物基础上调整 `index.ts`，加 `run_worker_first` 路由 `/web` `/bridge` `/healthz` 与 `[assets]` 配置。本任务产物（Room DO / token 鉴权 / 转发 / 错误码 / 探活判死）不变。
+
 ## 目标
 按 [[prds/m2-tunnel.md|M2 PRD §3 worker + DO]] 实现 CF Worker 入口（路由 / token 提取 / DO stub）+ Room 类（握手鉴权 / 转发 / 广播 / 探活 / 错误码矩阵）。`wrangler.toml` name 改为 `remotepi-worker`、加 DO binding 与 sqlite migration；`@cloudflare/workers-types` ^4 → ^5。
 
