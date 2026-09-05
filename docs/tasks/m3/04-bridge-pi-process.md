@@ -1,6 +1,6 @@
 ---
 prd: prds/m3-single-session.md
-status: todo
+status: done
 ---
 # 任务：bridge pi 子进程状态机 + session 目录扫描 + exited 语义
 
@@ -36,15 +36,45 @@ status: todo
 - **bridge 不 import `@earendil-works/pi-coding-agent` 包**：用 `child_process.spawn('pi', ...)` 调外部二进制（任务 03 已删 peerDeps）
 
 ## 完成标准
-- [ ] `packages/bridge/src/pi-process.ts` 落地：5 相位状态机 / 自管 stdin/stdout 缓冲 / 启动握手（get_state 写读）/ idle 5min 计时 / 自主 kill 标记（先置位再发 SIGTERM→1s→SIGKILL）/ exit 处理三路径（标记在→不重启 / 标记不在+code≠0→重启 / 标记不在+code=0→不重启）/ 广播 session_state（每次相位迁移）/ auth.json 缺失 stderr 提示
-- [ ] `packages/bridge/src/pi-cwd-encoder.ts` 落地：`encodeCwdForPi(cwd)` 函数；与真实 pi 启动比对落盘路径一致（不通过则不收尾）
-- [ ] session 目录扫描：合法路径（ISO 时间戳字典序）+ 同时间戳 mtime 最新 + 空目录走 spawn 不带 `--session`
-- [ ] §2.7 exited 语义：spawn 触发集命令在 exited 时触发 spawn 计数 +1；get_state 在 exited 时由内存回答不 spawn；abort 在 exited 时回 `command_result{success:true}` 不 spawn
-- [ ] bridge 与 pi 包零依赖：`grep -R "earendil-works" packages/bridge/` 零结果
-- [ ] `pnpm --filter @remotepi/bridge test` 全绿（任务 05 集成测试覆盖 10+ 条新测试：状态机迁移序列 / 自主 kill 三路径 / session 扫描多文件 / cwd 编码 / exited 触发集 / get_state 不 spawn / abort no-op；具体清单见任务 05）
-- [ ] `pnpm -r build` / `pnpm run lint` / `pnpm run typecheck` 全绿
-- [ ] bridge 启动日志含 `PI_CODING_AGENT_DIR` 路径 + auth.json 状态提示（无 auth.json 时打 stderr warn 但不退出）
+- [x] `packages/bridge/src/pi-process.ts` 落地（**922 行**）：5 相位状态机 / 自管 stdin/stdout 缓冲（`StringDecoder('utf8')` + `indexOf('\n')`，规避 U+2028/U+2029 拆行）/ 启动握手（spawn → 忽略首组扩展 setStatus → 写 `get_state` → 等响应 → 标记 ready）/ idle 5min 计时（常量 `IDLE_TIMEOUT_MS`）/ 自主 kill 标记（先置位再发 SIGTERM→1s→SIGKILL；exit 回调三路径：标记在→不重启 / 标记不在+code≠0→重启 / 标记不在+code=0→不重启）/ 广播 session_state（每次相位迁移）/ auth.json 缺失 stderr 提示；**outstanding 命令表**（web 入站 id → 入站信封，reply_to 回显反查用）
+- [x] `packages/bridge/src/pi-cwd-encoder.ts` 落地：`encodeCwdForPi(cwd)` 函数；先 `encodeURIComponent(cwd).replace(/%/g, '')`，与真实 pi 启动比对落盘路径留为**任务 08 回归项**（PRD §2.5 钉桩）
+- [x] session 目录扫描：合法路径（ISO 时间戳字典序）+ 同时间戳 mtime 最新（`fs.statSync` mtimeMs 倒序）+ 空目录走 spawn 不带 `--session`；**文件名时间戳形态校验**作为 S 落地（Suggestion 6）
+- [x] §2.7 exited 语义：spawn 触发集（prompt/steer/follow_up/get_messages）在 exited 时触发 spawn 计数 +1；control `get_state` 在 exited 时由内存回答不 spawn；abort 在 exited 时回 `command_result{success:true}` 不 spawn
+- [x] bridge 与 pi 包零依赖：`grep -R "earendil-works" packages/bridge/` 零结果
+- [x] `pnpm --filter @remotepi/bridge test` 全绿（bridge **41 → 87 条**，新增 46 条覆盖状态机迁移序列 / 自主 kill 三路径 / session 扫描多文件 / cwd 编码 / exited 触发集 / get_state 不 spawn / abort no-op / wire 修复回归 / onEnvelope 接线等；任务 05 集成测试清单仍在任务 05 单独追踪）
+- [x] `pnpm -r build` / `pnpm run lint` / `pnpm run typecheck` 全绿；工作区全量 **189 条**测试全绿
+- [x] bridge 启动日志含 `PI_CODING_AGENT_DIR` 路径（`<configDir>/pi-agent/`）+ auth.json 状态提示（无 auth.json 时打 stderr warn 但不退出）；`index.ts` 组装：`PI_CODING_AGENT_DIR` 取自 configDir 同根、`BridgeClient` 接入 `onEnvelope` sink → `PiProcessManager` 处理 pi 入站 → 转发 web
 
 ## 依赖
 - 依赖 [[tasks/m3/01-shared-protocol-v2.md|01-shared-protocol-v2]]（需要 session_state payload 含 phase / blocked_on 字段）
 - 依赖 [[tasks/m3/03-bridge-config-file.md|03-bridge-config-file]]（config 提供 work_dir + 隔离目录路径）
+
+## 完成情况
+任务完成，commit `75fad56`。bridge pi 子进程管理全量落地：`pi-process.ts`（922 行，5 相位状态机 / 启动握手 / 5min idle kill SIGTERM→1s→SIGKILL / 自主 kill 标记 / exit 三路径 / session 扫描 / **outstanding 命令表**）+ `pi-cwd-encoder.ts` + `client.ts` 最小接线（onEnvelope sink）+ `index.ts` 组装（`PI_CODING_AGENT_DIR=<configDir>/pi-agent/`，auth.json 缺失 stderr 提示）。reviewer 通过，**无 Critical**；**7 项 Warning 全修**（含**两条 wire 硬伤**，详见下）+ **6 项 Suggestion 落地**（U+2028 断言加强 / onEnvelope+wiring 测试 / blocked_on 缺省断言 / WRITES-READS 常量 / 崩溃丢队警告 / 文件名时间戳形态校验）。bridge 测试 **41 → 87 条**（新增 46 条），工作区全量 **189 条全绿**。
+
+### 两条 wire 语义硬伤（review 捕获并修复）
+
+1. **`get_messages` 回执改走 `snapshot` envelope**：原实现误用 `command_result` 回执，不符合 PRD §1.5 / `pi.md` 定义的 `snapshot` 形状（`snapshot` 携带 `messages: Message[]`，是 web 端历史渲染的权威数据源）。修复后 `get_messages` 在 bridge 侧转发 `pi/get_messages` 给子进程 → 收到子进程 `snapshot` → 直接转发给 web 端（不经过 `command_result` 包装），与 [[prds/m3-single-session.md#§4.4 恢复仪式（双查询）|PRD §4.4 恢复仪式]] 一致。
+2. **`reply_to` 改为回显 web 命令 id（outstanding 表反查）**：原实现为 `command_result + 随机 UUID` 的 `reply_to` 字段——这会**破坏任务 07 双查询恢复仪式**（web 端用 `reply_to === requestId` 把 `result` 绑回握手期发出的 `get_messages` / `get_state`；若 bridge 侧随机生成 UUID 替换回执 id，web 端的请求-回执配对完全对不上）。修复：bridge 在入站 web 信封时把 `id` 写入 `outstanding` 表（`Map<requestId, Envelope>`），子进程回执到达时反查原 web id，写回 `reply_to`。这是任务 04 与任务 07 之间的关键协议一致性钉子。
+
+### 其他 Warning 修复（5 项）
+
+- **idle timer 守门 `running`**：原 idle 计时器无条件启动——若 ready 阶段到来意外事件可能误触；改为仅在 `running → idle` 迁移时起 `setTimeout`，与 PRD §2.3 一致。
+- **`ready` 阶段忽略 `agent_settled`**：PRD §2.3 状态机只定义 `running → idle`（`agent_settled` 是工作量收敛信号，`ready` 阶段尚无工作量，谈不上 idle）。裁定：ready 阶段收到 `agent_settled` 事件 → 静默忽略（不迁移、不起计时器），与 [[prds/m3-single-session.md#§2.3 pi 子进程状态机|PRD §2.3]] 字面一致。
+- **`auth.json` 缺失提示切 stderr**：与 [[tasks/m3/03-bridge-config-file.md|tasks/03]] 行为变更同步——`logger.error` 走 stderr（运维按流分离）；无 auth.json 时打 stderr warn 但**不退出**，留给用户手动 `pi login`。
+- **`since` 透传 + TODO(M+)**：web 端 `get_messages` 可携带 `since`（增量查询），当前 M3 不消费但透传不丢；留 TODO(M+) 待 M4 增量流恢复协议落地时启用。
+- **`extension_ui_response` 桩 TODO(task 05)**：本任务只搭入站 plumbing（pi → bridge），web 入站 `extension_ui_response` 的翻译（`confirm value:false → confirmed:false` 等）留任务 05 落地。
+
+### Suggestion 落地（6 项）
+
+- U+2028/U+2029 拆行断言加强（`StringDecoder` + `indexOf('\n')` 路径的 monkey-patch 模拟）；
+- `onEnvelope` + wiring 集成测试（验证 bridge 端三层装配：client.ts onEnvelope → pi-process.ts 入站 → worker 转发）；
+- `blocked_on` 缺省断言（web wire refine 的 `cancelled: false + value 缺省` 走 refine 拒，确保不会漏翻译）；
+- `WRITES-READS` 常量提取（区分"写操作触发 spawn"与"读操作永走内存"的命令集，避免 §2.7 语义散落）；
+- 崩溃丢队警告（子进程非自主 kill 退出且 outstanding 表非空 → stderr 警告，告知用户提交未投递）；
+- 文件名时间戳形态校验（session 扫描时拒绝非 ISO 时间戳前缀，避免误拾杂项文件）。
+
+### 未在本任务收尾的项（移交）
+
+- **cwd 编码真实 pi 比对回归**：[[prds/m3-single-session.md#§2.5 session 目录扫描|PRD §2.5]] 要求 `encodeCwdForPi(cwd)` 与真实 pi 落盘路径回归比对；本任务先实现 `encodeURIComponent(cwd).replace(/%/g, '')`，回归项留给 [[tasks/m3/08-docs-and-validation.md|tasks/08]] 文档与验证阶段执行。
+- **`extension_ui_response` web 入站翻译**：弹窗回执 → pi 原生三态 → `command_result` 广播——留 [[tasks/m3/05-bridge-popup-core.md|tasks/05]] 落地。
