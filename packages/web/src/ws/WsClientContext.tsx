@@ -11,16 +11,21 @@
 //     helper returns `useSyncExternalStore(subscribe, () => selector(client))`,
 //     so each component only re-renders when its slice changes identity.
 
-import { useContext, useSyncExternalStore, type ReactNode } from 'react';
+import { useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import { createContext } from 'react';
+import type { BlockedOnEntryPayload, SessionPhase } from '@remotepi/shared';
 
 import {
   WsClient,
   type BridgeStatusInfo,
+  type CommandErrorHandler,
+  type CommandErrorNotice,
   type ConnState,
+  type DialogExpiredHandler,
+  type DialogExpiredNotice,
   type EnvelopeHandler,
-  type LogEntry,
-  type PingHistoryEntry,
+  type QueueState,
+  type StreamingDraft,
 } from './WsClient.js';
 
 const WsClientContext = createContext<WsClient | null>(null);
@@ -50,10 +55,7 @@ export function useWsClient(): WsClient {
  */
 export function useWsState<T>(selector: (client: WsClient) => T): T {
   const client = useWsClient();
-  return useSyncExternalStore(
-    client.subscribe,
-    () => selector(client),
-  );
+  return useSyncExternalStore(client.subscribe, () => selector(client));
 }
 
 // ---- Convenience hooks -----------------------------------------------------
@@ -69,14 +71,78 @@ export function useBridgeStatus(): BridgeStatusInfo | null {
   return useWsState((c) => c.bridgeStatus);
 }
 
-export function useBroadcastLog(): readonly LogEntry[] {
-  return useWsState((c) => c.logs);
+/** Pi subprocess lifecycle phase. `null` until the first `session_state`
+ *  or `get_state` reply arrives — PhaseIndicator renders a placeholder
+ *  while null (M3 PRD §4.3). */
+export function useSessionPhase(): SessionPhase | null {
+  return useWsState((c) => c.sessionPhase);
 }
 
-export function usePingHistory(): readonly PingHistoryEntry[] {
-  return useWsState((c) => c.pingHistory);
+/** Pending extension UI requests (dialog queue). Each element is a
+ *  full `BlockedOnEntryPayload` discriminated union — dialog components
+ *  switch on `entry.method` to pick the matching renderer. The
+ *  component re-renders only when the array's identity changes
+ *  (WsClient emits a fresh array on every `session_state` broadcast). */
+export function useBlockedOn(): readonly BlockedOnEntryPayload[] {
+  return useWsState((c) => c.blockedOn);
+}
+
+/** Steering / follow-up queue snapshot. */
+export function useQueue(): QueueState {
+  return useWsState((c) => c.queue);
+}
+
+/** Streaming draft — accumulates text_delta events. `null` when no
+ *  draft is in flight. */
+export function useStreamingDraft(): StreamingDraft | null {
+  return useWsState((c) => c.streamingDraft);
+}
+
+/** Authoritative message list (history). */
+export function useMessages(): readonly unknown[] {
+  return useWsState((c) => c.messages);
+}
+
+/** Subscribe to dialog-expired notices (command_result with
+ *  error.code === 'request_expired'). Used by DialogHost to map late
+ *  submissions back to the originating dialog. The hook attaches the
+ *  listener for the lifetime of the calling component; callers
+ *  typically pass an inline handler that filters on `replyTo` to
+ *  locate the right dialog. */
+export function useDialogExpiredSubscription(handler: DialogExpiredHandler): void {
+  const client = useWsClient();
+  useEffect(() => {
+    const unsub = client.onDialogExpired(handler);
+    return unsub;
+    // handler is intentionally not in the dep array — handlers are
+    // typically defined inline by callers; re-subscribing every
+    // render would multiply notifications. Callers that need a
+    // fresh handler can wrap in useCallback.
+  }, [client]);
+}
+
+/** Subscribe to ordinary-command error notices (PRD §4.5 — prompt /
+ *  steer / follow_up with `command_result{success:false}`). Used by
+ *  the InputBar to surface the temporary error banner. The hook only
+ *  fires for failures whose `reply_to` matches a prompt / steer /
+ *  follow_up envelope id THIS tab issued — failures with foreign
+ *  reply_to are silently dropped at the WsClient layer. */
+export function useCommandErrorSubscription(handler: CommandErrorHandler): void {
+  const client = useWsClient();
+  useEffect(() => {
+    const unsub = client.onCommandError(handler);
+    return unsub;
+    // Same rationale as useDialogExpiredSubscription — handler is
+    // intentionally omitted from the dep array.
+  }, [client]);
 }
 
 // Re-exported for components that want to bind `client.on(type, handler)`
 // inside their own useEffect (rather than going through `useWsState`).
-export type { EnvelopeHandler };
+export type {
+  EnvelopeHandler,
+  DialogExpiredHandler,
+  DialogExpiredNotice,
+  CommandErrorHandler,
+  CommandErrorNotice,
+};

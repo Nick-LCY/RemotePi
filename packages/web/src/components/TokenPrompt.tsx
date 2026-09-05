@@ -32,8 +32,8 @@ export function TokenPrompt() {
     <section className="card token-prompt" aria-labelledby="token-prompt-title">
       <h2 id="token-prompt-title">Connect to your bridge</h2>
       <p>
-        Paste the access token printed by your bridge. The token lives in the
-        URL fragment so it never reaches the server in a request body.
+        Paste the access token printed by your bridge. The token lives in the URL fragment so it
+        never reaches the server in a request body.
       </p>
       <form onSubmit={onSubmit}>
         <label htmlFor="token-input">Access token</label>

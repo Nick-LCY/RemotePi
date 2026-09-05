@@ -40,9 +40,7 @@ export function StatusBar() {
           <span>Awaiting first bridge_status broadcast…</span>
         )}
       </div>
-      <p className="status-warning">
-        此 URL 含访问令牌，请勿外传
-      </p>
+      <p className="status-warning">此 URL 含访问令牌，请勿外传</p>
     </header>
   );
 }

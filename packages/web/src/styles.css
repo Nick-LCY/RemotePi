@@ -1,7 +1,6 @@
 /* RemotePi web — minimal native CSS. No UI library; only what the four
    components need to look like an integrated page rather than a dev console.
-   Layout is a single column on narrow viewports; the broadcast log scrolls
-   horizontally inside its card on overflow. */
+   Layout is a single column on narrow viewports. */
 
 :root {
   color-scheme: light dark;
@@ -19,7 +18,12 @@
   --state-offline: #c0392b;
   --state-connecting: #6b6b76;
 
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -214,13 +218,444 @@ td code {
   max-width: 100%;
 }
 
-/* Allow the broadcast log payload cell to wrap nicely — payloads can be
-   quite long JSON blobs. */
-.broadcast-log td:last-child {
-  max-width: 360px;
+/* ---- PhaseIndicator ---------------------------------------------------- */
+
+.phase-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.9rem;
 }
 
-.ping-history td:nth-child(2) {
+.phase-indicator .phase-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  color: white;
+  background: var(--state-connecting);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.phase-indicator .phase-spawning {
+  background: var(--state-connecting);
+}
+
+.phase-indicator .phase-ready {
+  background: var(--accent);
+}
+
+.phase-indicator .phase-running {
+  background: #e69138;
+}
+
+.phase-indicator .phase-idle {
+  background: var(--state-online);
+}
+
+.phase-indicator .phase-exited {
+  background: var(--state-offline);
+}
+
+.phase-indicator .phase-unknown {
+  background: var(--muted);
+}
+
+.phase-indicator .phase-hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* ---- ChatView / MessageList ------------------------------------------- */
+
+.chat-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.message-list {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.message-list-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.message-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  background: var(--surface-2);
+}
+
+.message-row.message-draft {
+  border-style: dashed;
+  opacity: 0.85;
+}
+
+.message-role {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+
+.message-role-user {
+  border-color: var(--accent);
+}
+
+.message-role-assistant {
+  border-color: var(--state-online);
+}
+
+.message-body {
+  font-size: 0.92rem;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* ---- QueueIndicator --------------------------------------------------- */
+
+.queue-indicator {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.queue-pill {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+}
+
+.queue-pill strong {
+  color: var(--text);
   font-variant-numeric: tabular-nums;
+  margin-left: 0.2rem;
+}
+
+/* ---- InputBar --------------------------------------------------------- */
+
+.input-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  flex-wrap: wrap;
+}
+
+.input-bar-field {
+  flex: 1 1 12rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.input-bar-field:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.input-bar-field:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.input-bar .abort-button {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.input-bar .abort-button.abort-live {
+  background: var(--state-offline);
+  border-color: var(--state-offline);
+  color: white;
+}
+
+.input-bar-hint {
+  flex-basis: 100%;
+  margin: 0.2rem 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+/* PRD §4.5 ordinary-command failure banner — temporary toast that
+   the InputBar auto-hides after 5s. Lives below the Send/Abort row
+   and shares the full-width row layout with `.input-bar-hint` so
+   both messages stack cleanly when they're visible at the same
+   time. Colour mirrors `.dialog-error` so the operator learns one
+   "red = something failed" signal across both surfaces. */
+.input-bar-error {
+  flex-basis: 100%;
+  margin: 0.2rem 0 0;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.82rem;
+  color: var(--state-offline);
+  background: rgba(192, 57, 43, 0.08);
+  border-radius: 6px;
+}
+
+/* ---- DialogHost ------------------------------------------------------- */
+
+.dialog-host {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 2rem;
+  z-index: 100;
+}
+
+.dialog-host > .dialog {
+  pointer-events: auto;
+}
+
+/* W3 timeout toast — global sibling of the dialog stack so it
+   remains visible even after the originating dialog unmounts
+   (the local-timer path can't layer an inline banner — see
+   DialogHost.tsx doc-comment for the race that motivates this).
+   Coloured like `.dialog-error` / `.input-bar-error` so the
+   operator learns one "red = something failed" signal across
+   all surfaces. */
+.dialog-host-toast {
+  pointer-events: none;
+  align-self: flex-end;
+  margin: 0.5rem;
+  padding: 0.55rem 0.85rem;
+  background: var(--surface);
+  color: var(--state-offline);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+  font-size: 0.88rem;
+  max-width: min(360px, 80vw);
+}
+
+/* ---- Dialogs (generic) ---------------------------------------------- */
+
+.dialog {
+  width: min(420px, 92vw);
+  margin: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  color: var(--text);
+}
+
+.dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 0.95rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: 1rem;
+  flex: 1 1 auto;
+}
+
+.dialog-countdown {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+  min-width: 7.5rem;
+}
+
+.dialog-countdown-label {
+  font-size: 0.7rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.dialog-countdown-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.dialog-countdown-bar {
+  height: 4px;
+  width: 100%;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.dialog-countdown-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s linear;
+}
+
+.dialog-error {
+  margin: 0;
+  padding: 0.5rem 0.95rem;
+  background: rgba(192, 57, 43, 0.12);
+  color: var(--state-offline);
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.dialog-body {
+  padding: 0.85rem 0.95rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.dialog-button {
+  font: inherit;
+  padding: 0.4rem 0.85rem;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+}
+
+.dialog-button:disabled {
+  background: var(--accent-disabled);
+  border-color: var(--accent-disabled);
+  cursor: not-allowed;
+}
+
+.dialog-button-cancel {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.dialog-button-decline {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+/* ---- SelectDialog ---------------------------------------------------- */
+
+.dialog-select-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.dialog-select-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.dialog-select-option:has(input:checked) {
+  border-color: var(--accent);
+  background: rgba(44, 92, 255, 0.08);
+}
+
+/* ---- ConfirmDialog --------------------------------------------------- */
+
+.dialog-confirm-message {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+/* ---- InputDialog ----------------------------------------------------- */
+
+.dialog-input-field {
+  font: inherit;
+  font-size: 0.95rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.dialog-input-field:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---- EditorDialog ---------------------------------------------------- */
+
+.dialog-editor-field {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  min-height: 9rem;
+  resize: vertical;
+}
+
+.dialog-editor-field:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Accessibility helper — keep legend visible to AT but invisible to
+   sighted users so the fieldset doesn't add visual noise. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
   white-space: nowrap;
+  border: 0;
 }

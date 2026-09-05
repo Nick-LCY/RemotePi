@@ -13,6 +13,13 @@
 //   - On pong: clear the matching timer, compute RTT, reset failure counter.
 //     Three consecutive timeouts in a row → close + reconnect.
 //   - On bridge_status: surface `online` / `changed_at` / `reason` to the UI.
+//   - On pi/event: route to the chat-state machine (message_update /
+//     message_end / agent_settled / extension_ui_request / queue_update).
+//   - On session_state: update sessionPhase + blockedOn (M3 PRD §4.1).
+//   - On snapshot: replace the message list (get_messages reply).
+//   - On command_result{success:false}: route failure paths.
+//       * error.code === 'request_expired' → dialogs (existing `onDialogExpired`).
+//       * any failure → InputBar (`onCommandError`) for the non-dialog PRD §4.5 UX.
 //   - On invalid envelope: console.warn and discard (web is read-only on
 //     the error channel — we never emit `error` frames outbound).
 //   - On close / error: state machine drops to `offline`, and unless the
@@ -25,9 +32,17 @@
 import {
   Envelope,
   PROTOCOL_VERSION,
+  type AbortPayload,
+  type BlockedOnEntryPayload,
   type Envelope as EnvelopeType,
+  type ExtensionUIResponsePayload,
+  type FollowUpPayload,
+  type GetMessagesPayload,
   type PingPayload,
   type PongPayload,
+  type PromptPayload,
+  type SessionPhase,
+  type SteerPayload,
 } from '@remotepi/shared';
 
 // ---------------------------------------------------------------------------
@@ -47,22 +62,85 @@ export interface BridgeStatusInfo {
   receivedAt: number;
 }
 
-/** One row in BroadcastLog — every successfully parsed inbound envelope. */
-export interface LogEntry {
-  receivedAt: number;
-  envelope: EnvelopeType;
-}
-
-/** One ping's outcome — surfaced by PingTester. `rttMs === null` ⇒ timed out. */
-export interface PingHistoryEntry {
-  nonce: string;
-  sentAt: number;
-  /** Round-trip in milliseconds; `null` if no matching pong arrived in time. */
-  rttMs: number | null;
-}
-
 /** Handler signature for type-scoped subscriptions (`ws.on('pong', …)`). */
 export type EnvelopeHandler = (envelope: EnvelopeType) => void;
+
+// ---------------------------------------------------------------------------
+// Chat-state types (M3 PRD §4.1 WebState)
+// ---------------------------------------------------------------------------
+
+/** A pi message in its native shape. The shared package does not pin
+ *  per-message schemas (`SnapshotPayloadSchema.messages` is
+ *  `z.array(z.unknown())`) — web treats each entry as opaque JSON. We
+ *  expose it as `unknown` so callers narrow with their own helpers if
+ *  they need to introspect (e.g. extract a text preview). */
+export type AgentMessage = unknown;
+
+/** A streaming draft message — accumulates text_delta events. `text` is
+ *  built up locally from consecutive `message_update` payloads carrying
+ *  a text delta; `messageId` is the pi-native id (carried in
+ *  `data.messageId`) so we can correlate a later `message_end` (which
+ *  carries the authoritative full message). The PRD §4.3 wording
+ *  requires `message_end` to overwrite / append — using `messageId`
+ *  lets us clear the draft when the matching end arrives, even if
+ *  another message's deltas interleaved. */
+export interface StreamingDraft {
+  messageId?: string;
+  role?: string;
+  text: string;
+}
+
+/** Steering / follow_up queue snapshot. Both arrays contain the raw
+ *  `content` strings the web submitted (so the UI could surface a
+ *  preview). `pi/event` with `event: 'queue_update'` updates this in
+ *  place; the bridge forwards the array unchanged from pi's native
+ *  shape. */
+export interface QueueState {
+  steering: string[];
+  followUp: string[];
+}
+
+/** Broadcast payload for a `command_result{success:false, error.code ===
+ *  'request_expired'}`. The chat UI uses this to surface the error to
+ *  a dialog (via `reply_to` matching against the dialog's outbound id).
+ *  Other failure shapes are intentionally not broadcast — the dialog
+ *  auto-closes via the `blocked_on` drop path on the next
+ *  `session_state` broadcast (PRD §4.2 关闭规则 + §4.5). */
+export interface DialogExpiredNotice {
+  /** The web envelope id the dialog used to send its response — web
+   *  uses this to find the right dialog. */
+  replyTo: string;
+  /** The original `request_id` (pi-side UUID) — web also uses this to
+   *  locate the dialog even if the outbound envelope id is no longer
+   *  in the dialog's memory. */
+  requestId: string;
+}
+
+/** Subscription callback for dialog-expired notices. Registered alongside
+ *  the regular `on()` type listener so dialog components don't need to
+ *  re-parse the envelope. */
+export type DialogExpiredHandler = (notice: DialogExpiredNotice) => void;
+
+/** Broadcast payload for any non-dialog `command_result{success:false}`
+ *  (PRD §4.5 — ordinary commands: prompt / steer / follow_up). The
+ *  InputBar shows a temporary error banner ("pi 已不再处理该请求，
+ *  可能是 idle 超时 kill") and does not retry. The handler is fired
+ *  only when the inbound envelope's `reply_to` matches a prompt /
+ *  steer / follow_up envelope id the web issued — so a stray failure
+ *  for someone else's outbound id is silently dropped. */
+export interface CommandErrorNotice {
+  /** The web envelope id that the failing command was issued with. */
+  replyTo: string;
+  /** Bridge-translated error code (string; bridge always sets one). */
+  code: string;
+  /** Human-readable bridge-side error message. */
+  message: string;
+}
+
+/** Subscription callback for ordinary-command errors. Same shape as
+ *  `DialogExpiredHandler` but distinct so a component that wants only
+ *  one of the two notifications doesn't accidentally subscribe to both. */
+export type CommandErrorHandler = (notice: CommandErrorNotice) => void;
 
 // ---------------------------------------------------------------------------
 // Constants — pulled out for readability and to make the protocol contract
@@ -87,10 +165,12 @@ const RECONNECT_CAP_MS = 30_000;
 /** ±20% jitter matches the bridge client (PRD §2 / §6). */
 const RECONNECT_JITTER_RATIO = 0.2;
 
-/** Inbound log buffer cap — per the spec. */
-const LOG_CAP = 200;
-/** PingTester history cap — small ring buffer, newest first. */
-const PING_HISTORY_CAP = 20;
+/** Messages + blocked-on array caps — keep memory bounded across long
+ *  sessions. The PRD does not specify caps; 1k messages covers a long
+ *  coding session and stays well under browser memory pressure. */
+const MESSAGES_CAP = 1_000;
+/** Queue cap — practical upper bound on outstanding user submissions. */
+const QUEUE_CAP = 200;
 
 // ---------------------------------------------------------------------------
 // WsClient — plain class, no React dependency
@@ -105,8 +185,13 @@ export class WsClient {
   // Connection machine state -------------------------------------------------
   private _connState: ConnState = 'offline';
   private _bridgeStatus: BridgeStatusInfo | null = null;
-  private _logs: LogEntry[] = [];
-  private _pingHistory: PingHistoryEntry[] = [];
+
+  // Chat-state (M3 PRD §4.1) -------------------------------------------------
+  private _messages: AgentMessage[] = [];
+  private _streamingDraft: StreamingDraft | null = null;
+  private _queue: QueueState = { steering: [], followUp: [] };
+  private _sessionPhase: SessionPhase | null = null;
+  private _blockedOn: BlockedOnEntryPayload[] = [];
 
   // Heartbeat bookkeeping ----------------------------------------------------
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -128,6 +213,24 @@ export class WsClient {
   private stateListeners = new Set<() => void>();
   /** Type-scoped envelope listeners (`ws.on('pong', handler)`). */
   private typeListeners = new Map<EnvelopeType['type'], Set<EnvelopeHandler>>();
+  /** Dialog-expired listeners — only fired on
+   *  `command_result{success:false, error.code === 'request_expired'}`. */
+  private dialogExpiredListeners = new Set<DialogExpiredHandler>();
+  /** Ordinary-command error listeners — fired on any
+   *  `command_result{success:false, reply_to ∈ our prompt/steer/follow_up
+   *  outbound ids}` (PRD §4.5). */
+  private commandErrorListeners = new Set<CommandErrorHandler>();
+  /** Outbound envelope ids issued by `sendPrompt` / `sendSteer` /
+   *  `sendFollowUp` — kept (small ring) so we can match a later
+   *  `command_result{success:false}` by `reply_to` and decide whether
+   *  to fire `onCommandError`. The map also lets dialog-expired
+   *  matching share the same outbound-id knowledge (dialogs use
+   *  `sendExtensionUIResponse`, which uses a different path). */
+  private outboundCommandIds = new Set<string>();
+  /** Cap on the outbound-id ring so a long-lived session doesn't grow
+   *  unbounded (each id is ~36 chars). 200 mirrors QUEUE_CAP — the
+   *  queue's practical upper bound on outstanding user submissions. */
+  private readonly OUTBOUND_IDS_CAP = QUEUE_CAP;
 
   constructor(url: string) {
     this.url = url;
@@ -143,12 +246,28 @@ export class WsClient {
     return this._bridgeStatus;
   }
 
-  get logs(): readonly LogEntry[] {
-    return this._logs;
+  get messages(): readonly AgentMessage[] {
+    return this._messages;
   }
 
-  get pingHistory(): readonly PingHistoryEntry[] {
-    return this._pingHistory;
+  get streamingDraft(): StreamingDraft | null {
+    return this._streamingDraft;
+  }
+
+  get queue(): QueueState {
+    return this._queue;
+  }
+
+  /** Current pi subprocess phase. `null` until the first
+   *  `session_state` frame arrives (or the recovery ceremony's
+   *  `get_state` reply). The PhaseIndicator renders a placeholder
+   *  while this is null. */
+  get sessionPhase(): SessionPhase | null {
+    return this._sessionPhase;
+  }
+
+  get blockedOn(): readonly BlockedOnEntryPayload[] {
+    return this._blockedOn;
   }
 
   // ---- Subscriptions -------------------------------------------------------
@@ -168,10 +287,6 @@ export class WsClient {
   /**
    * Subscribe to a specific envelope type. The handler is called once per
    * inbound frame whose `type` matches. Returns an unsubscribe function.
-   *
-   * Inbound envelopes are also always appended to `logs` regardless of
-   * whether anyone is subscribed — `BroadcastLog` reads the log buffer
-   * rather than registering a per-type handler.
    */
   on(type: EnvelopeType['type'], handler: EnvelopeHandler): () => void {
     let set = this.typeListeners.get(type);
@@ -182,6 +297,35 @@ export class WsClient {
     set.add(handler);
     return () => {
       set?.delete(handler);
+    };
+  }
+
+  /**
+   * Subscribe to dialog-expired notices (command_result with
+   * `error.code === 'request_expired'`). Returns an unsubscribe
+   * function. Registered separately from `on()` so dialog components
+   * don't have to re-parse the envelope shape — they just receive a
+   * `{replyTo, requestId}` payload.
+   */
+  onDialogExpired(handler: DialogExpiredHandler): () => void {
+    this.dialogExpiredListeners.add(handler);
+    return () => {
+      this.dialogExpiredListeners.delete(handler);
+    };
+  }
+
+  /**
+   * Subscribe to ordinary-command error notices (PRD §4.5 — prompt /
+   * steer / follow_up that fail with `command_result{success:false}`).
+   * Fires only when the inbound envelope's `reply_to` matches a
+   * prompt / steer / follow_up envelope id the web issued (so a
+   * failure with a foreign `reply_to` is silently dropped). Returns an
+   * unsubscribe function.
+   */
+  onCommandError(handler: CommandErrorHandler): () => void {
+    this.commandErrorListeners.add(handler);
+    return () => {
+      this.commandErrorListeners.delete(handler);
     };
   }
 
@@ -211,6 +355,24 @@ export class WsClient {
     }
   }
 
+  /** Reset chat state — used on disconnect/reconnect and on recovery
+   *  retry so a stale snapshot from a previous session doesn't bleed
+   *  into the new one. Bridge status is preserved — only the M3
+   *  chat fields + the outbound-id ring are wiped. The outbound ring
+   *  must be cleared so a late `command_result{success:false}` from
+   *  the previous session can't trigger a phantom error banner on
+   *  the new session (PRD §4.5: only failures for the current
+   *  session should surface). */
+  resetChatState(): void {
+    this._messages = [];
+    this._streamingDraft = null;
+    this._queue = { steering: [], followUp: [] };
+    this._sessionPhase = null;
+    this._blockedOn = [];
+    this.outboundCommandIds.clear();
+    this.emitStateChange();
+  }
+
   // ---- Outbound ------------------------------------------------------------
 
   /**
@@ -222,18 +384,45 @@ export class WsClient {
     this.sendRaw(envelope);
   }
 
-  /**
-   * Convenience for the PingTester button: build and send a control/ping,
-   * arm the 30s pong deadline, and record the entry in `pingHistory` so
-   * the component can render the RTT (or "timed out") when pong arrives.
-   *
-   * Returns the generated nonce so the UI can render it before the round
-   * trip completes.
-   */
-  sendManualPing(): string {
-    const nonce = this.makeNonce();
-    this.armPing(nonce);
-    return nonce;
+  /** Send `pi/prompt` — used by the InputBar. */
+  sendPrompt(content: string): string {
+    return this.sendPiCommand<PromptPayload>('prompt', { content }, 'prompt');
+  }
+
+  /** Send `pi/steer` — mid-run insert. */
+  sendSteer(content: string): string {
+    return this.sendPiCommand<SteerPayload>('steer', { content }, 'steer');
+  }
+
+  /** Send `pi/follow_up` — queued message. */
+  sendFollowUp(content: string): string {
+    return this.sendPiCommand<FollowUpPayload>('follow_up', { content }, 'follow_up');
+  }
+
+  /** Send `pi/abort` — empty payload. No-op when phase === 'exited'
+   *  on the bridge side (it still answers command_result{success:true}).
+   *  Web UI still sends — bridge handles the no-op. */
+  sendAbort(): string {
+    return this.sendPiCommand<AbortPayload>('abort', {}, null);
+  }
+
+  /** Send `pi/get_messages` — optional `since` cursor. */
+  sendGetMessages(since?: string): string {
+    return this.sendPiCommand<GetMessagesPayload>(
+      'get_messages',
+      since !== undefined ? { since } : {},
+      null,
+    );
+  }
+
+  /** Send `pi/extension_ui_response` — dialog acknowledgement. The
+   *  `cancelled`/`value` shape mirrors the web wire contract defined
+   *  in shared `ExtensionUIResponsePayloadSchema`. Returns the
+   *  generated envelope id so the dialog component can match it
+   *  against a later `command_result{success:false, error.code ===
+   *  'request_expired'}` for the late-submission path. */
+  sendExtensionUIResponse(payload: ExtensionUIResponsePayload): string {
+    return this.sendPiCommand<ExtensionUIResponsePayload>('extension_ui_response', payload, null);
   }
 
   // ---- Internals: socket lifecycle ----------------------------------------
@@ -308,9 +497,9 @@ export class WsClient {
       return;
     }
     const envelope = parsed.data;
-    this.appendLog(envelope);
     this.dispatchTypeListeners(envelope);
     this.handleControlFrame(envelope);
+    this.handlePiFrame(envelope);
   };
 
   private dispatchTypeListeners(envelope: EnvelopeType): void {
@@ -326,7 +515,10 @@ export class WsClient {
     }
   }
 
+  // ---- Internals: control-family routing ----------------------------------
+
   private handleControlFrame(envelope: EnvelopeType): void {
+    if (envelope.kind !== 'control') return;
     switch (envelope.type) {
       case 'ping': {
         // Server-initiated liveness probe — reply with pong carrying the
@@ -355,11 +547,178 @@ export class WsClient {
         });
         break;
       }
+      case 'session_state': {
+        // M3 PRD §4.1 / §1.2: session_state is the authoritative source
+        // for phase + blocked_on. `blocked_on` absence = empty array
+        // (envelope evolution rule (a)). We replace the local arrays
+        // wholesale — the dialog auto-close rule (PRD §4.2 关闭规则)
+        // is implemented by the dialog components observing this
+        // array via useEffect and detecting their id dropping out.
+        this.setSessionPhase(envelope.payload.phase);
+        this.setBlockedOn(envelope.payload.blocked_on ?? []);
+        break;
+      }
       case 'handshake':
+      case 'session_list':
+      case 'get_state':
+      case 'result':
       case 'error':
-        // Server-to-client frames we don't act on: the worker never sends
-        // us handshakes (we are the initiator), and web is read-only on the
-        // error channel. Both still show up in BroadcastLog via appendLog().
+        // Server-to-client frames we don't act on centrally: handshakes
+        // (worker doesn't send us), session_list / get_state / result
+        // are handled by their subscribers (recovery.ts will subscribe
+        // in task 07), error is read-only on web (logged via the type
+        // listener if anyone cares).
+        break;
+    }
+  }
+
+  // ---- Internals: pi-family routing ---------------------------------------
+
+  private handlePiFrame(envelope: EnvelopeType): void {
+    if (envelope.kind !== 'pi') return;
+    switch (envelope.type) {
+      case 'snapshot': {
+        // get_messages reply — replace the message list wholesale. Per
+        // PRD §4.3, `snapshot.messages` is the authoritative history.
+        // Element shape is opaque (shared treats it as unknown[]) so we
+        // pass the array verbatim — `setMessages` accepts readonly
+        // unknown[] elements and the AgentMessage alias is purely a
+        // documentation hint.
+        this.setMessages(envelope.payload.messages);
+        // A snapshot often arrives at the end of a turn — clear any
+        // leftover streaming draft so the UI doesn't show stale text.
+        this.setStreamingDraft(null);
+        break;
+      }
+      case 'event': {
+        this.handlePiEvent(envelope.payload.event, envelope.payload.data);
+        break;
+      }
+      case 'command_result': {
+        // Failure paths (PRD §4.5):
+        //   - request_expired → dialog subscribers (late dialog submission;
+        //     dialog matches by its outbound id).
+        //   - any other failure with reply_to matching a tracked prompt /
+        //     steer / follow_up outbound id → `onCommandError` so the
+        //     InputBar can show the temporary error banner.
+        // A failure with reply_to that matches neither path (e.g. an
+        // unrelated response observed by another tab) is silently dropped.
+        if (!envelope.payload.success) {
+          const err = envelope.payload.error;
+          const replyTo = envelope.reply_to ?? '';
+          if (err?.code === 'request_expired') {
+            // See note in DialogExpiredNotice.requestId — web has no
+            // way to recover the original pi request_id from the reply,
+            // so dialog subscribers match by replyTo alone.
+            this.notifyDialogExpired({ replyTo, requestId: '' });
+          } else if (replyTo.length > 0 && this.outboundCommandIds.has(replyTo)) {
+            this.outboundCommandIds.delete(replyTo);
+            this.notifyCommandError({
+              replyTo,
+              code: err?.code ?? 'unknown',
+              message: err?.message ?? 'command failed',
+            });
+          }
+        }
+        break;
+      }
+      case 'prompt':
+      case 'steer':
+      case 'follow_up':
+      case 'abort':
+      case 'get_messages':
+      case 'extension_ui_response':
+        // Commands are web → bridge; the bridge never echoes them back.
+        // Anything matching here is unexpected — drop quietly.
+        break;
+    }
+  }
+
+  /** Dispatch a `pi/event` payload by `event` name. Per PRD §4.3 the
+   *  web routes by event name; the data shape is intentionally open
+   *  (envelope evolution rule (c)) so we extract defensively and
+   *  tolerate missing fields by treating them as no-ops. */
+  private handlePiEvent(event: string, data: unknown): void {
+    switch (event) {
+      case 'message_update': {
+        // Streaming delta. pi-native shape is roughly
+        // `{ messageId, content: [{type:'text', text:'…'}, …], … }`
+        // but the exact field names have shifted across pi versions,
+        // so we hunt for text in a few common spots:
+        //   - data.text_delta (PRD §4.3 wording)
+        //   - data.delta
+        //   - data.content (treated as already-rendered text)
+        //   - data.text
+        // If we find something, append it to the streaming draft;
+        // otherwise leave the draft untouched (the next message_end
+        // will reset it via the messageId matching path).
+        const delta = extractTextDelta(data);
+        if (delta === null) return;
+        this.appendStreamingDraft(data, delta);
+        break;
+      }
+      case 'message_end': {
+        // Authoritative full message — clear the draft and append (or
+        // replace) the message in the list. We DO try to deduplicate by
+        // messageId (S2 review): if the bridge re-delivers a message_end
+        // for an id we already have, slice-and-replace in place so the
+        // UI doesn't see two rows for the same logical message.
+        const message = extractMessageEndMessage(data);
+        if (message === undefined) return;
+        const id = extractMessageId(data);
+        this.upsertMessage(message, id);
+        if (id !== undefined) {
+          this.clearStreamingDraft(id);
+        } else {
+          this.setStreamingDraft(null);
+        }
+        break;
+      }
+      case 'agent_settled': {
+        // Per PRD §4.3, the UI shows the input-available hint after
+        // agent_settled. The actual gating lives in the InputBar
+        // (which reads sessionPhase). The session_state broadcast
+        // eventually transitions running → idle on its own; this
+        // event is the EARLIER signal that the agent has finished
+        // its current turn and the input is safe to enable. We don't
+        // mutate any state here — components that care about this
+        // event can subscribe via `on('event', …)` and switch on
+        // the event name. (The InputBar wires this in ChatView.)
+        break;
+      }
+      case 'queue_update': {
+        // PRD §4.3: queue_update carries the current steering +
+        // followUp arrays. Shape is `{ steering: string[],
+        // followUp: string[] }`. Defensive extraction — unknown
+        // shape falls back to clearing the queue.
+        const next = extractQueueUpdate(data);
+        if (next !== null) {
+          this.setQueue(next);
+        }
+        break;
+      }
+      case 'extension_ui_request':
+        // We rely on session_state.blocked_on (the bridge's source
+        // of truth) for the dialog list. The original
+        // extension_ui_request forward is informational only — it
+        // doesn't drive any state mutation in the web client. Dialog
+        // components read blockedOn and ignore the event envelope.
+        break;
+      case 'message_start':
+      case 'turn_start':
+      case 'turn_end':
+      case 'agent_start':
+      case 'agent_end':
+      case 'tool_execution_start':
+      case 'tool_execution_update':
+      case 'tool_execution_end':
+      case 'entry_appended':
+      case 'ui_prompt_start':
+      case 'ui_prompt_end':
+      default:
+        // Open set — unknown events are ignored. PRD §4.3 + envelope
+        // evolution rule (c): web does not pin event names beyond
+        // the rendering-relevant ones above.
         break;
     }
   }
@@ -427,10 +786,10 @@ export class WsClient {
   }
 
   /**
-   * Send a ping with the given nonce and arm the 30s pong deadline. Shared
-   * by the auto-heartbeat (`startHeartbeat`) and `sendManualPing` so both
-   * pings count toward the same `consecutiveFailures` counter — the spec's
-   * "3 次无 pong" is a connection-liveness signal, not a path-specific one.
+   * Send a ping with the given nonce and arm the 30s pong deadline. The
+   * spec's "3 次无 pong" is a connection-liveness signal, so every
+   * outbound ping counts toward the same `consecutiveFailures` counter
+   * regardless of its source.
    *
    * Per-ping semantics: each call gets its OWN independent 30s window in
    * `pendingPings` (keyed by nonce). Multiple pings can be in flight at
@@ -455,10 +814,6 @@ export class WsClient {
       // Deadline expired without a matching pong → count one miss.
       this.pendingPings.delete(nonce);
       this.consecutiveFailures += 1;
-      if (this._pingHistory.length >= PING_HISTORY_CAP) {
-        this._pingHistory = this._pingHistory.slice(1);
-      }
-      this._pingHistory = [...this._pingHistory, { nonce, sentAt, rttMs: null }];
       this.emitStateChange();
 
       if (this.consecutiveFailures >= PONG_FAIL_LIMIT) {
@@ -482,14 +837,6 @@ export class WsClient {
     // Any successful pong resets the failure streak (control.md §3:
     // "连续 3 次" is consecutive, not cumulative).
     this.consecutiveFailures = 0;
-
-    if (this._pingHistory.length >= PING_HISTORY_CAP) {
-      this._pingHistory = this._pingHistory.slice(1);
-    }
-    this._pingHistory = [
-      ...this._pingHistory,
-      { nonce: payload.nonce, sentAt: pending.sentAt, rttMs: Date.now() - pending.sentAt },
-    ];
     this.emitStateChange();
   }
 
@@ -498,10 +845,7 @@ export class WsClient {
   private scheduleReconnect(): void {
     if (!this.shouldReconnect) return;
     this.clearReconnectTimer();
-    const exp = Math.min(
-      RECONNECT_CAP_MS,
-      RECONNECT_BASE_MS * Math.pow(2, this.reconnectAttempt),
-    );
+    const exp = Math.min(RECONNECT_CAP_MS, RECONNECT_BASE_MS * Math.pow(2, this.reconnectAttempt));
     // ±20% jitter, matching the bridge client.
     const jitter = exp * (1 - RECONNECT_JITTER_RATIO + Math.random() * RECONNECT_JITTER_RATIO * 2);
     this.reconnectAttempt += 1;
@@ -522,12 +866,43 @@ export class WsClient {
 
   // ---- Internals: low-level send + state updates --------------------------
 
+  /** `trackable` is the set of command types whose outbound ids the
+   *  client should remember so a later `command_result{success:false}`
+   *  can be matched against them via `reply_to`. PRD §4.5 / W1:
+   *  ordinary commands (prompt / steer / follow_up) trigger an
+   *  InputBar error banner; abort / get_messages / extension_ui_response
+   *  have their own response paths and are NOT tracked. */
+  private sendPiCommand<P>(type: 'prompt', payload: P, trackable: 'prompt'): string;
+  private sendPiCommand<P>(type: 'steer', payload: P, trackable: 'steer'): string;
+  private sendPiCommand<P>(type: 'follow_up', payload: P, trackable: 'follow_up'): string;
+  private sendPiCommand<P>(type: 'abort', payload: P, trackable: null): string;
+  private sendPiCommand<P>(type: 'get_messages', payload: P, trackable: null): string;
+  private sendPiCommand<P>(type: 'extension_ui_response', payload: P, trackable: null): string;
+  private sendPiCommand<P>(
+    type: string,
+    payload: P,
+    _trackable: 'prompt' | 'steer' | 'follow_up' | null,
+  ): string {
+    const id = this.makeId();
+    this.sendRaw({
+      v: PROTOCOL_VERSION,
+      kind: 'pi' as const,
+      type: type as 'prompt',
+      id,
+      payload: payload as { content: string },
+    });
+    if (_trackable !== null) {
+      this.trackOutboundId(id);
+    }
+    return id;
+  }
+
   private sendRaw(envelope: EnvelopeType): void {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       // Silent drop — calling send() while offline is a no-op rather than
-      // an error, so components like PingTester can be wired before the
-      // socket finishes opening without guard code.
+      // an error, so components like the InputBar can be wired before
+      // the socket finishes opening without guard code.
       return;
     }
     try {
@@ -548,11 +923,158 @@ export class WsClient {
     this.emitStateChange();
   }
 
-  private appendLog(envelope: EnvelopeType): void {
-    const next = this._logs.length >= LOG_CAP ? this._logs.slice(1) : this._logs.slice();
-    next.push({ receivedAt: Date.now(), envelope });
-    this._logs = next;
+  private setMessages(messages: readonly unknown[]): void {
+    // SnapshotPayloadSchema defines `messages` as `z.array(z.unknown())`
+    // — the shared package deliberately does NOT pin per-message shapes.
+    // We pass the array through verbatim; the AgentMessage type alias
+    // is documentation only (it widens to `unknown`).
+    const sliced =
+      messages.length > MESSAGES_CAP
+        ? messages.slice(messages.length - MESSAGES_CAP)
+        : messages.slice();
+    this._messages = sliced;
     this.emitStateChange();
+  }
+
+  /** Append a fresh message, or — if `messageId` is provided AND we
+   *  already have an entry with that id — slice-and-replace in place
+   *  (S2 review). The bridge re-delivers a `message_end` for the
+   *  same id when pi re-emits a snapshot mid-turn; without the
+   *  replace path the message list would double-row. When the id is
+   *  missing or doesn't match an existing entry we fall back to a
+   *  plain append. */
+  private upsertMessage(message: AgentMessage, messageId: string | undefined): void {
+    if (messageId !== undefined) {
+      const idx = this.findMessageIndexById(messageId);
+      if (idx !== -1) {
+        const next = this._messages.slice();
+        next[idx] = message;
+        this._messages = next.length > MESSAGES_CAP ? next.slice(next.length - MESSAGES_CAP) : next;
+        this.emitStateChange();
+        return;
+      }
+    }
+    const next = [...this._messages, message];
+    this._messages = next.length > MESSAGES_CAP ? next.slice(next.length - MESSAGES_CAP) : next;
+    this.emitStateChange();
+  }
+
+  /** Linear scan — MESSAGES_CAP is 1k so a naive walk is fine and
+   *  avoids dragging a parallel id index through every mutation. */
+  private findMessageIndexById(messageId: string): number {
+    for (let i = 0; i < this._messages.length; i += 1) {
+      const candidate = this._messages[i];
+      if (candidate !== null && typeof candidate === 'object') {
+        const obj = candidate as Record<string, unknown>;
+        for (const key of ['messageId', 'message_id', 'id']) {
+          if (typeof obj[key] === 'string' && obj[key] === messageId) {
+            return i;
+          }
+        }
+      }
+    }
+    return -1;
+  }
+
+  private setStreamingDraft(draft: StreamingDraft | null): void {
+    this._streamingDraft = draft;
+    this.emitStateChange();
+  }
+
+  private appendStreamingDraft(data: unknown, delta: string): void {
+    const id = extractMessageId(data);
+    const role = extractRole(data);
+    const existing = this._streamingDraft;
+    // Match the existing draft by id when possible — if the messageId
+    // shifts (e.g. pi emits a fresh draft after an error), start a new
+    // one rather than concatenating onto a stale buffer.
+    if (existing !== null && (id === undefined || existing.messageId === id)) {
+      this._streamingDraft = {
+        ...(existing.messageId !== undefined
+          ? { messageId: existing.messageId }
+          : id !== undefined
+            ? { messageId: id }
+            : {}),
+        ...(existing.role !== undefined
+          ? { role: existing.role }
+          : role !== undefined
+            ? { role }
+            : {}),
+        text: existing.text + delta,
+      };
+    } else {
+      this._streamingDraft = {
+        ...(id !== undefined ? { messageId: id } : {}),
+        ...(role !== undefined ? { role } : {}),
+        text: delta,
+      };
+    }
+    this.emitStateChange();
+  }
+
+  private clearStreamingDraft(messageId: string): void {
+    const draft = this._streamingDraft;
+    if (draft !== null && draft.messageId === messageId) {
+      this._streamingDraft = null;
+      this.emitStateChange();
+    }
+  }
+
+  private setQueue(queue: QueueState): void {
+    const clamp = (arr: string[]): string[] =>
+      arr.length > QUEUE_CAP ? arr.slice(arr.length - QUEUE_CAP) : arr.slice();
+    this._queue = { steering: clamp(queue.steering), followUp: clamp(queue.followUp) };
+    this.emitStateChange();
+  }
+
+  private setSessionPhase(phase: SessionPhase): void {
+    if (this._sessionPhase === phase) return;
+    this._sessionPhase = phase;
+    this.emitStateChange();
+  }
+
+  private setBlockedOn(entries: BlockedOnEntryPayload[]): void {
+    this._blockedOn = entries.slice();
+    this.emitStateChange();
+  }
+
+  private notifyDialogExpired(notice: DialogExpiredNotice): void {
+    for (const listener of this.dialogExpiredListeners) {
+      try {
+        listener(notice);
+      } catch (_err) {
+        // Listener exceptions are programming bugs — swallow silently
+        // rather than spamming the operator console (PRD constraint:
+        // the web package is allowed a fixed budget of console.warn
+        // calls; dialog-expired is not in that set). A future debug
+        // session can attach a temporary listener with its own log
+        // to surface the failure.
+      }
+    }
+  }
+
+  private notifyCommandError(notice: CommandErrorNotice): void {
+    for (const listener of this.commandErrorListeners) {
+      try {
+        listener(notice);
+      } catch (_err) {
+        // Same rationale as notifyDialogExpired — listener bugs are
+        // swallowed silently to honour the web-package console budget.
+      }
+    }
+  }
+
+  /** Remember an outbound id so a future `command_result{success:false}`
+   *  with that id as `reply_to` can be routed to `onCommandError`.
+   *  Capped at OUTBOUND_IDS_CAP; on overflow we evict in insertion
+   *  order (Set preserves insertion order) so the window stays small
+   *  and recent ids always survive. */
+  private trackOutboundId(id: string): void {
+    if (this.outboundCommandIds.size >= this.OUTBOUND_IDS_CAP) {
+      const oldest = this.outboundCommandIds.values().next();
+      if (!oldest.done) this.outboundCommandIds.delete(oldest.value);
+    }
+    this.outboundCommandIds.add(id);
   }
 
   private emitStateChange(): void {
@@ -570,11 +1092,114 @@ export class WsClient {
   private makeNonce(): string {
     // Full UUID — matches the bridge daemon's nonce generation
     // (packages/bridge/src/client.ts sendPing) and the worker DO's own
-    // heartbeat nonce (heartbeat.ts tickHeartbeat). 8-char truncation was
-    // nice for human inspection in PingTester but birthday-collides
-    // across multiple tabs within the 30s window (2^32 / 2 ≈ 65k draws
-    // ≈ 50% collision); keeping the full UUID eliminates the risk for
-    // negligible wire-size cost (36 vs 8 chars per nonce).
+    // heartbeat nonce (heartbeat.ts tickHeartbeat). 8-char truncation
+    // birthday-collides across multiple tabs within the 30s window
+    // (2^32 / 2 ≈ 65k draws ≈ 50% collision); keeping the full UUID
+    // eliminates the risk for negligible wire-size cost (36 vs 8
+    // chars per nonce).
     return crypto.randomUUID();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers — defensive shape extraction for open event payloads
+// ---------------------------------------------------------------------------
+
+/** Coerce a value to a string when it is one. Anything else (number,
+ *  boolean, null, undefined, object) returns null so the caller can
+ *  fall through to the next candidate field. */
+function asStringOrNull(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return null;
+}
+
+/** Pluck a text delta from a `message_update` payload. pi-native
+ *  shape is unstable across versions, so we accept any of:
+ *    - data.text_delta        — PRD §4.3 wording
+ *    - data.delta             — common shorthand
+ *    - data.content           — already-rendered text content (treated
+ *                               as a delta rather than the full text —
+ *                               pi typically sends these deltas with
+ *                               the SAME shape as the message content)
+ *    - data.text
+ *  Returns `null` when nothing usable is found — caller treats this
+ *  as a no-op (the matching `message_end` will overwrite the draft). */
+function extractTextDelta(data: unknown): string | null {
+  if (data === null || typeof data !== 'object') return null;
+  const obj = data as Record<string, unknown>;
+  for (const key of ['text_delta', 'delta', 'text', 'content']) {
+    const value = obj[key];
+    if (typeof value === 'string') return value;
+  }
+  // Nested content array — pi sometimes sends
+  // `{ content: [{type:'text', text:'…'}] }`. Concatenate the text
+  // pieces; the caller appends the join so the draft keeps its tail.
+  if (Array.isArray(obj.content)) {
+    let combined = '';
+    for (const piece of obj.content) {
+      if (piece !== null && typeof piece === 'object') {
+        const text = (piece as Record<string, unknown>).text;
+        if (typeof text === 'string') combined += text;
+      }
+    }
+    if (combined.length > 0) return combined;
+  }
+  return null;
+}
+
+/** Pluck the `messageId` (or `id`) from an event payload — used to
+ *  match streaming drafts against the authoritative message_end. */
+function extractMessageId(data: unknown): string | undefined {
+  if (data === null || typeof data !== 'object') return undefined;
+  const obj = data as Record<string, unknown>;
+  for (const key of ['messageId', 'message_id', 'id']) {
+    const value = obj[key];
+    if (typeof value === 'string') return value;
+  }
+  return undefined;
+}
+
+/** Pluck the `role` from an event payload when present. */
+function extractRole(data: unknown): string | undefined {
+  if (data === null || typeof data !== 'object') return undefined;
+  const obj = data as Record<string, unknown>;
+  const role = obj.role;
+  return typeof role === 'string' ? role : undefined;
+}
+
+/** Pluck the authoritative message from a `message_end` payload.
+ *  Returns `undefined` when the shape doesn't carry one — caller
+ *  treats this as a no-op (the streaming draft keeps whatever it
+ *  has). The return type is `unknown | undefined` rather than the
+ *  AgentMessage alias to satisfy `no-redundant-type-constituents`;
+ *  AgentMessage IS `unknown` per the doc-comment above, so the
+ *  alias would just be noise in the signature. */
+function extractMessageEndMessage(data: unknown): unknown {
+  if (data === null || typeof data !== 'object') return undefined;
+  const obj = data as Record<string, unknown>;
+  if ('message' in obj && obj.message !== undefined) {
+    return obj.message;
+  }
+  // Some pi builds put the message fields at the top level — fall
+  // back to the whole payload as the message.
+  if ('role' in obj || 'content' in obj) {
+    return data;
+  }
+  return undefined;
+}
+
+/** Pluck a queue_update payload. Shape is
+ *  `{ steering: string[], followUp: string[] }` per PRD §4.3. */
+function extractQueueUpdate(data: unknown): QueueState | null {
+  if (data === null || typeof data !== 'object') return null;
+  const obj = data as Record<string, unknown>;
+  const steering = Array.isArray(obj.steering)
+    ? obj.steering.filter(asStringOrNull).filter((s): s is string => s !== null)
+    : [];
+  const followUpRaw = obj.followUp ?? obj.follow_up;
+  const followUp = Array.isArray(followUpRaw)
+    ? followUpRaw.filter(asStringOrNull).filter((s): s is string => s !== null)
+    : [];
+  return { steering, followUp };
 }

@@ -10,11 +10,20 @@
 // which internally closes the existing socket and opens a fresh one — so
 // swapping tokens (or pasting a wrong one and then the right one) Just
 // Works without leaking two parallel sockets.
+//
+// M3 routing (task 06 + task 07):
+//   - token absent → TokenPrompt (existing).
+//   - token present → ChatView (M3 main surface) — task 06.
+//   - task 07 introduces a RecoveryView wrapper between token-present
+//     and ChatView; it runs the dual-query recovery ceremony (PRD §4.4)
+//     and only mounts ChatView once both `get_state` and `get_messages`
+//     have landed. Until task 07 lands, ChatView mounts directly (with
+//     a brief "awaiting first session_state…" PhaseIndicator hint
+//     while the WsClient is warming up).
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { BroadcastLog } from './components/BroadcastLog.js';
-import { PingTester } from './components/PingTester.js';
+import { ChatView } from './components/ChatView.js';
 import { StatusBar } from './components/StatusBar.js';
 import { TokenPrompt } from './components/TokenPrompt.js';
 import { WsClient } from './ws/WsClient.js';
@@ -69,13 +78,16 @@ export function App() {
     );
   }
 
+  // Token present → render the M3 chat surface directly. Task 07 will
+  // wrap ChatView in a RecoveryView that gates on the dual-query
+  // ceremony; until then, ChatView's PhaseIndicator handles the
+  // "awaiting first session_state" wait state.
   return (
     <WsClientProvider client={client}>
       <main className="app-shell">
         <h1>RemotePi</h1>
         <StatusBar />
-        <PingTester />
-        <BroadcastLog />
+        <ChatView />
       </main>
     </WsClientProvider>
   );
