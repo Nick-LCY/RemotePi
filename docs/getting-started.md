@@ -77,17 +77,18 @@ pnpm install
 ### 3.1 bridge — `tsx watch`
 
 ```bash
-pnpm --filter @remotepi/bridge dev
+pnpm --filter @remotepi/bridge dev   # 默认读 ~/.config/remotepi/bridge.json（XDG 路径见 §3.5）
+pnpm --filter @remotepi/bridge dev -- --config /path/to/bridge.json   # 自定路径
 ```
 
-M1 阶段是空壳，只 console.log 一行占位。**真正运行 bridge 前**请确保 `pi` v0.84.4+ 已全局安装并在 PATH：
+M3 起 bridge 全量配置走 JSON 文件，**启动前需先**写到默认路径或用 `--config <path>` 指定。配置 JSON 字段说明见 §3.5。**真正运行 bridge 前**请确保 `pi` v0.84.4+ 已全局安装并在 PATH（M3 实测 0.85.1）：
 
 ```bash
 npm i -g @earendil-works/pi-coding-agent
 pi --version   # 应 ≥ 0.84.4
 ```
 
-bridge 在 M1 通过 `peerDependencies: { "@earendil-works/pi-coding-agent": "^0.84.4" }` + `optional: true` 声明外部依赖——它**不会**自带 pi，宿主全局安装是事实约束。M2 起 bridge 才会 spawn 子进程调用 pi。
+bridge **不**自带 pi，宿主全局安装是事实约束。M2 起 bridge spawn 子进程调用 pi；M3 起在隔离目录 `<configDir>/pi-agent/` 下运行（与配置文件同根），详见 [[prds/m3-single-session.md|M3 PRD §2]]。
 
 ### 3.2 web — Vite
 
@@ -134,30 +135,24 @@ pnpm --filter worker dev
 
 **终端 B — bridge**
 
-> ⚠️ **不带参数时 bridge 默认连生产域 `wss://remote-pi.sankabox.com/bridge`**——生产 route 已在 M2 部署 `remotepi-worker`，bridge 会连生产 DO 房间（与本机 worker 隔离；web 端表现为 `online:false`、手动 ping 全部超时）。本地联调务必显式指定 worker URL（下面两条命令任选其一，效果相同）：
-
 ```bash
-pnpm --filter @remotepi/bridge dev -- --worker-url ws://localhost:8787/bridge
-REMOTEPI_WORKER_URL=ws://localhost:8787/bridge pnpm --filter @remotepi/bridge dev
+pnpm --filter @remotepi/bridge dev
+# M3 起默认读 ~/.config/remotepi/bridge.json（XDG 路径见 §3.5）
+# 本地联调：在 bridge.json 里把 worker_url 设为 ws://localhost:8787/bridge 即可
+# 想走别的配置路径：pnpm --filter @remotepi/bridge dev -- --config /path/to/bridge.json
 ```
+
+> ⚠️ **配置文件里 `worker_url` 决定连哪个域**——本地三端联调务必设 `ws://localhost:8787/bridge`（**不要**用生产 `wss://remote-pi.sankabox.com/bridge`，否则 web 端表现为 `online:false`、手动 ping 全部超时——DO 房间与本机 worker 隔离）。
 
 **期望 stdout**（与实机一致，逐字）：
 
-- 指定本地 URL（两条任一）时打三行：
-  ```
-  [bridge] info token: xCwytpk-…
-  [bridge] info share URL: https://remote-pi.sankabox.com/#xCwytpk-…
-  [bridge] info worker URL: ws://localhost:8787/bridge
-  ```
-- 不带参数（生产默认）时第三行变为：
-  ```
-  [bridge] info worker URL: wss://remote-pi.sankabox.com/bridge
-  ```
-  并额外多一行 hint：
-  ```
-  [bridge] info hint: this is the production default — for local dev pass -- --worker-url ws://localhost:8787/bridge
-  ```
-- 连接成功后会再打 `connected to <url>`；断连重连日志格式为 `disconnected from <url> (code=<n>, reason='<r>') — reconnecting in <ms>ms (attempt <n>)`。
+```
+[bridge] info token: xCwytpk-…
+[bridge] info share URL: https://remote-pi.sankabox.com/#xCwytpk-…
+[bridge] info worker URL: <配置里的 worker_url>
+```
+
+连接成功后会再打 `connected to <url>`；断连重连日志格式为 `disconnected from <url> (code=<n>, reason='<r>') — reconnecting in <ms>ms (attempt <n>)`。
 
 > **bridge 每次重启都会生成新 token**——网页端要用新打印的 `share URL`（或 token）。把旧 URL 粘进新启动的 browser 等于连一个不存在的 token，handshake 会失败。
 >
@@ -185,6 +180,66 @@ http://localhost:5173/#<token>
 - **心跳判死** — 在终端 B `kill -STOP $(pgrep -f '@remotepi/bridge')`，两 tab 90 秒内 `reason='stale'`；再 `kill -CONT` → 自动重连恢复 `connected`。
 
 > bridge 端 PID 取法：`pgrep -f 'remotepi/bridge'` 或 `ps aux | grep bridge` 都行；`tsx watch` 起的进程组是同一棵，`kill -- -<pgid>` 可一并清掉子进程。
+
+### 3.5 配置文件 JSON 字段说明（M3 起）
+
+bridge **不**再接受 CLI 参数或环境变量覆盖——所有配置都走 JSON 配置文件。M3 默认路径：
+
+```
+$XDG_CONFIG_HOME/remotepi/bridge.json        # XDG 优先
+~/.config/remotepi/bridge.json               # fallback（XDG_CONFIG_HOME 未设时）
+```
+
+显式指定路径：`pnpm --filter @remotepi/bridge dev -- --config /path/to/bridge.json`（`--config <path>` 与 `--config=<path>` 等价；遇 `--` 终止符停止扫描；未知 flag 静默忽略）。
+
+**完整字段表**：
+
+| 字段 | 必填 | 类型 | 语义 | 示例 |
+|------|------|------|------|------|
+| `worker_url` | ✅ | string (ws/wss URL) | bridge 连的 WSS 端点；本地三端联调填 `ws://localhost:8787/bridge`，连生产填 `wss://remote-pi.sankabox.com/bridge` | `"ws://localhost:8787/bridge"` |
+| `web_base_url` | ✅ | string (https URL) | 拼 share URL 的 base；粘到浏览器的那条 `https://<web_base_url>/#<token>` | `"https://remote-pi.sankabox.com"` |
+| `work_dir` | ✅ | string (绝对路径) | pi 子进程的工作目录（也是 session 扫描的 cwd 锚点） | `"/Users/me/projects/myapp"` |
+| `token` | ❌ | string | 启动 token；缺省时 bridge 启动随机生成 **32 字符 base64url**（`crypto.randomBytes(24).toString('base64url')`） | `"xCwytpk-..."` |
+
+**最小示例**（本地三端联调）：
+
+```json
+{
+  "worker_url": "ws://localhost:8787/bridge",
+  "web_base_url": "https://remote-pi.sankabox.com",
+  "work_dir": "/Users/me/projects/myapp"
+}
+```
+
+连生产环境把 `worker_url` 改为 `wss://remote-pi.sankabox.com/bridge`，其余字段同上。
+
+**关键行为**（出错会退出 1）：
+
+- `worker_url` / `web_base_url` / `work_dir` 三选一缺失 → `ConfigError{code: 'missing_field'}` + 友好 stderr；
+- `work_dir` 路径不存在 / 不是目录 / 不可读 → `ConfigError{code: 'work_dir_invalid'}`；**bridge 不会自动 `mkdir`**（M2 时代的"默认空 work_dir"已废）；
+- `token` 字段**缺省**时随机生成 **32 字符 base64url**（`crypto.randomBytes(24)`），但**不**回写到配置文件——M2 时代每启都换 token 是有意的（粘到浏览器的那条 URL 失效即失效，运维不依赖持久 token）；
+- 配置文件 JSON 解析失败 → `ConfigError{code: 'parse_failed'}`；
+- **未知 CLI flag 静默忽略**（systemd 风格 `-D` / `-E` 不会误吞 `--config`；遇 `--` 终止符停止扫描——编排裁定，2026-09-05）。
+
+**`pi` 凭据与 auth.json**：
+
+bridge 在 `<configDir>/pi-agent/` 下跑 pi 子进程（与 `bridge.json` 同根；M3 PRD §2.5）。`<configDir>/pi-agent/auth.json` 缺失时 bridge 启动打 **stderr warn 但不退出**——提醒用户手动跑一次 `pi login`：
+
+```bash
+# 一性次：初始化 pi 凭据（auth.json 写到 <configDir>/pi-agent/auth.json）
+cd <configDir>/pi-agent
+pi login
+# 跟着 pi 提示完成 OAuth；之后 bridge 启动不再 warn
+```
+
+**XDG 路径解析顺序**：
+
+```
+XDG_CONFIG_HOME 环境变量存在 → $XDG_CONFIG_HOME/remotepi/bridge.json
+否则                       → ~/.config/remotepi/bridge.json
+```
+
+自定义路径覆盖默认：见上文 `--config <path>`。
 
 ---
 
@@ -420,8 +475,8 @@ curl https://remote-pi.sankabox.com/healthz
 # 网页首页
 # 浏览器开 https://remote-pi.sankabox.com/ —— 应看到 web SPA（TokenPrompt 或上次的 StatusBar）
 
-# bridge 直连生产
-pnpm --filter @remotepi/bridge dev   # 不带 --worker-url，默认连 wss://remote-pi.sankabox.com/bridge
+# bridge 直连生产（配置 worker_url=wss://remote-pi.sankabox.com/bridge 的 bridge.json）
+pnpm --filter @remotepi/bridge dev
 # stdout 打印 share URL：https://remote-pi.sankabox.com/#<token>
 # 粘到生产网页 https://remote-pi.sankabox.com/ 的 URL fragment → StatusBar 应 online
 ```
@@ -450,3 +505,7 @@ wscat -c ws://remote-pi.sankabox.com/bridge -s "remotepi.v1,REPLACE_WITH_BRIDGE_
 ```
 
 > `-s "remotepi.v1,token"` 是 wscat 传 subprotocol 数组的语法（逗号分隔）；位置 0 是版本号、位置 1 是 token，详见 [[architecture/protocol/envelope.md#锁版承诺v1-存续期内不可变]]。其他错误码路径（5s 无 handshake → `auth_failed` + close 1008；role 与路径不符 → `auth_failed`；畸形帧 → `invalid_envelope`；`v=2` → `unsupported_version` + close 1008；第二 bridge → `duplicate_bridge` + close 1008）同样用 wscat 触发。
+
+---
+
+M3 起 bridge 用 `bridge --config <path>` 启动；详见 §3.5。

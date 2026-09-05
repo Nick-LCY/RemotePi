@@ -1,6 +1,6 @@
 ---
 prd: prds/m3-single-session.md
-status: todo
+status: doing
 ---
 # 任务：ADR-0003 / ADR-0004 补注 + current-state TODO + getting-started 修订 + 三端联调手测验收
 
@@ -51,3 +51,71 @@ status: todo
 - 依赖 [[tasks/m3/05-bridge-popup-core.md|05-bridge-popup-core]]
 - 依赖 [[tasks/m3/06-web-chat.md|06-web-chat]]
 - 依赖 [[tasks/m3/07-web-recovery.md|07-web-recovery]]
+
+## 用户手测交接
+
+三端联调手测验收由用户在浏览器手动执行，**不在编排者范围**——任务状态保持 `doing` 待用户全部勾完后由编排者改 `done`。下面 14 条原文来自 [[prds/m3-single-session.md#验收清单|M3 PRD §验收清单「浏览器闭环」]] + [[tasks/m3/08-docs-and-validation.md#完成标准|本任务完成标准]]，**不勾选**、仅留验收记录表格。
+
+### 前置准备（5 步）
+
+1. **写 `bridge.json`**：参考 [[getting-started.md#3.5 配置文件 JSON 字段说明|getting-started §3.5]]；最小三字段 `worker_url`（本地 `ws://localhost:8787/bridge`）+ `web_base_url`（`https://remote-pi.sankabox.com`，与主域对齐）+ `work_dir`（本地任意项目绝对路径，bridge 不会 mkdir——路径必须已存在且可读）。路径：`~/.config/remotepi/bridge.json`（默认 XDG）或 `--config <path>` 指定。
+2. **`pi login`**：在 `<configDir>/pi-agent/` 下跑一次 `pi login` 写 `auth.json`（bridge 启动会 stderr warn 但不退出；首次未登录则所有 pi 家族命令失败）。
+3. **启动 bridge**：`pnpm --filter @remotepi/bridge dev`（默认读 §1 配置），stdout 打印三行——`token` / `share URL` / `worker URL`；记下 `share URL`（含 token）。**bridge 重启会换 token**，每次重启重做 §3-§4。
+4. **浏览器开主域带 token**：浏览器新开 tab 粘 `share URL`（如 `https://remote-pi.sankabox.com/#<token>`）→ StatusBar 出现 `online` + `bridge_status.reason='connected'` 表示 handshake 通过。
+5. **（可选）切本地 dev**：本机 worker 在 `http://localhost:8787/`，本地 dev 把 `bridge.json.worker_url` 改 `ws://localhost:8787/bridge` 重启 bridge 即可。bridge 当前只连一个 worker URL，**不能同时**连本机 + 生产——手测要么全本地、要么全生产（推荐全生产，因为网页合并到主域 `https://remote-pi.sankabox.com/`，手测与真实环境同源）。
+
+### 三端联调手测验收 14 条（PRD §验收清单 浏览器闭环）
+
+| # | 用例 | 验收点 |
+|---|------|--------|
+| 1 | **发消息→流式→完成** | web 发 prompt → `message_update` 打字机暂显 + `message_end` 收敛 → `agent_settled` 后 phase 转 idle + 输入框可用 + 提示"5 分钟自动休眠" |
+| 2 | **F5 刷新恢复** | 刷新后聊天记录 / phase / blocked_on 全部恢复（web 端无 localStorage） |
+| 3 | **abort 生效（running + exited 两种）** | (a) `phase=running` 时点 abort → pi 终止 + phase 转 idle；(b) `phase=exited` 时点 abort → 无状态变化 + 回 `command_result{success:true}` |
+| 4 | **空闲 5 分钟 kill（自主 kill 不重启）** | `agent_settled` 后等 5 分钟 → SIGTERM→1s→SIGKILL → phase 转 exited；**不**触发崩溃重启（自主 kill 标记路径） |
+| 5 | **意外崩溃重启（spawn 计数 +1）** | `kill -9 $(pgrep -f 'pi --mode rpc')`（**不**走 bridge 自管） → 子进程 exit≠0 + 标记不在 → spawn 计数 +1 → 新子进程 |
+| 6 | **exited 后拉历史** | idle kill 后 F5 → `get_messages` 触发带 `--session` 的 spawn → 历史完整恢复 |
+| 7 | **exited 后写操作唤醒** | exited 时发 prompt / steer / follow_up → 触发 spawn → UI 显示 `exited → spawning → ready → running` |
+| 8 | **exited 时 get_state 零成本** | exited 时开 DevTools Network / bridge 日志确认 `control/get_state` → 内存即时回执，**不**触发新 spawn（无 `pi --mode rpc` 子进程拉起） |
+| 9 | **4 类弹窗可交互** | select 选项返回字符串 / confirm Yes（`value:true`）与 No（`value:false`）都正确改 pi 分支 / input / editor；超时倒计时显示（editor 无超时除外）；提交后弹窗自动收起（`session_state.blocked_on` 不含该 id） |
+| 10 | **timeout 自答 + 迟到回应** | 弹窗 timeout 触发 → bridge 镜像触发 → `session_state.blocked_on` 移除该 id → 弹窗自动收起（pi 侧 stdout 零输出）；迟到提交收 `command_result{success:false, error.code:'request_expired'}` |
+| 11 | **fire-and-forget 5 类本地消化** | notify / setStatus / setWidget / setTitle / set_editor_text 任一触发 → bridge 日志含该事件，web 端**零弹窗**（不渲染成阻塞弹窗） |
+| 12 | **多 web 端先答者胜** | 双 tab 同 token；弹窗两端都弹出；先答者提交后两端同步收起；后续答者 toast "已过期" + 自动收起 |
+| 13 | **bridge 重启 / 崩溃自愈** | bridge `Ctrl+C` → 两 web 端 5 秒内 StatusBar `offline` + `reason='closed'` → 重启 bridge（**新 token**）→ 两 tab 用新 share URL 重连 + 恢复仪式拉回 history；bridge 启动后**不**发命令时 pi 子进程**不** spawn（延迟到首任务触发） |
+| 14 | **双查询恢复仪式** | 打开 DevTools 看 ws 帧：handshake 后**无 ack**即并行发 `pi/get_messages`（id=m1）+ `control/get_state`（id=g1）→ 等两条都到才渲染聊天视图；任一条失败（5s 超时 / `ok:false`）→ 显示"恢复失败，请重试"按钮，点重发双查询 |
+
+### 补充：worker 零代码改动验证（wscat）
+
+worker 包在 M3 零代码改动，验证**只**确认转发含新 type——不解析包内容、不做业务路由。用 [wscat](https://github.com/websockets/wscat) 起 4 类 WS 帧验收（每项一条命令即可）：
+
+```bash
+wscat -c wss://remote-pi.sankabox.com/bridge -s "remotepi.v1,REPLACE_WITH_BRIDGE_TOKEN"
+# 依次发：
+# 1. handshake {role:'web', token:'<bridge-token>'}             → 收到 bridge_status{online:true}
+# 2. control/get_state {id:'g1'}                                 → 收到 result{reply_to:'g1', ok:true, data:{phase, blocked_on?}}
+# 3. （等 bridge 端 session_state 广播）                          → 收到 session_state{payload.blocked_on: [...]} 形状合法
+# 4. pi/prompt {id:'p1', content:'hello'} / pi/steer / pi/follow_up / pi/abort / pi/get_messages / pi/extension_ui_response  9 type 透传 → web 端收齐 frame
+```
+
+> 与 [[getting-started.md#10.6 wscat 冒烟（不打开网页也能验 worker 路由）|getting-started §10.6]] 的错误码矩阵验收共用同一 wscat 通道——握手通过后两条收齐即视为 worker 透传正确。
+
+### 验收记录（用户填写）
+
+| # | 用例 | 通过 | 不通过 | 备注（现象 / 日志 / commit 等） |
+|---|------|------|--------|----------------------------------|
+| 1 | 发消息→流式→完成 | ☐ | ☐ |  |
+| 2 | F5 刷新恢复 | ☐ | ☐ |  |
+| 3 | abort 生效（running + exited 两种） | ☐ | ☐ |  |
+| 4 | 空闲 5 分钟 kill（自主 kill 不重启） | ☐ | ☐ |  |
+| 5 | 意外崩溃重启（spawn 计数 +1） | ☐ | ☐ |  |
+| 6 | exited 后拉历史 | ☐ | ☐ |  |
+| 7 | exited 后写操作唤醒 | ☐ | ☐ |  |
+| 8 | exited 时 get_state 零成本 | ☐ | ☐ |  |
+| 9 | 4 类弹窗可交互 | ☐ | ☐ |  |
+| 10 | timeout 自答 + 迟到回应 | ☐ | ☐ |  |
+| 11 | fire-and-forget 5 类本地消化 | ☐ | ☐ |  |
+| 12 | 多 web 端先答者胜 | ☐ | ☐ |  |
+| 13 | bridge 重启 / 崩溃自愈 | ☐ | ☐ |  |
+| 14 | 双查询恢复仪式 | ☐ | ☐ |  |
+| 补 | worker 零代码改动验证（wscat） | ☐ | ☐ |  |
+
+> 全部勾完"通过"后，把本页结果贴回本任务文档 / [[current-state.md]] 最近变更 / 推 `git commit` → 用户手动 `git push origin main` 触发 Actions CD（沿用 M2 deploy.yml）。
