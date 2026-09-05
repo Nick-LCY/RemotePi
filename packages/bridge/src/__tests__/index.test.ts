@@ -322,6 +322,88 @@ describe('start (config-driven entry)', () => {
     result.client.stop();
   });
 
+  it('S3 review follow-up: start() wires BridgeClient → PiProcessManager envelope routing', async () => {
+    class CapturingSocket implements WebSocketLike {
+      static instances: CapturingSocket[] = [];
+      readyState = 0; // CONNECTING — matches the real WebSocket before open
+      readonly sent: string[] = [];
+      onopen: ((ev: Event) => void) | null = null;
+      onclose: ((ev: CloseEvent) => void) | null = null;
+      onerror: ((ev: Event) => void) | null = null;
+      onmessage: ((ev: MessageEvent) => void) | null = null;
+      constructor(_url: string, _protocols: string[]) {
+        CapturingSocket.instances.push(this);
+        // The real WebSocket fires `onopen` asynchronously after
+        // construction; mirroring that with a microtask preserves
+        // the production ordering (the bridge's `connect()` schedules
+        // its `onopen` handler before yielding).
+        queueMicrotask(() => {
+          this.readyState = 1;
+          this.onopen?.(undefined as unknown as Event);
+        });
+      }
+      send(data: string): void {
+        this.sent.push(data);
+      }
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+    CapturingSocket.instances.length = 0;
+    const createSocket = (url: string, protocols: string[]): WebSocketLike =>
+      new CapturingSocket(url, protocols);
+
+    const token = 'w'.repeat(32);
+    const configPath = makeConfig({
+      worker_url: 'wss://wiring.test/bridge',
+      web_base_url: 'https://wiring.test',
+      work_dir: '/tmp',
+      token,
+    });
+    const result = start({
+      createSocket,
+      argv: [],
+      configPath,
+    });
+    // Flush the microtask queue so the constructor's queued `onopen`
+    // fires synchronously (vitest doesn't auto-flush microtasks
+    // between sync test bodies, but `await Promise.resolve()` does
+    // the trick).
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The first socket should have received at least the handshake
+    // frame.
+    const sock = CapturingSocket.instances[0]!;
+    expect(sock).toBeDefined();
+    expect(sock.sent.length).toBeGreaterThan(0);
+
+    // Drive the manager through its public handleEnvelope (the same
+    // path BridgeClient uses internally). The manager answers with a
+    // `result` envelope; that envelope should land on the socket via
+    // the outbound wiring.
+    result.manager.handleEnvelope({
+      v: 1,
+      kind: 'control',
+      type: 'get_state',
+      id: 'wiring-gs1',
+      payload: {},
+    });
+    // Look for the result envelope in the socket's send buffer.
+    const resultFrame = sock.sent
+      .map((s) => {
+        try {
+          return JSON.parse(s) as { type?: string; reply_to?: string };
+        } catch {
+          return null;
+        }
+      })
+      .filter((p): p is { type?: string; reply_to?: string } => p !== null)
+      .find((r) => r.type === 'result' && r.reply_to === 'wiring-gs1');
+    expect(resultFrame).toBeDefined();
+    result.client.stop();
+  });
+
   it('M2-era REMOTEPI_WORKER_URL env var has no effect (config file wins)', () => {
     // Regression guard: env var was retired in M3 task 03.
     const createSocket = (): WebSocketLike => new NoopSocket();

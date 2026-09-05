@@ -22,6 +22,7 @@
 // `loadBridgeConfig`; failures surface as a single friendly stderr line
 // + `process.exitCode = 1`, never a stack trace.
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { BridgeClient, type WebSocketLike } from './client.js';
 import {
   loadBridgeConfig,
@@ -31,6 +32,7 @@ import {
   type BridgeConfig,
 } from './config.js';
 import { logger } from './logger.js';
+import { PiProcessManager } from './pi-process.js';
 import { shareUrl } from './token.js';
 
 /** Tracks the auto-run client's lifecycle so `uncaughtException` can close
@@ -142,6 +144,10 @@ export interface StartOptions {
    *  non-empty `token`, that token is used; otherwise a fresh token is
    *  generated and NOT persisted to the config file (PRD §2.1). */
   token?: string;
+  /** Optional override for the pi subprocess manager (test seam).
+   *  When omitted, start() constructs a real `PiProcessManager`
+   *  bound to the resolved config + isolation dir. */
+  piProcessManager?: PiProcessManager;
 }
 
 /** Friendly single-line stderr message for a `ConfigError`. We do NOT
@@ -160,6 +166,7 @@ export function start(options: StartOptions = {}): {
   shareUrl: string;
   client: BridgeClient;
   workerUrl: string;
+  manager: PiProcessManager;
 } {
   const log = options.logger ?? logger;
   // Path resolution order: explicit `configPath` option → `--config`
@@ -236,7 +243,42 @@ export function start(options: StartOptions = {}): {
   // activeClient).
   activeClient = client;
 
-  return { token, shareUrl: shareLink, client, workerUrl };
+  // M3 task 04: bring up the pi subprocess manager after the WSS
+  // client is up so any session_state broadcast emitted during the
+  // handshake reaches the cloud (the client.sendEnvelope path may
+  // silently drop frames if the socket isn't open yet, but the
+  // bridge is single-tenant and the worker buffer absorbs any blip).
+  //
+  // Isolation directory lives next to the config file so a single
+  // `rm -rf ~/.config/remotepi` purges both bridge config + pi auth
+  // (PRD §2.3 — "与配置同根, 便于清退"). The directory is NOT created
+  // eagerly — `pi login` writes auth.json into it during setup, and
+  // `mkdir -p` happens implicitly when pi creates its session subdir.
+  const isolationDir = path.join(path.dirname(configPath), 'pi-agent');
+  const manager =
+    options.piProcessManager ??
+    new PiProcessManager({
+      isolationDir,
+      workDir: config.work_dir,
+      authJsonPath: path.join(isolationDir, 'auth.json'),
+      // Manager → WSS: every outbound envelope (session_state,
+      // result, command_result, snapshot, event) flows through the
+      // client's existing sendEnvelope path. Closed-over reference,
+      // so subsequent reconnects are picked up automatically (the
+      // client retains the same socket factory on its reconnects).
+      onOutboundEnvelope: (env) => client.sendEnvelope(env),
+    });
+  // WSS → manager: every envelope the client doesn't handle
+  // internally (everything except ping/pong/bridge_status/error/
+  // handshake) lands here. Manager routes by kind + type.
+  client.setEnvelopeSink(manager.handleEnvelope.bind(manager));
+  manager.start();
+  // Note: the manager only spawns pi on the first §2.7 spawn
+  // trigger (PRD §2.3 — "延迟到首任务触发, 不预热"). The bridge
+  // sitting at phase=`exited` with no child is the intended steady
+  // state.
+
+  return { token, shareUrl: shareLink, client, workerUrl, manager };
 }
 
 // ----- CLI entry guard -----

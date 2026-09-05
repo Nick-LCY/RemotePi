@@ -73,6 +73,14 @@ export interface BridgeClientOptions {
   pongTimeoutsBeforeDead?: number;
   backoffBaseMs?: number;
   backoffCapMs?: number;
+  /** Optional inbound-envelope sink. Fires for every envelope the
+   *  client does NOT handle internally (i.e. anything that isn't
+   *  `ping`, `pong`, `bridge_status`, `error`, or `handshake`). The
+   *  wiring seam that connects the WSS loop to the pi subprocess
+   *  manager — M3 task 04 sets this to `manager.handleEnvelope`,
+   *  task 05 will expand the routing. Defaults to a no-op so this
+   *  option is opt-in (M2 client had no downstream consumer). */
+  onEnvelope?: (env: EnvelopeT) => void;
 }
 
 /** Internal record of resolved options so the hot paths don't have to
@@ -85,6 +93,7 @@ interface ResolvedOptions {
   backoffCapMs: number;
   createSocket: (url: string, protocols: string[]) => WebSocketLike;
   rng: () => number;
+  onEnvelope?: (env: EnvelopeT) => void;
 }
 
 export class BridgeClient {
@@ -115,6 +124,7 @@ export class BridgeClient {
       backoffCapMs: options.backoffCapMs ?? BACKOFF_CAP_MS,
       createSocket: options.createSocket ?? defaultCreateSocket,
       rng: options.rng ?? Math.random,
+      onEnvelope: options.onEnvelope,
     };
   }
 
@@ -127,6 +137,15 @@ export class BridgeClient {
     this.stopped = false;
     this.attempt = 0;
     this.connect();
+  }
+
+  /** Set (or clear) the inbound envelope sink after construction.
+   *  Used by `index.ts` to wire the BridgeClient → PiProcessManager
+   *  hook once both objects exist (the manager needs to be created
+   *  after the client so we can hand it a `client.sendEnvelope`
+   *  closure for outbound). Pass `undefined` to detach. */
+  setEnvelopeSink(sink: ((env: EnvelopeT) => void) | undefined): void {
+    this.opts.onEnvelope = sink;
   }
 
   /** Stop the loop. No further reconnects will be scheduled. Idempotent.
@@ -277,9 +296,7 @@ export class BridgeClient {
     this.pongDeadline = null;
     this.pendingNonce = null;
     this.pongTimeouts++;
-    logger.warn(
-      `pong timeout ${this.pongTimeouts}/${this.opts.pongTimeoutsBeforeDead}`,
-    );
+    logger.warn(`pong timeout ${this.pongTimeouts}/${this.opts.pongTimeoutsBeforeDead}`);
     if (this.pongTimeouts >= this.opts.pongTimeoutsBeforeDead) {
       this.declareDead();
     } else {
@@ -288,10 +305,7 @@ export class BridgeClient {
       // 20s) will adopt a fresh nonce via its `else if` branch above,
       // and strict matching means a pong carrying the previous (now
       // stale) nonce will not reset the miss counter.
-      this.pongDeadline = setTimeout(
-        () => this.handlePongTimeout(),
-        this.opts.pongTimeoutMs,
-      );
+      this.pongDeadline = setTimeout(() => this.handlePongTimeout(), this.opts.pongTimeoutMs);
     }
   }
 
@@ -362,9 +376,7 @@ export class BridgeClient {
       }
       case 'bridge_status':
         // bridge_status is server-originated metadata; we just log it.
-        logger.info(
-          `bridge_status: online=${env.payload.online} reason=${env.payload.reason}`,
-        );
+        logger.info(`bridge_status: online=${env.payload.online} reason=${env.payload.reason}`);
         break;
       case 'error':
         logger.warn(
@@ -372,11 +384,15 @@ export class BridgeClient {
             ` terminal=${env.payload.terminal ?? false}`,
         );
         break;
-      // `handshake` from the server is unexpected (only we send it).
-      // Other control types (session_state / session_list / result) and
-      // the entire pi family are not handled here — M2's bridge has no
-      // downstream consumer for them, and pi frames are rejected at the
-      // envelope parser anyway.
+      default:
+        // M3 task 04: forward every other envelope (control/get_state,
+        // control/session_state from a misbehaving peer, the entire pi
+        // family — prompt/steer/follow_up/abort/get_messages/extension_ui_response)
+        // to the inbound sink. Task 05 will expand the routing once the
+        // dialog extension UI flow is in. The sink defaults to a no-op
+        // so M2 consumers (no `onEnvelope` set) see no behaviour change.
+        this.opts.onEnvelope?.(env);
+        break;
     }
   }
 
@@ -390,7 +406,11 @@ export class BridgeClient {
     });
   }
 
-  private sendEnvelope(env: EnvelopeT): void {
+  /** Public send path — exposed so the PiProcessManager (constructed
+   *  after the client by `start()`) can forward outbound envelopes
+   *  through the same socket-ready gate. Tests can drive the WSS
+   *  loop with a mock socket and assert on outbound frames. */
+  sendEnvelope(env: EnvelopeT): void {
     const ws = this.ws;
     if (ws === null) return;
     // readyState 1 === OPEN. Anything else (CONNECTING / CLOSING /

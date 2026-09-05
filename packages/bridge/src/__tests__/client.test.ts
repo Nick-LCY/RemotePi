@@ -409,4 +409,67 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
     client.stop();
     vi.useRealTimers();
   });
+
+  it('onEnvelope sink receives every non-internally-handled envelope (S3 review)', () => {
+    // S3 review follow-up: the WSS client's onEnvelope seam is the
+    // bridge between the network layer and the pi subprocess
+    // manager. Every envelope that the client doesn't handle
+    // internally (`ping`, `pong`, `bridge_status`, `error`,
+    // `handshake`) MUST be forwarded to the sink so the manager
+    // can route on `kind` + `type`. This guards against a
+    // regression where a new control type added in M3 (e.g.
+    // `result` or `session_state` arriving from web) gets
+    // accidentally swallowed by the default branch.
+    const create = socketFactory();
+    const onEnvelope = vi.fn<(env: unknown) => void>();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      pingIntervalMs: 60_000, // suppress our own pings for clarity
+    });
+    client.setEnvelopeSink(onEnvelope);
+    client.start();
+    const sock = MockSocket.instances[0]!;
+    sock.simulateOpen();
+
+    // Drop the handshake frame so the assertion below doesn't see it.
+    sock.sentFrames.length = 0;
+    onEnvelope.mockClear();
+
+    // Push three envelopes: one pi-family command (forwarded) and
+    // one control `get_state` (forwarded). Internally-handled types
+    // (`ping`) must NOT reach the sink.
+    sock.simulateMessage({
+      v: 1,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'web-p1',
+      payload: { content: 'hello' },
+    });
+    sock.simulateMessage({
+      v: 1,
+      kind: 'control',
+      type: 'get_state',
+      id: 'web-g1',
+      payload: {},
+    });
+    sock.simulateMessage({
+      v: 1,
+      kind: 'control',
+      type: 'ping',
+      id: 'server-ping-1',
+      payload: { nonce: 'n1' },
+    });
+
+    // Two envelopes should have reached the sink (prompt + get_state);
+    // the ping was consumed internally and produced a pong.
+    expect(onEnvelope).toHaveBeenCalledTimes(2);
+    const types = onEnvelope.mock.calls
+      .map((c) => (c[0] as { type?: string }).type)
+      .filter((t): t is string => typeof t === 'string');
+    expect(types).toContain('prompt');
+    expect(types).toContain('get_state');
+    expect(types).not.toContain('ping');
+
+    client.stop();
+  });
 });
