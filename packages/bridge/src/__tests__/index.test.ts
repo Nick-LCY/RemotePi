@@ -95,7 +95,7 @@ describe('start (1 case per M2 PRD §6)', () => {
 
     // The token URL is exactly the one a user would paste into the
     // browser (PRD §2 verification scenario).
-    expect(result.shareUrl).toMatch(/^https:\/\/web\.remote-pi\.sankabox\.com\/#/);
+    expect(result.shareUrl).toMatch(/^https:\/\/remote-pi\.sankabox\.com\/#/);
     expect(result.shareUrl.endsWith(`#${token}`)).toBe(true);
 
     result.client.stop();

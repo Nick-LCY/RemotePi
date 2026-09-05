@@ -1,10 +1,13 @@
-// RemotePi worker entry — M2 routing.
+// RemotePi worker entry — M2 routing + Worker Static Assets SPA.
 //
-// Three endpoints:
-//   GET /            — plain text hello (`remotepi worker v1`); ops smoke probe.
-//                      Continues to use PROTOCOL_VERSION from shared so the
-//                      probe fails loudly if someone bumps the protocol without
-//                      deploying the new bundle.
+// Endpoints (each routed to this script via `run_worker_first` in
+// wrangler.toml; any other path falls through to the asset worker):
+//   GET /healthz     — plain text ops smoke probe (was `GET /` until
+//                      2026-09-05, moved because the root now serves
+//                      the web SPA). Continues to use PROTOCOL_VERSION
+//                      from shared so the probe fails loudly if someone
+//                      bumps the protocol without deploying the new
+//                      bundle.
 //   UPGRADE /web     — WebSocket upgrade for browser sessions.
 //   UPGRADE /bridge  — WebSocket upgrade for the local bridge daemon.
 //
@@ -22,13 +25,20 @@
 // than a URL parameter on the forwarded request) keeps the original URL
 // intact — the DO's `request.url` still reflects `/web` or `/bridge` for any
 // future logging or routing decisions.
+
+// `GET /` is intentionally NOT handled here. wrangler.toml routes it to the
+// Static Assets worker, which serves `packages/web/dist/index.html` (or the
+// SPA fallback for any unmatched path under `not_found_handling =
+// "single-page-application"`). Putting a hello-text handler on `/` would
+// shadow the web app, so we moved the smoke probe to `/healthz` and added
+// it to `run_worker_first` so it's reachable through the Worker script.
 import { PROTOCOL_VERSION, type Role } from '@remotepi/shared';
 import type { Env } from './env.js';
 
 export type { Env } from './env.js';
 export { Room } from './room.js';
 
-const HELLO_TEXT = `hello from remotepi worker v${PROTOCOL_VERSION}`;
+const HEALTHZ_TEXT = `ok from remotepi worker v${PROTOCOL_VERSION}`;
 const PLAIN = { 'content-type': 'text/plain; charset=utf-8' } as const;
 const SUBPROTOCOL_VERSION = 'remotepi.v1';
 // X-RemotePi-Role: inner-only — never appears on the 101 response.
@@ -42,9 +52,12 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // Plain hello — ops smoke probe; unchanged from M1.
-    if (url.pathname === '/' && request.method === 'GET') {
-      return new Response(HELLO_TEXT, { status: 200, headers: PLAIN });
+    // Plain health probe — replaces the M1 `GET /` hello. `/healthz` is
+    // listed in wrangler.toml's `run_worker_first` so it reaches this
+    // script ahead of the asset worker (an SPA fallback would otherwise
+    // serve the web app's index.html here, which is not a valid probe).
+    if (url.pathname === '/healthz' && request.method === 'GET') {
+      return new Response(HEALTHZ_TEXT, { status: 200, headers: PLAIN });
     }
 
     if (url.pathname === '/web' || url.pathname === '/bridge') {

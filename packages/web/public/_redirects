@@ -1,4 +1,0 @@
-# Cloudflare Pages SPA fallback — every unknown path resolves to index.html
-# with a 200 so deep links (e.g. /?#token) keep working on hard refresh.
-# See docs/prds/m2-tunnel.md §4.
-/*    /index.html   200

@@ -15,3 +15,28 @@ class_name = "Room"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+# Static Assets — Vite-built SPA from `packages/web/dist`.
+#
+# Cross-package relative path verified on wrangler 4.128 (dry-run 2026-09-05
+# reads 5 files + 1 dir entry from packages/web/dist and bundles 139.57 KiB
+# total). No need to copy dist into the worker directory.
+#
+# not_found_handling = "single-page-application" makes unmatched paths
+# resolve to index.html — deep-link refresh works without needing the
+# Pages-style `public/_redirects` file. The `_redirects` file still ships
+# in the dist (vite copies public/* verbatim) but is effectively dead
+# config under Static Assets; the explicit TOML setting wins.
+#
+# run_worker_first is an array of path prefixes (verified on wrangler
+# 4.128) — these three routes MUST hit the Worker script (WS upgrade,
+# subprotocol token extraction, DO stub forwarding). If they fell
+# through to assets, the WS handshake would receive index.html (a 200
+# HTML page) instead of a 426 Upgrade Required, and the connection
+# would silently fail in browsers. The array form lets us enumerate
+# the routes precisely instead of the boolean `true` (which would
+# route *every* request to the Worker, defeating the purpose of assets).
+[assets]
+directory = "../packages/web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/web", "/bridge", "/healthz"]

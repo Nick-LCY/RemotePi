@@ -38,20 +38,24 @@ describe('token (3 cases per M2 PRD §6)', () => {
 
   it('3. shareUrl(token) builds the expected URL with the default base', () => {
     // The default base points at production; PRD §2 specifies it exactly.
-    expect(shareUrl('abc')).toBe('https://web.remote-pi.sankabox.com/#abc');
+    // 2026-09-05: host flipped from web.remote-pi.sankabox.com to the main
+    // domain — the web SPA now lives at remote-pi.sankabox.com (Static
+    // Assets merged with the worker) so the share URL points at the
+    // single canonical host.
+    expect(shareUrl('abc')).toBe('https://remote-pi.sankabox.com/#abc');
 
     // The `base` arg lets dev callers point at the local Vite server
     // (PRD §2 + task completion criterion: "dev 默认 `http://localhost:5173`").
     expect(shareUrl('abc', 'http://localhost:5173')).toBe('http://localhost:5173/#abc');
 
     // Defensive: a trailing slash on the base must NOT produce `//#`.
-    expect(shareUrl('abc', 'https://web.remote-pi.sankabox.com/')).toBe(
-      'https://web.remote-pi.sankabox.com/#abc',
+    expect(shareUrl('abc', 'https://remote-pi.sankabox.com/')).toBe(
+      'https://remote-pi.sankabox.com/#abc',
     );
 
     // The full token (not just the prefix) is appended verbatim.
     const full = generateToken();
     const url = shareUrl(full);
-    expect(url).toBe(`https://web.remote-pi.sankabox.com/#${full}`);
+    expect(url).toBe(`https://remote-pi.sankabox.com/#${full}`);
   });
 });

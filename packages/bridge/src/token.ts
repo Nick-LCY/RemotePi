@@ -9,14 +9,21 @@
 // URL fragments accept).
 //
 // `shareUrl(token, base?)` builds the human-facing link users paste into
-// the web UI. The default base points at the production web app; dev
-// callers can override (e.g. `http://localhost:5173` for the Vite server).
-// The token is appended as a URL fragment so it never reaches the server
-// in a referer header (cf. M2 PRD §2: token only travels via subprotocol
-// on the bridge side; on the web side the equivalent is the URL hash).
+// the web UI. The default base points at the production worker domain —
+// the web SPA is served from the same origin via Worker Static Assets
+// (see [[prds/m2-tunnel.md|M2 PRD §方案 / §5 infra]]); dev callers can
+// override (e.g. `http://localhost:5173` for the Vite server). The token
+// is appended as a URL fragment so it never reaches the server in a
+// referer header (cf. M2 PRD §2: token only travels via subprotocol on
+// the bridge side; on the web side the equivalent is the URL hash).
+//
+// 2026-09-05: base flipped from `https://web.remote-pi.sankabox.com` to
+// `https://remote-pi.sankabox.com` after the web app was merged into the
+// main domain (the `web.` subdomain + Pages project were retired). The
+// token URL hash convention is unchanged; only the host changed.
 import { randomBytes } from 'node:crypto';
 
-const DEFAULT_WEB_BASE = 'https://web.remote-pi.sankabox.com';
+const DEFAULT_WEB_BASE = 'https://remote-pi.sankabox.com';
 
 /** Base64url alphabet — `[A-Za-z0-9_-]`. Exported so the token-shape unit
  *  test can assert against it without re-listing the 64 chars. */

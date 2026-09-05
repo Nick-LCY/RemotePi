@@ -1,6 +1,9 @@
 // TokenPrompt — first screen when no `#<token>` is present in `location.hash`.
-// The web URL convention is `https://web.remote-pi.sankabox.com/#<token>`:
-// the hash carries the access token so it never lands in a server access log
+// The web URL convention is `https://remote-pi.sankabox.com/#<token>` (the
+// web SPA is served from the same origin as the worker via Static Assets
+// after the 2026-09-05 deployment-shape revision; see
+// [[architecture/decisions/0005-unified-domain-with-worker-static-assets-and-actions-cd.md|ADR-0005]]).
+// The hash carries the access token so it never lands in a server access log
 // or browser history (only `history.pushState`-style navigations across
 // pages with the same hash would surface it; here we use a direct write).
 //
