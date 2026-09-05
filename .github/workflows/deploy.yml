@@ -1,0 +1,147 @@
+# RemotePi CD — deploy Worker (with Static Assets SPA) and Terraform infra
+# on push to main. Mirrors the M1 deploy order (worker script live first,
+# then route / DNS apply) so the production domain never sees a worker
+# removal gap.
+#
+# Triggers:
+#   push to main → runs deploy-worker + terraform-apply in sequence.
+#   pull_request → also runs (plan + dry-run style verification, not
+#                  documented here as the operator should test that
+#                  branch's own CI on PRs). Currently the workflow
+#                  listens on push only — adjust `on:` to widen.
+#
+# Concurrency:
+#   group `deploy-main` blocks overlapping deploys to main; cancel-in-
+#   progress is FALSE — an in-flight deploy is allowed to finish so a
+#   half-applied terraform state never collides with a re-run.
+#
+# Secrets (configure under repo Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_API_TOKEN     — used by wrangler (Worker + Static Assets
+#                              deploy) AND terraform (DNS + route). The
+#                              SAME token serves both — wrangler consumes
+#                              it as the CLOUDFLARE_API_TOKEN env var,
+#                              while terraform reads it through the
+#                              TF_VAR_cloudflare_api_token env var (see
+#                              infra/variables.tf — TF variables are
+#                              injected via TF_VAR_*).
+#   CLOUDFLARE_ACCOUNT_ID    — used by terraform via TF_VAR_cloudflare_account_id
+#                              (data source `cloudflare_zone` filter.account.id,
+#                              infra/data.tf, has no default).
+#   AWS_ACCESS_KEY_ID        — S3 backend credentials for terraform.
+#   AWS_SECRET_ACCESS_KEY    — ditto.
+#
+#   Total: 4 secrets. The bucket / region / key for the S3 backend live in
+#   the committed `infra/backend.hcl` (no credentials inside — AWS keys
+#   come from the env vars above), so TF_STATE_BUCKET / TF_STATE_REGION /
+#   TF_STATE_KEY are no longer needed as separate secrets. `terraform init`
+#   reads backend.hcl via `-backend-config=backend.hcl`.
+#
+# pnpm version comes from the root `package.json` `packageManager` field;
+# pnpm/action-setup@v4 reads it automatically when no `version:` input is
+# passed. Do NOT add `with: { version: 10 }` — M1 hit "Multiple versions of
+# pnpm specified" and the only fix is to let the action read the field
+# itself (see [[prds/m1-infrastructure.md#8-github-actions-ci-骨架]]).
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  # ----- Job 1: deploy worker (with Static Assets) -----
+  #
+  # Order matters: this job runs first so the new worker (with assets)
+  # is live BEFORE the terraform apply (Job 2) potentially flips the
+  # route to a script name. After M1's M1→M2 rename lesson (deploy
+  # new name before pointing route at it), we never want a moment
+  # where the route points at a non-existent script.
+  deploy-worker:
+    name: Deploy Worker + Static Assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web SPA
+        # `pnpm -r run build` would build shared / bridge / web / worker
+        # in dependency order. But for CD we only need the web SPA
+        # output (`packages/web/dist`) so `wrangler deploy` can pick it
+        # up as Static Assets; the worker bundle itself is produced
+        # *by* wrangler during the next step, so a separate
+        # `wrangler deploy --dry-run` here would just duplicate work
+        # and re-emit the same bundle. Build web only — that is the
+        # single side-effect the deploy step depends on.
+        run: pnpm --filter @remotepi/web run build
+
+      - name: Deploy worker to Cloudflare
+        # `pnpm --filter worker run deploy:cf` runs `wrangler deploy`,
+        # which reads `worker/wrangler.toml` (assets + DO + observability)
+        # and uploads the bundle + static assets. Wrangler picks up
+        # CLOUDFLARE_API_TOKEN from the environment; nothing else is
+        # needed.
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: pnpm --filter worker run deploy:cf
+
+  # ----- Job 2: terraform apply -----
+  #
+  # Runs after `deploy-worker` so the worker script the route points
+  # at is guaranteed to exist. Failures here roll back via state but
+  # leave the (newly-deployed) worker untouched — at worst the route
+  # briefly points at an older script, which is a recoverable state.
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: deploy-worker
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.x
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: terraform init
+        # The non-sensitive backend fields (bucket / region / key / lock /
+        # encrypt) live in `infra/backend.hcl`, which is committed.
+        # AWS credentials are injected via the standard env vars below
+        # (TF S3 backend picks them up automatically — no
+        # -backend-config flags needed for credentials). The hcl file
+        # is the single source of truth for the S3 topology, mirroring
+        # what `infra/backend.hcl.example` documents.
+        run: terraform init -backend-config=backend.hcl -input=false
+
+      - name: terraform apply
+        env:
+          # AWS — S3 backend reads these for state operations.
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # Cloudflare — TF variables are exposed via TF_VAR_*. The
+          # provider block in infra/providers.tf reads
+          # var.cloudflare_api_token, and data.tf's cloudflare_zone
+          # filter requires var.cloudflare_account_id (no default —
+          # 5.x data source block is the only path).
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: terraform apply -auto-approve -input=false

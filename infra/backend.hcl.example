@@ -1,25 +1,28 @@
 # Terraform S3 backend 参数模板
 # --------------------------
-# 复制本文件 → infra/backend.hcl，填好下面的 bucket / region / key，
-# 然后执行 `terraform init -backend-config=backend.hcl` 即可连上 S3 backend。
+# 复制本文件 → infra/backend.hcl，填好下面的 bucket / region / key，然后执行
+#   terraform init -backend-config=backend.hcl
+# 即可连上 S3 backend。仓库里**已默认**带一份可用的 `backend.hcl`（bucket /
+# region / key 已填好真实的部署目标），仅当你需要把本地 init 指向**不同的**
+# S3（比如 staging 临时桶、CI 临时桶）时再用本模板覆盖——常规开发者无须
+# 复制本文件，直接用仓库里的 `backend.hcl` 即可。
 #
-# ⚠️ infra/backend.hcl 已被仓库根 .gitignore 排除——永远不要 commit 真实配置。
+# AWS 凭据**不**在本文件：走标准环境变量
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+# 或 ~/.aws/credentials（[default] / 自定义 profile）、或 EC2/ECS task role。
+# TF S3 backend 凭据解析顺序：环境变量 > ~/.aws/credentials > task role。
+# CI 走 GitHub Secrets（`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`），
+# 本地手跑 `aws login` 或 `aws configure` 后即用。
+#
+# Cloudflare token 不在本文件——见 infra/variables.tf 与 infra/terraform.tfvars。
 
-bucket         = "REPLACE_ME_WITH_YOUR_STATE_BUCKET"   # 例：remotepi-tfstate
-region         = "REPLACE_ME_WITH_BUCKET_REGION"       # 例：us-east-1 / ap-northeast-1
-key            = "infra/terraform.tfstate"             # state 在 bucket 里的 key
-use_lockfile   = true                                  # 启用 S3 原生 state 锁（需 Terraform ≥ 1.10）
-encrypt        = true                                  # 推荐启用 server-side encryption
+bucket       = "REPLACE_ME_WITH_YOUR_STATE_BUCKET"   # 例：remotepi-tfstate
+region       = "REPLACE_ME_WITH_BUCKET_REGION"       # 例：us-east-1 / ap-southeast-1
+key          = "infra/terraform.tfstate"             # state 在 bucket 里的 key
+use_lockfile = true                                  # 启用 S3 原生 state 锁（需 Terraform ≥ 1.10）
+encrypt      = true                                  # 推荐启用 server-side encryption
 
 # 可选：
 # dynamodb_table = "..."                               # 旧式 lock，TF ≥ 1.10 + use_lockfile=true 时**不需要**；
 #                                                     # 如果你的 bucket 不支持 native lockfile，再回退到这里
 # profile        = "default"                           # 本地多 profile 时可显式指定 AWS CLI profile
-
-# ---- AWS 凭据（可选，见下方说明）----
-# 直接写在本文件即可生效；backend.hcl 已被 .gitignore 排除，不入 git。
-# 不填则走默认链：环境变量 AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY，
-# 或 ~/.aws/credentials 的 [default] / 自定义 profile。
-# Cloudflare token 不在本文件，见 getting-started §6.3（TF_VAR_cloudflare_api_token 或 terraform.tfvars）。
-access_key = "REPLACE_ME_AWS_ACCESS_KEY_ID"
-secret_key = "REPLACE_ME_AWS_SECRET_ACCESS_KEY"

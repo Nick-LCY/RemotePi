@@ -15,10 +15,11 @@ build/
 *.tfstate
 *.tfstate.*
 *.tfstate.backup
-backend.hcl
 *.tfplan
 # terraform.tfvars 通常含真实 secret（真实凭据）；模板用 infra/terraform.tfvars.example 提交
 *.tfvars
+# 注：infra/backend.hcl 现已入库（bucket / region / key / use_lockfile / encrypt
+# 等非敏感字段；AWS 凭据走标准环境变量，见 infra/backend.hcl 顶部注释）。
 
 # Coverage / test
 coverage/
