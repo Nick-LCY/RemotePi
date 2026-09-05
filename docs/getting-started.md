@@ -72,7 +72,7 @@ pnpm install
 
 ## 3. 本地开发：每个包怎么跑
 
-仓库顶层有 `pnpm -r --parallel run dev`，会并行起四个 dev 任务（bridge / worker / web / 任一后台 inspector）。**首次本地联调建议从 VS Code 任务面板逐个启动**（见 §4），便于独立看 OUTPUT。
+**首次本地联调建议按 §3.4 用三个终端分别起 worker / bridge / web**，各服务输出独立可见，便于看日志与排查；需要断点再按 §4 F5 调试。只想让所有 dev 一起跑也行：`pnpm dev`（根脚本即 `pnpm -r --parallel run dev`，但所有输出混在同一流）。
 
 ### 3.1 bridge — `tsx watch`
 
@@ -161,9 +161,16 @@ http://localhost:5173/#<token>
 
 ---
 
-## 4. VS Code 一键启动（推荐）
+## 4. VS Code 调试（launch.json）
 
-`.vscode/` 下挂了四件套（`tasks.json` / `launch.json` / `settings.json` / `extensions.json`），路径全部用 `${workspaceFolder}` 变量引用，**没有机器相关绝对路径**，换机直接 `pnpm install` 后就能跑。
+`.vscode/` 下只保留调试入口三件套：`launch.json`（三个 F5 配置）/ `settings.json` / `extensions.json`。**不再有 `tasks.json`** —— Run Task / 任务面板一键起 dev 的路径已裁掉（不需要「一按全起」和「三端全起」）。所有 dev 服务一律按 §3 / §3.4 用终端手动起：
+
+| 服务 | 命令（终端手动起） | 见 |
+|------|-------------------|----|
+| bridge | `pnpm --filter @remotepi/bridge dev` | §3.1 |
+| web | `pnpm --filter @remotepi/web dev` | §3.2 |
+| worker（普通） | `pnpm --filter worker dev` | §3.3 |
+| worker（带 inspector，断点用） | `pnpm --filter worker run dev:inspector` | §3.3 |
 
 ### 4.1 一次性的插件安装
 
@@ -175,24 +182,15 @@ http://localhost:5173/#<token>
 
 点「Install Workspace Recommended Extensions」一键装。装完后保存 `.ts` 自动 prettier + eslint autofix。
 
-### 4.2 任务面板起 dev 服务
+### 4.2 F5 三个配置
 
-`Ctrl+Shift+P` → `Tasks: Run Task` → 选一个：
+F5 前确保**对应的 dev 服务已经在终端里起好**（命令看上表）；F5 本身不 `preLaunchTask`、不自动开服务，**不会和终端里手起的服务抢端口**。
 
-- `dev:bridge` — `pnpm --filter @remotepi/bridge dev`
-- `dev:worker` — `pnpm --filter worker dev`
-- `dev:worker:inspector` — `pnpm --filter worker dev:inspector`
-- `dev:web` — `pnpm --filter @remotepi/web dev`
-
-四个任务都是 `isBackground: true`，各占独立 OUTPUT 面板（`presentation.group = "dev"`），可同时启。
-
-### 4.3 F5 调试
-
-| 配置 | 用途 | 前置条件 |
-|------|------|---------|
-| `bridge: debug (tsx)` | 断点命中 `packages/bridge/src/index.ts` | 直接 F5，无需 dev 任务 |
-| `web: debug (chrome)` | 断点命中 vite 编译后的 web 源码 | 自动 `preLaunchTask: dev:web`，自动开浏览器 |
-| `worker: attach inspector` | 断点命中 `worker/src/index.ts` | 自动 `preLaunchTask: dev:worker:inspector`（workerd inspector 端口 9229） |
+| 配置 | 用法 | 前置（必须先在终端起好） | 备注 |
+|------|------|--------------------------|------|
+| `bridge: debug (tsx)` | 直接 F5 由 tsx 调试器拉起 bridge，输出落在 VS Code `integratedTerminal` | 无（不需要先起 bridge） | 调试器启动的 bridge 与终端 `pnpm --filter @remotepi/bridge dev` 手起的 bridge **不要双开** —— 会争同一个 bridge slot |
+| `web: debug (chrome)` | F5 只负责打开 Chrome 并接断点，vite 服务由前置命令提供 | 先起 `pnpm --filter @remotepi/web dev`（`http://localhost:5173/`） | 断点命中 vite 编译后的 web 源码 |
+| `worker: attach inspector` | F5 attach 到 workerd inspector（端口 9229），断点命中 `worker/src/index.ts` | 先起 `pnpm --filter worker run dev:inspector`（即 `wrangler dev --inspector-port=9229`） | 端口 9229 与前置命令必须对齐 |
 
 ---
 
