@@ -1,17 +1,27 @@
-// Vitest spec for the bridge entry point (`index.ts`) — covers PRD §6
-// task case 8: `index.ts` startup prints the token and the share URL.
+// Vitest spec for the bridge entry point (`index.ts`) — covers M3
+// task 03 PRD §6 acceptance cases for `start()`:
+//   - loads config from default / `--config` path
+//   - prints banner with token + share URL + worker URL
+//   - starts the WSS loop via BridgeClient
+//   - delegates to `loadBridgeConfig` and surfaces a clean error +
+//     exit 1 for invalid configs
+//   - ignores unknown CLI flags silently (systemd wrapper friendly)
+//   - the M2-era `--worker-url` flag and `REMOTEPI_WORKER_URL` env
+//     var have no effect (the config file is the single source of truth)
 //
 // We exercise `start()` directly with an injected mock socket factory
-// and a logger spy, which is the lighter of the two options the task
-// lists (the alternative is `child_process.spawn` + stdout capture; the
-// logger-spy approach avoids cross-process plumbing and the build
-// prerequisite `pnpm run build`).
+// + a logger spy + a tmp config file, which is the lighter of the
+// two options the task lists (the alternative is `child_process.spawn`
+// + stdout capture; the logger-spy approach avoids cross-process
+// plumbing and the build prerequisite `pnpm run build`).
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { BridgeClient, type WebSocketLike } from '../client.js';
 import { logger } from '../logger.js';
-import { DEFAULT_WORKER_URL, start } from '../index.js';
-import { shareUrl } from '../token.js';
+import { start } from '../index.js';
 
 class NoopSocket implements WebSocketLike {
   readyState = 0;
@@ -31,159 +41,316 @@ class NoopSocket implements WebSocketLike {
   }
 }
 
+/** Real fs helper: write a config JSON file into a fresh tmpdir and
+ *  return both the dir (for cleanup) and the file path. Used by every
+ *  test that needs a working config — no fs mocking required. */
+function writeConfig(
+  body: Record<string, unknown>,
+): { dir: string; path: string } {
+  const dir = mkdtempSync(path.join(tmpdir(), 'remotepi-bridge-test-'));
+  const p = path.join(dir, 'bridge.json');
+  writeFileSync(p, JSON.stringify(body));
+  return { dir, path: p };
+}
+
 // Capture the spies in `beforeEach` so we can reference them later
 // without triggering the `@typescript-eslint/unbound-method` rule on
 // `logger.info` etc. (the rule fires when you read a method off an
 // object literal; holding it in a typed local sidesteps that).
 let infoSpy: MockInstance<typeof logger.info>;
 let errorSpy: MockInstance<typeof logger.error>;
-// Save & restore the env var so tests don't leak state to each other
-// (or to the user's shell, if they happen to have it set when running
-// `pnpm test`).
-const ORIGINAL_ENV_WORKER_URL = process.env['REMOTEPI_WORKER_URL'];
+
+/** Track every tmpdir we created so `afterEach` can clean them up.
+ *  Even successful tests should not leak — tmp dirs accumulate on
+ *  CI workers and can trigger disk-pressure flakes. */
+const createdDirs: string[] = [];
 
 beforeEach(() => {
   infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
   vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
   errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
-  // Reset to the original value captured at module load. Tests that
-  // need a specific value set it explicitly after this hook.
-  if (ORIGINAL_ENV_WORKER_URL === undefined) {
-    delete process.env['REMOTEPI_WORKER_URL'];
-  } else {
-    process.env['REMOTEPI_WORKER_URL'] = ORIGINAL_ENV_WORKER_URL;
-  }
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  for (const dir of createdDirs.splice(0)) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best-effort — leaks here are cosmetic, not test-affecting.
+    }
+  }
 });
 
-describe('start (1 case per M2 PRD §6)', () => {
-  it('8. logs the token, the share URL, and the resolved worker URL on startup, then begins the client loop', () => {
-    const createSocket = (): WebSocketLike => new NoopSocket();
+/** Wrap `writeConfig` so we can register the dir for cleanup without
+ *  every test having to remember. */
+function makeConfig(body: Record<string, unknown>): string {
+  const { dir, path: p } = writeConfig(body);
+  createdDirs.push(dir);
+  return p;
+}
 
-    // Provide an explicit token so the assertion is deterministic and
-    // doesn't rely on the RNG. The shape still matches what
-    // `generateToken()` produces in production (32 base64url chars).
+describe('start (config-driven entry)', () => {
+  it('logs the token, the share URL, and the resolved worker URL on startup, then begins the client loop', () => {
+    const createSocket = (): WebSocketLike => new NoopSocket();
     const token = 'a'.repeat(32);
-    const result = start({
+    const configPath = makeConfig({
+      worker_url: 'wss://override.test/bridge',
+      web_base_url: 'https://override.test',
+      work_dir: '/tmp',
       token,
+    });
+
+    const result = start({
+      configPath,
       createSocket,
-      // Avoid touching process.argv — the test runner's argv isn't a
-      // `--worker-url` invocation and the default should win.
+      // Empty argv so we don't accidentally pick up a stale flag from
+      // the vitest runner's argv.
       argv: [],
-      workerUrl: 'wss://override.test/bridge',
     });
 
     expect(result.token).toBe(token);
-    expect(result.shareUrl).toBe(shareUrl(token));
+    // Share URL uses the config's web_base_url, not a hard-coded host.
+    expect(result.shareUrl).toBe(`https://override.test/#${token}`);
     expect(result.workerUrl).toBe('wss://override.test/bridge');
     expect(result.client).toBeInstanceOf(BridgeClient);
 
     // Banner lines must be on the info stream. Order matters so a
-    // user scanning stdout sees the most-stable line (token) first
-    // and the dynamic one (worker URL) last — that's the line they'll
-    // inspect when something is connected to the wrong host.
+    // user scanning stdout sees the most-stable line (config path)
+    // first and the dynamic one (worker URL) later — that's the line
+    // they'll inspect when something is connected to the wrong host.
+    expect(infoSpy).toHaveBeenCalledWith(`config: ${configPath}`);
     expect(infoSpy).toHaveBeenCalledWith(`token: ${token}`);
     expect(infoSpy).toHaveBeenCalledWith(`share URL: ${result.shareUrl}`);
-    expect(infoSpy).toHaveBeenCalledWith(`worker URL: ${result.workerUrl}`);
-    // Explicit override — production-default hint must NOT show.
-    expect(infoSpy).not.toHaveBeenCalledWith(
-      expect.stringContaining('this is the production default'),
-    );
+    expect(infoSpy).toHaveBeenCalledWith('worker URL: wss://override.test/bridge');
+    expect(infoSpy).toHaveBeenCalledWith('work_dir: /tmp');
 
     // The token URL is exactly the one a user would paste into the
-    // browser (PRD §2 verification scenario).
-    expect(result.shareUrl).toMatch(/^https:\/\/remote-pi\.sankabox\.com\/#/);
+    // browser — derives from the config's web_base_url.
+    expect(result.shareUrl).toMatch(/^https:\/\/override\.test\/#/);
     expect(result.shareUrl.endsWith(`#${token}`)).toBe(true);
 
     result.client.stop();
   });
 
-  it('start() defaults workerUrl to the production domain when no flag is given', () => {
+  it('start() honors the --config flag in argv', () => {
     const createSocket = (): WebSocketLike => new NoopSocket();
     const token = 'b'.repeat(32);
-    const result = start({
+    const configPath = makeConfig({
+      worker_url: 'wss://from-flag.test/bridge',
+      web_base_url: 'https://from-flag.test',
+      work_dir: '/tmp',
       token,
-      createSocket,
-      // Empty argv — explicit so the test isn't sensitive to whatever
-      // vitest's runner happens to pass. beforeEach already cleared
-      // REMOTEPI_WORKER_URL so the default really wins here.
-      argv: [],
     });
-    expect(result.workerUrl).toBe(DEFAULT_WORKER_URL);
-    // Production-default fallback must surface the hint — that's the
-    // whole point of the line: a user running `bridge` with no args
-    // gets told they're pointed at prod.
-    expect(infoSpy).toHaveBeenCalledWith(
-      'hint: this is the production default — for local dev pass -- --worker-url ws://localhost:8787/bridge',
-    );
+
+    const result = start({
+      createSocket,
+      argv: ['--config', configPath],
+    });
+    expect(result.workerUrl).toBe('wss://from-flag.test/bridge');
+    expect(result.shareUrl).toBe(`https://from-flag.test/#${token}`);
     result.client.stop();
   });
 
-  it('start() honors --worker-url when present in argv', () => {
+  it('start() honors --config=<path> long form in argv', () => {
     const createSocket = (): WebSocketLike => new NoopSocket();
     const token = 'c'.repeat(32);
-    const result = start({
+    const configPath = makeConfig({
+      worker_url: 'wss://equals.test/bridge',
+      web_base_url: 'https://equals.test',
+      work_dir: '/tmp',
       token,
-      createSocket,
-      argv: ['--worker-url', 'ws://localhost:8787/bridge'],
     });
-    expect(result.workerUrl).toBe('ws://localhost:8787/bridge');
-    // Explicit override — hint must not appear.
-    expect(infoSpy).not.toHaveBeenCalledWith(
-      expect.stringContaining('this is the production default'),
-    );
+
+    const result = start({
+      createSocket,
+      argv: [`--config=${configPath}`],
+    });
+    expect(result.workerUrl).toBe('wss://equals.test/bridge');
     result.client.stop();
   });
 
-  it('start() honors REMOTEPI_WORKER_URL env var when no flag is given', () => {
+  it('start() generates a token when the config omits one', () => {
+    const createSocket = (): WebSocketLike => new NoopSocket();
+    const configPath = makeConfig({
+      worker_url: 'wss://no-token.test/bridge',
+      web_base_url: 'https://no-token.test',
+      work_dir: '/tmp',
+      // No `token` field — generation kicks in.
+    });
+
+    const result = start({
+      createSocket,
+      argv: [],
+      configPath,
+    });
+    // Generated tokens are 32-char base64url strings (token.ts contract).
+    expect(result.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(result.shareUrl).toBe(`https://no-token.test/#${result.token}`);
+    result.client.stop();
+  });
+
+  it('start() silently ignores unknown CLI flags (systemd wrapper friendly)', () => {
+    // PRD §2.2 / decision 9: unknown flags must NOT cause exit or
+    // throw. They are dropped on the floor and `--config` still wins.
+    // This case also covers the `-D`, `--systemd-foo`, etc. shapes a
+    // supervisor might emit.
     const createSocket = (): WebSocketLike => new NoopSocket();
     const token = 'd'.repeat(32);
-    process.env['REMOTEPI_WORKER_URL'] = 'ws://localhost:8787/bridge';
-    const result = start({
+    const configPath = makeConfig({
+      worker_url: 'wss://unknown-flag.test/bridge',
+      web_base_url: 'https://unknown-flag.test',
+      work_dir: '/tmp',
       token,
-      createSocket,
-      // Empty argv so the env var is the only override path.
-      argv: [],
     });
-    expect(result.workerUrl).toBe('ws://localhost:8787/bridge');
-    // The resolved URL differs from the production default, so the
-    // hint must NOT fire — it's only for accidental-prod connections.
-    expect(infoSpy).not.toHaveBeenCalledWith(
-      expect.stringContaining('this is the production default'),
-    );
+
+    // Mixing in junk flags must not change the resolved config.
+    const result = start({
+      createSocket,
+      argv: [
+        '--systemd-foo=bar',
+        '--whatever',
+        '--config',
+        configPath,
+        '-D',
+      ],
+    });
+    expect(result.workerUrl).toBe('wss://unknown-flag.test/bridge');
+    expect(result.token).toBe(token);
     result.client.stop();
   });
 
-  it('start() prefers --worker-url over REMOTEPI_WORKER_URL', () => {
+  it('start() does not treat a systemd-style -D flag as the --config value', () => {
+    // Regression guard for W3: `--config -D` must NOT resolve to `-D`
+    // as the config path (the OLD `!next.startsWith('--')` check
+    // swallowed single-dash flags as paths). The fix is to use
+    // `!next.startsWith('-')`, returning undefined when the next
+    // token looks flag-shaped. We verify by passing `-D` directly
+    // after `--config` and asserting the function falls back to the
+    // default config path — which doesn't exist in this test env, so
+    // the bridge reports a friendly config error rather than trying
+    // to open `-D` as a literal file path.
+    const createSocket = (): WebSocketLike => new NoopSocket();
+    expect(() =>
+      start({
+        createSocket,
+        argv: ['--config', '-D'],
+      }),
+    ).toThrow(/bridge: parse_failed/);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/^bridge: parse_failed:/),
+    );
+  });
+
+  it('start() stops scanning for --config at the -- argument terminator', () => {
+    // Regression guard for S1: argv of `['--', '--config', '/tmp/x']`
+    // must NOT resolve `/tmp/x` as the config path — once the `--`
+    // terminator is seen, everything after it is positional. The
+    // bridge falls back to the default config path (which doesn't
+    // exist) and surfaces a parse_failed error.
+    const createSocket = (): WebSocketLike => new NoopSocket();
+    expect(() =>
+      start({
+        createSocket,
+        argv: ['--', '--config', '/tmp/somewhere.json'],
+      }),
+    ).toThrow(/bridge: parse_failed/);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/^bridge: parse_failed:/),
+    );
+  });
+
+  it('start() throws when the config file is missing', () => {
+    // The auto-run entry guard translates this into process.exitCode=1
+    // and a friendly stderr line; programmatic callers (tests) see
+    // the thrown Error verbatim. We assert the throw, not the exit
+    // code, because the CLI guard is exercised separately.
+    const createSocket = (): WebSocketLike => new NoopSocket();
+    expect(() =>
+      start({
+        createSocket,
+        argv: [],
+        configPath: '/nonexistent/path/bridge.json',
+      }),
+    ).toThrow(/bridge: parse_failed/);
+    // The friendly message must have been logged (matches the format
+    // the auto-run entry uses).
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/^bridge: parse_failed:/),
+    );
+  });
+
+  it('start() throws when the config is missing worker_url', () => {
+    const createSocket = (): WebSocketLike => new NoopSocket();
+    const configPath = makeConfig({
+      // worker_url omitted on purpose.
+      web_base_url: 'https://x.test',
+      work_dir: '/tmp',
+      token: 'z'.repeat(32),
+    });
+    expect(() =>
+      start({ createSocket, argv: [], configPath }),
+    ).toThrow(/bridge: missing_field/);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/^bridge: missing_field:/),
+    );
+  });
+
+  it('M2-era --worker-url flag has no effect (config file wins)', () => {
+    // Regression guard: if a wrapper still passes the old flag, the
+    // bridge must NOT pick it up. The config file is the single
+    // source of truth (PRD §2.1 / §2.2).
     const createSocket = (): WebSocketLike => new NoopSocket();
     const token = 'e'.repeat(32);
-    process.env['REMOTEPI_WORKER_URL'] = 'ws://from-env.test/bridge';
-    const result = start({
+    const configPath = makeConfig({
+      worker_url: 'wss://from-config.test/bridge',
+      web_base_url: 'https://from-config.test',
+      work_dir: '/tmp',
       token,
-      createSocket,
-      argv: ['--worker-url', 'ws://from-flag.test/bridge'],
     });
-    expect(result.workerUrl).toBe('ws://from-flag.test/bridge');
+    const result = start({
+      createSocket,
+      argv: [
+        '--worker-url',
+        'wss://from-stale-flag.test/bridge', // <-- must be ignored
+        '--config',
+        configPath,
+      ],
+    });
+    // The config file wins; the stale --worker-url is silently dropped.
+    expect(result.workerUrl).toBe('wss://from-config.test/bridge');
     result.client.stop();
   });
 
-  it('start() treats empty REMOTEPI_WORKER_URL as not set', () => {
+  it('M2-era REMOTEPI_WORKER_URL env var has no effect (config file wins)', () => {
+    // Regression guard: env var was retired in M3 task 03.
     const createSocket = (): WebSocketLike => new NoopSocket();
     const token = 'f'.repeat(32);
-    // A user who exported `REMOTEPI_WORKER_URL=` (or whose shell
-    // completion left an empty value behind) must NOT end up with
-    // a literal-empty URL passed to the WebSocket constructor.
-    process.env['REMOTEPI_WORKER_URL'] = '';
-    const result = start({
+    const configPath = makeConfig({
+      worker_url: 'wss://from-config-2.test/bridge',
+      web_base_url: 'https://from-config-2.test',
+      work_dir: '/tmp',
       token,
-      createSocket,
-      argv: [],
     });
-    expect(result.workerUrl).toBe(DEFAULT_WORKER_URL);
-    result.client.stop();
+    const ORIGINAL_ENV = process.env['REMOTEPI_WORKER_URL'];
+    process.env['REMOTEPI_WORKER_URL'] = 'wss://from-env.test/bridge';
+    try {
+      const result = start({
+        createSocket,
+        argv: [],
+        configPath,
+      });
+      // Env var is silently ignored — the config's worker_url is the
+      // only thing that resolves the WSS target.
+      expect(result.workerUrl).toBe('wss://from-config-2.test/bridge');
+      result.client.stop();
+    } finally {
+      if (ORIGINAL_ENV === undefined) {
+        delete process.env['REMOTEPI_WORKER_URL'];
+      } else {
+        process.env['REMOTEPI_WORKER_URL'] = ORIGINAL_ENV;
+      }
+    }
   });
 });
 
@@ -234,11 +401,17 @@ describe('crash handlers (installed at module load)', () => {
     // `activeClient` is set the way production sets it.
     const createSocket = (): WebSocketLike => new NoopSocket();
     const token = 'g'.repeat(32);
-    const result = start({
+    const configPath = makeConfig({
+      worker_url: 'wss://example.test/bridge',
+      web_base_url: 'https://example.test',
+      work_dir: '/tmp',
       token,
+    });
+
+    const result = start({
       createSocket,
       argv: [],
-      workerUrl: 'wss://example.test/bridge',
+      configPath,
     });
 
     const exitSpy = vi

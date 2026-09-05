@@ -13,15 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@remotepi/shared": "workspace:*"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.4"
-  },
-  "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    }
+    "@remotepi/shared": "workspace:*",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2"

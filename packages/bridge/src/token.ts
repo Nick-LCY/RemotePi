@@ -8,22 +8,22 @@
 // specifies base64url chars are a strict subset of what subprotocols and
 // URL fragments accept).
 //
-// `shareUrl(token, base?)` builds the human-facing link users paste into
-// the web UI. The default base points at the production worker domain —
-// the web SPA is served from the same origin via Worker Static Assets
-// (see [[prds/m2-tunnel.md|M2 PRD §方案 / §5 infra]]); dev callers can
-// override (e.g. `http://localhost:5173` for the Vite server). The token
-// is appended as a URL fragment so it never reaches the server in a
-// referer header (cf. M2 PRD §2: token only travels via subprotocol on
-// the bridge side; on the web side the equivalent is the URL hash).
+// `shareUrl(token, base)` builds the human-facing link users paste into
+// the web UI. The base is supplied by the caller (since M3 it comes from
+// the JSON config's `web_base_url` field — [[prds/m3-single-session.md#§2-1|
+// M3 PRD §2.1]]); there is no default because the bridge no longer
+// hard-codes a production origin. The token is appended as a URL
+// fragment so it never reaches the server in a referer header (cf. M2
+// PRD §2: token only travels via subprotocol on the bridge side; on the
+// web side the equivalent is the URL hash).
 //
 // 2026-09-05: base flipped from `https://web.remote-pi.sankabox.com` to
-// `https://remote-pi.sankabox.com` after the web app was merged into the
-// main domain (the `web.` subdomain + Pages project were retired). The
-// token URL hash convention is unchanged; only the host changed.
+// `https://remote-pi.sankabox.com` after the web app was merged into
+// the main domain (the `web.` subdomain + Pages project were retired).
+// 2026-09-05 (M3): the `base` parameter is now required — callers must
+// supply the web origin from their config file; the production default
+// constant was retired alongside the `--worker-url` CLI flag.
 import { randomBytes } from 'node:crypto';
-
-const DEFAULT_WEB_BASE = 'https://remote-pi.sankabox.com';
 
 /** Base64url alphabet — `[A-Za-z0-9_-]`. Exported so the token-shape unit
  *  test can assert against it without re-listing the 64 chars. */
@@ -40,8 +40,11 @@ export function generateToken(): string {
 
 /** Build the share URL for the given token. The token is appended as a URL
  *  fragment so the receiving page can read it client-side without it
- *  appearing in any server-side log. */
-export function shareUrl(token: string, base: string = DEFAULT_WEB_BASE): string {
+ *  appearing in any server-side log. The `base` is the web origin
+ *  (scheme + host + optional port), drawn from the bridge config file's
+ *  `web_base_url` field — no default exists because the bridge no
+ *  longer hard-codes a production origin (M3 task 03). */
+export function shareUrl(token: string, base: string): string {
   // Strip any trailing slash on the base so the output always has exactly
   // one `/` before the fragment — defensive against callers that pass
   // either form.

@@ -4,10 +4,11 @@
 // avoid pino / winston — the bridge is a long-lived process whose only
 // observability surface is stdout, and `console.*` is plenty for that.
 //
-// All three levels write to stdout (PRD §2: "stdout 输出"). The `error`
-// label is purely visual — the underlying stream is still stdout so the
-// startup banner (token + share URL, printed by index.ts) and any later
-// error log sit on the same stream that tests can capture.
+// `info` and `warn` write to stdout (PRD §2: "stdout 输出"); `error`
+// writes to stderr so log-aggregators + systemd journal can separate
+// fatal signals from routine lifecycle chatter without parsing the
+// `[bridge] error` token. The `[bridge] <level>` prefix is preserved
+// across all three levels so grep filters keep working.
 //
 // `console.*` is acceptable in `packages/bridge/src/**` — see the ESLint
 // flat config (`eslint.config.js`) which disables `no-console` there.
@@ -40,9 +41,11 @@ export const logger = {
   warn(...args: unknown[]): void {
     console.log(format('warn', args));
   },
-  /** Reserved for future use; the bridge has no truly fatal conditions in
-   *  M2 (everything is reconnect-friendly). Kept here for symmetry. */
+  /** Crashes + config load failures + rejected envelopes — anything a
+   *  operator would page on. Routed to stderr so journald / log
+   *  pipelines can split signal from noise without parsing the level
+   *  token. */
   error(...args: unknown[]): void {
-    console.log(format('error', args));
+    console.error(format('error', args));
   },
 };

@@ -1,29 +1,37 @@
-// Bridge daemon entry point — generates a token, prints the share URL,
-// then opens the long-lived WSS loop. The token lives for the lifetime
-// of the process: we never rotate it, so users keep the same URL even
-// across transient network blips (the reconnect logic in `client.ts`
-// keeps the existing `BridgeClient` instance alive).
+// Bridge daemon entry point — loads the JSON config, prints the token
+// and the share URL, then opens the long-lived WSS loop. The token
+// lives for the lifetime of the process: we never rotate it, so users
+// keep the same URL even across transient network blips (the reconnect
+// logic in `client.ts` keeps the existing `BridgeClient` instance alive).
 //
 // CLI:
-//   bridge [--worker-url <wss-url>]
+//   bridge [--config <path>]
 //
-// Resolution chain (highest priority first):
-//   1. `--worker-url <wss-url>` CLI flag
-//   2. `REMOTEPI_WORKER_URL` environment variable
-//   3. default production URL `wss://remote-pi.sankabox.com/bridge`
+// M3 task 03 ([prds/m3-single-session.md#§2-1]): the bridge no longer
+// accepts `--worker-url` or `REMOTEPI_WORKER_URL`. All four
+// connection-related inputs (worker URL, web base URL, work directory,
+// optional persistent token) come from a single JSON file. The only
+// remaining CLI flag is `--config <path>` (with `--config=<path>`
+// accepted as an equivalent form for wrappers). Unknown flags are
+// silently ignored — systemd-style supervisors may pass arbitrary
+// extra flags and the bridge must not refuse to start because of them
+// (PRD §2.2: "未知 flag 静默忽略").
 //
-// `--worker-url` / `REMOTEPI_WORKER_URL` are both useful for `wrangler
-// dev` (`ws://localhost:8787/bridge`) and for staging environments.
-// The env var is the friendlier form for wrappers (systemd, nohup, CI)
-// that don't want to thread flags through a process tree.
+// Config path resolution: `--config` flag → `XDG_CONFIG_HOME` env var
+// → `~/.config/remotepi/bridge.json`. Loaded and validated by
+// `loadBridgeConfig`; failures surface as a single friendly stderr line
+// + `process.exitCode = 1`, never a stack trace.
 import { fileURLToPath } from 'node:url';
-import { generateToken, shareUrl } from './token.js';
 import { BridgeClient, type WebSocketLike } from './client.js';
+import {
+  loadBridgeConfig,
+  readTokenOrGenerate,
+  resolveDefaultConfigPath,
+  ConfigError,
+  type BridgeConfig,
+} from './config.js';
 import { logger } from './logger.js';
-
-/** Default WSS endpoint — production worker domain. Matches the route
- *  the Terraform config creates in [[prds/m2-tunnel.md#§5-infra]]. */
-export const DEFAULT_WORKER_URL = 'wss://remote-pi.sankabox.com/bridge';
+import { shareUrl } from './token.js';
 
 /** Tracks the auto-run client's lifecycle so `uncaughtException` can close
  *  its socket before we exit. Tests hold their own reference via the
@@ -36,6 +44,36 @@ let activeClient: BridgeClient | null = null;
  *  trace in the log regardless. */
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+/** Parse `--config <value>` out of an argv slice. Returns undefined
+ *  when the flag is absent. Stops scanning at `--` so unknown flags
+ *  aren't treated as the flag's value. Only recognised CLI flag as of
+ *  M3 task 03 — everything else is silently ignored (PRD §2.2
+ *  "未知 CLI flag 静默忽略"). The next-token check uses `startsWith('-')`
+ *  (not `startsWith('--')`) so systemd-style single-dash flags like
+ *  `-D` are not swallowed as the `--config` value. */
+function parseConfigPathFlag(argv: readonly string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === undefined) continue;
+    // Argument-list terminator: anything after `--` is positional, not
+    // a flag. Stop scanning immediately so `--config -- /tmp/foo`
+    // doesn't pick up `/tmp/foo` as the path.
+    if (arg === '--') return undefined;
+    if (arg === '--config') {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('-')) {
+        return next;
+      }
+      return undefined;
+    }
+    // Allow `--config=value` form for convenience.
+    if (arg.startsWith('--config=')) {
+      return arg.slice('--config='.length);
+    }
+  }
+  return undefined;
 }
 
 /** Install the bridge's crash handlers exactly once at module load.
@@ -87,47 +125,32 @@ function installProcessHandlers(): void {
 installProcessHandlers();
 
 export interface StartOptions {
-  /** Override the worker URL (env-var, CLI flag, test seam). */
-  workerUrl?: string;
+  /** Override the config file path (CLI flag / test seam / programmatic
+   *  caller). When omitted, `resolveDefaultConfigPath()` is consulted. */
+  configPath?: string;
   /** Override the logger (test seam). */
   logger?: typeof logger;
   /** Override the WebSocket factory (test seam). */
   createSocket?: (url: string, protocols: string[]) => WebSocketLike;
-  /** Override the argv slice used for `--worker-url` parsing (test seam). */
+  /** Override the argv slice used for `--config` parsing (test seam).
+   *  When omitted, `process.argv.slice(2)` is used (the production CLI
+   *  entry). Unknown flags in this slice are silently ignored — see
+   *  PRD §2.2. */
   argv?: string[];
-  /** Override the token (test seam — production code generates one). */
+  /** Override the token (test seam — production code generates one
+   *  via `readTokenOrGenerate`). When omitted AND the config has a
+   *  non-empty `token`, that token is used; otherwise a fresh token is
+   *  generated and NOT persisted to the config file (PRD §2.1). */
   token?: string;
 }
 
-/** Parse `--worker-url <value>` out of an argv slice. Returns undefined
- *  when the flag is absent. Stops scanning at `--` so unknown flags
- *  aren't treated as the flag's value. */
-function parseWorkerUrlFlag(argv: readonly string[]): string | undefined {
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === undefined) continue;
-    if (arg === '--worker-url') {
-      const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--')) {
-        return next;
-      }
-      return undefined;
-    }
-    // Allow `--worker-url=value` form for convenience.
-    if (arg.startsWith('--worker-url=')) {
-      return arg.slice('--worker-url='.length);
-    }
-  }
-  return undefined;
-}
-
-/** Read the worker URL from the `REMOTEPI_WORKER_URL` env var. Returns
- *  undefined when unset OR set to an empty string — the latter so an
- *  accidentally-exported `REMOTEPI_WORKER_URL=` doesn't silently break
- *  the bridge by handing an empty URL to the WebSocket constructor. */
-function readEnvWorkerUrl(): string | undefined {
-  const v = process.env['REMOTEPI_WORKER_URL'];
-  return v !== undefined && v !== '' ? v : undefined;
+/** Friendly single-line stderr message for a `ConfigError`. We do NOT
+ *  print the stack — operators don't need to chase a stack for "your
+ *  config is broken" errors, and a long Zod issue dump makes the
+ *  auto-run entry point feel like a crash. The `code` is included so
+ *  scripted wrappers / log-aggregators can grep for it. */
+function describeConfigError(err: ConfigError): string {
+  return `bridge: ${err.code}: ${err.message}`;
 }
 
 /** Generate a token, print it + the share URL, and start the client.
@@ -139,27 +162,67 @@ export function start(options: StartOptions = {}): {
   workerUrl: string;
 } {
   const log = options.logger ?? logger;
-  const token = options.token ?? generateToken();
-  const shareLink = shareUrl(token);
-  const workerUrl =
-    options.workerUrl ??
-    parseWorkerUrlFlag(options.argv ?? process.argv.slice(2)) ??
-    readEnvWorkerUrl() ??
-    DEFAULT_WORKER_URL;
+  // Path resolution order: explicit `configPath` option → `--config`
+  // flag in argv → `XDG_CONFIG_HOME` env / `~/.config/remotepi/bridge.json`
+  // default. The CLI flag is parsed before resolving so a `--config`
+  // supplied by the user always wins, regardless of env var state.
+  const configPath =
+    options.configPath ??
+    parseConfigPathFlag(options.argv ?? process.argv.slice(2)) ??
+    resolveDefaultConfigPath();
 
-  // Multi-line banner so it's trivially `grep`-able / paste-able for users
-  // running the bridge in a terminal or under a wrapper script. The
-  // `worker URL:` line makes the actually-resolved endpoint visible —
-  // without it, an empty arg list silently connects to production
-  // (the #1 footgun users hit during local dev).
+  let config: BridgeConfig;
+  try {
+    config = loadBridgeConfig(configPath);
+  } catch (err) {
+    // We swallow the stack because (a) the message we already print
+    // names the failing field / file, and (b) the auto-run entry
+    // guard below also catches + prints + sets exitCode 1. This
+    // branch fires when tests drive `start()` directly: they want
+    // a clean throw-without-stack for assertion convenience.
+    if (err instanceof ConfigError) {
+      log.error(describeConfigError(err));
+    } else {
+      const e = toError(err);
+      log.error(`bridge: unexpected config error: ${e.stack ?? e.message}`);
+    }
+    throw err instanceof ConfigError
+      ? // Re-throw a plain Error carrying the same message so callers
+        // (tests + the CLI entry guard) don't need to import
+        // `ConfigError` to switch on the failure mode. The `cause`
+        // preserves the original `ConfigError` (with its `code` +
+        // underlying Zod/SyntaxError cause) for diagnostics, while
+        // the wrapper Error keeps the auto-run message clean. The
+        // `process.exitCode = 1` path in the CLI guard catches the
+        // same situation for the auto-run entry.
+        new Error(describeConfigError(err), { cause: err })
+      : err;
+  }
+
+  // Resolve token: explicit `token` option (test seam) wins over
+  // config file's `token`; otherwise delegate to `readTokenOrGenerate`
+  // (which honours a non-empty config token or generates a fresh
+  // one). Per PRD §2.1, a generated token is NOT persisted to the
+  // config file — callers wanting persistence must edit the JSON
+  // themselves. The share URL is always rebuilt from the resolved
+  // token + `config.web_base_url` so the banner can never print a
+  // blank line even when the test seam supplies a token directly.
+  const token = options.token ?? readTokenOrGenerate(config).token;
+  const shareLink = shareUrl(token, config.web_base_url);
+
+  const workerUrl = config.worker_url;
+
+  // Multi-line banner so it's trivially `grep`-able / paste-able for
+  // users running the bridge in a terminal or under a wrapper
+  // script. The `worker URL:` line makes the actually-resolved
+  // endpoint visible — without it, an operator staring at the
+  // banner would have to inspect the config file to know which
+  // environment they're connected to.
+  log.info(`config: ${configPath}`);
   log.info(`token: ${token}`);
   log.info(`share URL: ${shareLink}`);
   log.info(`worker URL: ${workerUrl}`);
-  if (workerUrl === DEFAULT_WORKER_URL) {
-    log.info(
-      'hint: this is the production default — for local dev pass -- --worker-url ws://localhost:8787/bridge',
-    );
-  }
+  log.info(`work_dir: ${config.work_dir}`);
 
   const client = new BridgeClient(workerUrl, token, {
     createSocket: options.createSocket,
@@ -195,7 +258,7 @@ if (argv1 !== undefined) {
   const argvBase = argv1.endsWith('.ts') ? argv1.replace(/\.ts$/, '.js') : argv1;
   if (argvBase === resolvedArgv1 || argv1 === resolvedArgv1) {
     // Top-level safety net: if anything in `start()` throws
-    // synchronously (a bad factory call, a future config-validation
+    // synchronously (a bad factory call, a config validation
     // error, etc.), Node would print + exit with the raw stack. The
     // `tsx watch` parent would see non-zero exit and restart, but the
     // operator wouldn't see it through our `[bridge] error` log format
@@ -205,8 +268,12 @@ if (argv1 !== undefined) {
     try {
       start();
     } catch (err) {
+      // start() already logged a friendly line for ConfigError. For
+      // any other error (impossible in current code but defensive),
+      // emit a fallback so the auto-run entry still gives the
+      // operator a useful message.
       const e = toError(err);
-      logger.error(`bridge start failed: ${e.stack ?? e.message}`);
+      logger.error(`bridge start failed: ${e.message}`);
       process.exitCode = 1;
     }
   }
