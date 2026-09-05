@@ -17,12 +17,6 @@
       "type": "chrome",
       "request": "launch",
       "url": "http://localhost:5173",
-      "preLaunchTask": "dev:web",
-      "serverReadyAction": {
-        "action": "openExternally",
-        "pattern": "Local:.*http://localhost:\\d+",
-        "webRoot": "${workspaceFolder}/packages/web"
-      },
       "webRoot": "${workspaceFolder}/packages/web"
     },
     {
@@ -31,7 +25,6 @@
       "request": "attach",
       "port": 9229,
       "address": "localhost",
-      "preLaunchTask": "dev:worker:inspector",
       "restart": true,
       "skipFiles": ["<node_internals>/**"]
     }
