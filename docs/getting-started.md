@@ -128,13 +128,32 @@ pnpm --filter worker dev
 
 **终端 B — bridge**
 
+> ⚠️ **不带参数时 bridge 默认连生产域 `wss://remote-pi.sankabox.com/bridge`**——当前生产 route 尚未部署 M2 worker，bridge 会一直重连失败，本地 DO 房间无桥（web 端表现为 `online:false`、手动 ping 全部超时）。本地联调务必显式指定 worker URL（下面两条命令任选其一，效果相同）：
+
 ```bash
-pnpm --filter @remotepi/bridge dev
-# stdout 形如：
-#   token: x9Kq3v…（32 字符 base64url，192-bit 熵）
-#   share URL: https://web.remote-pi.sankabox.com/#x9Kq3v…
-#   WSS: ws://localhost:8787/bridge
+pnpm --filter @remotepi/bridge dev -- --worker-url ws://localhost:8787/bridge
+REMOTEPI_WORKER_URL=ws://localhost:8787/bridge pnpm --filter @remotepi/bridge dev
 ```
+
+**期望 stdout**（与实机一致，逐字）：
+
+- 指定本地 URL（两条任一）时打三行：
+  ```
+  [bridge] info token: xCwytpk-…
+  [bridge] info share URL: https://web.remote-pi.sankabox.com/#xCwytpk-…
+  [bridge] info worker URL: ws://localhost:8787/bridge
+  ```
+- 不带参数（生产默认）时第三行变为：
+  ```
+  [bridge] info worker URL: wss://remote-pi.sankabox.com/bridge
+  ```
+  并额外多一行 hint：
+  ```
+  [bridge] info hint: this is the production default — for local dev pass -- --worker-url ws://localhost:8787/bridge
+  ```
+- 连接成功后会再打 `connected to <url>`；断连重连日志格式为 `disconnected from <url> (code=<n>, reason='<r>') — reconnecting in <ms>ms (attempt <n>)`。
+
+> **bridge 每次重启都会生成新 token**——网页端要用新打印的 `share URL`（或 token）。把旧 URL 粘进新启动的 browser 等于连一个不存在的 token，handshake 会失败。
 
 **终端 C — web**
 
