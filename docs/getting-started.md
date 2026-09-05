@@ -430,7 +430,7 @@ pnpm --filter @remotepi/bridge dev   # 不带 --worker-url，默认连 wss://rem
 
 ### 10.5 旧 M1 hello worker 清理
 
-旧 M1 hello worker `remotepi-hello` 已不再被 route 引用（M2 route 指向 `remotepi-worker`）。想清理可在 CF Dashboard → Workers & Pages → 找到 `remotepi-hello` → Delete。**不动也可以**，不影响 M2 业务（CF 不会主动回收未引用 worker）。顺手也可在 CF Dashboard → DNS 删除 M1 hello 期的占位 A 记录（如有），但一般保留无副作用。
+remotepi-hello 已于 2026-09-05 由用户经 CF Dashboard 删除；如需重建同名 worker 可随时 wrangler deploy。
 
 ### 10.6 wscat 冒烟（不打开网页也能验 worker 路由）
 

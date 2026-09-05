@@ -98,7 +98,7 @@ RemotePi 不替代 pi 本地体验，而是把"有可访问的服务器、能跑
 | ID | 标题 | 一句话目标 | 验收方向 |
 |----|------|----------|---------|
 | M1 | 基础设施基座 | monorepo 脚手架（pnpm workspaces：`packages/bridge`、`packages/web`、`packages/shared`、`worker/`、`infra/`）+ shared 隧道信封类型雏形 + Terraform 管理 CF（域名 / Pages / Worker 路由）+ GitHub Actions CI 骨架 | `pnpm -r build` 通过；`terraform plan/apply` 可管理 CF 资源；CI 跑 lint/test；`wrangler dev` 本地可起 worker — ✅ 完成（2026-09-05，CI 双绿 + 真实环境闭环：remote-pi.sankabox.com 实测返回 hello） |
-| M2 | 通路（web ↔ worker ↔ bridge） | 双向 WSS 打通：Pages 上的 web 经 worker 与 bridge 互连；token 配对路由到同一 DO 实例；web 显示 bridge 在线状态；ping / echo 级双向消息互通；多客户端广播；心跳与断连清理 | web 输入 token 后看到 bridge 在线（配对成功）；两端可互发 ping/echo；两个浏览器标签同时收到广播；杀掉 bridge 进程后 web 状态变离线 |
+| M2 | 通路（web ↔ worker ↔ bridge） | 双向 WSS 打通：Pages 上的 web 经 worker 与 bridge 互连；token 配对路由到同一 DO 实例；web 显示 bridge 在线状态；ping / echo 级双向消息互通；多客户端广播；心跳与断连清理 | web 输入 token 后看到 bridge 在线（配对成功）；两端可互发 ping/echo；两个浏览器标签同时收到广播；杀掉 bridge 进程后 web 状态变离线 — ✅ 完成（2026-09-05，线上验收通过：主域合并 + Worker Static Assets + CD 自动部署已启用，remotepi-hello 已删除） |
 | M3 | 单 session 信息往来 | bridge 对固定工作目录自动恢复 / 新建最新 session（不做选择 UI）；prompt → 流式 delta → agent_settled 全链路；abort；历史回看（`get_messages`）；`agent_settled` 后 5 分钟 idle kill；崩溃恢复；扩展 UI 阻塞对话框转发为 web 弹窗 | 浏览器完成"发消息 → 流式输出 → 任务完成"闭环；F5 刷新后状态恢复；abort 生效；空闲 5 分钟 pi 进程被 kill；select / confirm / input / editor 弹窗可交互且 agent 行为符合预期 |
 | M4 | 工作目录与 session 切换 | 工作目录列表、session 列表 / 新建 / 恢复 / 切换（`new_session` / `switch_session`）及对应 UI | 可列出目录与 session；新建、切换、恢复全链路可用 |
 

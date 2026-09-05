@@ -1,6 +1,6 @@
 ---
 prd: prds/m2-tunnel.md
-status: doing
+status: done
 ---
 # 任务：CD（GitHub Actions）+ Worker Static Assets SPA + /healthz + 三端联调手测验收 + getting-started 更新
 

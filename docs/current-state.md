@@ -5,7 +5,7 @@
 ## 活跃需求
 - [[roadmap.md]] — 路线图 M1–M4 已定稿（**2026-09-04 用户定稿**：基建 → 通路 → 单 session 闭环 → 多 session 管理）。下一步按里程碑逐个出 [[prds/README.md|PRD]]。
 - [[prds/m1-infrastructure.md|M1 PRD]] 已定稿（基础设施基座，2026-09-04 落盘）；任务已拆至 [[tasks/m1/01-monorepo-scaffold.md|tasks/m1/01]] ~ [[tasks/m1/05-github-actions-ci.md|05]]，已全部 done（5/5 任务 + CI 双绿 + 真实环境闭环，2026-09-05 收官），详见 [[tasks/README.md|任务索引]]。
-- [[prds/m2-tunnel.md|M2 PRD]] 已定稿落盘（2026-09-05，基于协议 v1）；任务已拆至 [[tasks/m2/01-shared-envelope-v1.md|tasks/m2/01]] ~ [[tasks/m2/06-deploy-and-validation.md|06]]（6 个，03/04/05 可并行），01–05 done，06 doing（部署形态已改定：主域 + Worker Static Assets + CD 上 Actions；详见 PRD §方案修订注记）。交付约定：本地 commit 不 push，push 由用户验证后手动触发 CD（actions/deploy.yml）。
+- [[prds/m2-tunnel.md|M2 PRD]] 已定稿落盘（2026-09-05，基于协议 v1）；任务已拆至 [[tasks/m2/01-shared-envelope-v1.md|tasks/m2/01]] ~ [[tasks/m2/06-deploy-and-validation.md|06]]（6 个，03/04/05 可并行），01–05 done，06 doing（部署形态已改定：主域 + Worker Static Assets + CD 上 Actions；详见 PRD §方案修订注记）。交付约定：本地 commit 不 push，push 由用户验证后手动触发 CD（actions/deploy.yml）。 **M2 ✅ 完成（2026-09-05 线上验收）**
 - [[architecture/protocol/README.md|architecture/protocol/]] —— RemotePi 隧道协议唯一真相源，**v1 已定稿**（2026-09-05）：信封 {v, kind(control|pi), type, id, session?, reply_to?, payload}；control 8 个 type（handshake/ping/pong/bridge_status/session_state/session_list/result/error）、pi 9 个 type（prompt/steer/follow_up/abort/get_messages/extension_ui_response/command_result/snapshot/event）；中间层只深度处理 handshake（鉴权）、bridge_status 与 error（自己生成），其余一律转发。
 
 ## 任务看板
@@ -21,16 +21,16 @@
 | [[tasks/m2/03-bridge-client.md\|03 bridge client]] | done | bridge 客户端 + 8 单测；review 修复 nonce 升 full UUID / pong 严格配对 / 判死 close 1000（6d58727）|
 | [[tasks/m2/04-worker-do-room.md\|04 worker+DO]] | done | worker+Room DO / 路由鉴权 / 转发广播 / 探活判死 / 错误码矩阵；workers-types ^5；wrangler dry-run 通过（b912a5a）|
 | [[tasks/m2/05-web-components.md\|05 web 组件]] | done | web 四组件 + WsClient；token 仅内存+hash；build 过（1c252d8）|
-| [[tasks/m2/06-deploy-and-validation.md\|06 deploy+验证]] | doing | deploy.yml（CD）+ wrangler assets/run_worker_first + /healthz + getting-started §10 重写 + 三端联调手测验收（依赖 03+04+05） |
+| [[tasks/m2/06-deploy-and-validation.md\|06 deploy+验证]] | done | CD 首跑成功（route 切换 + 网页上主域）+ 用户线上验收通过；remotepi-hello 已由用户经 Dashboard 删除（dfbfe7b → 896214a 部署链） |
 
 依赖链：M1 全 done。M2 01 根任务；02 依赖 01；03/04/05 依赖 01 且可并行；06 依赖 03+04+05。
 
 ## TODO / 阻塞
-- [ ] 用户在 GitHub 仓库配置 deploy.yml 所需 Secrets（CLOUDFLARE_API_TOKEN / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY），push main 触发首次 CD
-- [ ] M2 收尾：用户本地三端联调手测（PRD 验收清单）→ push main → Actions 自动跑 CD → 三端手测通过（详情见 [[tasks/m2/06-deploy-and-validation.md|tasks/06]] 完成标准）
+- [ ]（暂缓，用户裁定）可选加固：remotepi-worker 关闭 workers.dev 入口（workers_dev=false）；清理本地残留 /usr/local/bin/remote-pi-bridge 旧二进制
 - [ ] 修复 pnpm dev 启动方式下 bridge 偶发僵尸问题（tsx watch 对脚本崩溃不重启、栈被吞；候选方案：换 node --watch / 外层监督重启 / 根因排查顶层异常；本地联调暂用三终端或 --worker-url 单起绕过）
 
 ## 最近变更
+- 2026-09-05（M2 线上验收完成，里程碑收官） — push dfbfe7b 后 CI/CD 首跑：CI 竞态（build 并发下 assets 目录未就绪）与 CD 凭据注入（init 阶段缺 AWS env）两处失败已修（f36b6db / 896214a），二次 push 全绿。deploy-worker 上传 Worker+Static Assets 成功，terraform-apply 完成 route 切换（remotepi-hello → remotepi-worker），remote-pi.sankabox.com 主域上线（SPA + /web /bridge WSS + /healthz）。用户浏览器验收通过；remotepi-hello 已删。可选加固（workers_dev=false、旧二进制清理）用户暂缓。M2 里程碑收官，下一步 M3（单 session 信息往来）。
 - 2026-09-05（部署形态改定：合并主域 + CD 上 Actions） — 用户改定：网页并入 remote-pi.sankabox.com 主域（Worker Static Assets 托管 SPA，`/web` `/bridge` `/healthz` run_worker_first；`GET /` 让位网页首页，hello 挪 `/healthz`），Pages 项目与 `web.` 子域方案作废（TF 文件删除，未曾 apply）；bridge 分享 URL 改主域。CD：新增 deploy.yml，`push main` 自动 build web → wrangler deploy → terraform apply（secrets 待用户配置：`CLOUDFLARE_API_TOKEN` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`）。PRD §1#5 / §5 与 getting-started §10 已附修订注记。新增 [[architecture/decisions/0005-unified-domain-with-worker-static-assets-and-actions-cd.md\|ADR-0005]] 记录该部署决策。
 - 2026-09-05（bridge 本地联调踩坑修复） — 用户实测发现按文档启动的 bridge 默认连生产域（wss://remote-pi.sankabox.com/bridge），本地 DO 房间无桥（bridge_status online:false、手动 ping 全超时）。根因：默认 URL 指生产 + getting-started 命令缺 --worker-url + 启动/断连日志不含目标 URL。修复（1410e60）：bridge 解析链加 REMOTEPI_WORKER_URL（flag > env > 默认）、启动打印 worker URL 与生产默认 hint、断连日志带 close code/reason、onerror 不再静默；getting-started §3.4 命令更正（上一次的 docs 更正被并行 revert，本次按实机输出重写）。
 - 2026-09-05（M2 握手 bug 修复） — 用户本地联调发现浏览器报 ws connection failed 但 wrangler 侧 101 正常。裸 HTTP 探针坐实根因：workerd 对 101 不回显 Sec-WebSocket-Protocol，浏览器/undici 按 RFC 6455 强校验判失败（服务端 socket 已建，帧发进虚空）。修复：Room 的 101 Response 显式回显 remotepi.v1（workerd 支持 responseInit.headers，7eb1f0a）；新增 worker/scripts/probe-handshake.mjs 裸握手探针。回归：/web 与 /bridge 双端握手 + bridge_status 补发均通过。
