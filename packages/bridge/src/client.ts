@@ -152,10 +152,13 @@ export class BridgeClient {
     this.ws = ws;
     ws.onopen = () => this.handleOpen();
     ws.onmessage = (ev) => this.handleMessage(ev);
-    ws.onclose = () => this.handleClose();
+    ws.onclose = (ev) => this.handleClose(ev);
     // onerror is purely advisory in browsers/Node — the close event is
-    // the authoritative "connection is gone" signal, so we don't act here.
-    ws.onerror = () => undefined;
+    // the authoritative "connection is gone" signal, so we don't drive
+    // any state changes from it. We DO log it though: an unexplained
+    // 1006 with zero preceding output is the exact "why isn't this
+    // connecting?" symptom users hit when pointed at the wrong host.
+    ws.onerror = (ev) => this.handleError(ev);
   }
 
   private handleOpen(): void {
@@ -377,10 +380,19 @@ export class BridgeClient {
     }
   }
 
-  private handleClose(): void {
+  private handleClose(ev?: CloseEvent): void {
     this.cleanupTimers();
     this.ws = null;
     if (this.stopped) return;
+    // `code` and `reason` come from the CloseEvent when the platform
+    // provides one (browser, Node 22 global WebSocket). They're
+    // `undefined` when the event is fabricated — e.g. unit tests pass
+    // `undefined as unknown as CloseEvent` to drive the lifecycle
+    // without standing up a real socket. We surface whatever we got
+    // rather than masking it: an unexplained 1006 is exactly the
+    // symptom that the new format is meant to triage.
+    const code = ev?.code;
+    const reason = ev?.reason ?? '';
     this.attempt++;
     const delay = computeBackoff(
       this.attempt,
@@ -389,12 +401,27 @@ export class BridgeClient {
       this.opts.backoffCapMs,
     );
     logger.info(
-      `reconnecting in ${Math.round(delay)}ms (attempt ${this.attempt})`,
+      `disconnected from ${this.url} (code=${code}, reason='${reason}') — reconnecting in ${Math.round(delay)}ms (attempt ${this.attempt})`,
     );
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
+  }
+
+  private handleError(ev: Event): void {
+    // Best-effort message extraction. The DOM `ErrorEvent` carries
+    // `message` directly; some platforms only expose the underlying
+    // `Error` via `error`. We surface whatever we can find rather
+    // than swallowing the event — see the connect() comment for why.
+    let message: string | undefined;
+    const maybeErrorEvent = ev as { message?: unknown; error?: unknown };
+    if (typeof maybeErrorEvent.message === 'string' && maybeErrorEvent.message.length > 0) {
+      message = maybeErrorEvent.message;
+    } else if (maybeErrorEvent.error instanceof Error) {
+      message = maybeErrorEvent.error.message;
+    }
+    logger.warn(message ? `socket error: ${message}` : 'socket error (close will follow)');
   }
 
   private cleanupTimers(): void {

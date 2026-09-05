@@ -7,9 +7,15 @@
 // CLI:
 //   bridge [--worker-url <wss-url>]
 //
-// `--worker-url` overrides the default `wss://remote-pi.sankabox.com/bridge`.
-// Useful for `wrangler dev` (`ws://localhost:8787/bridge`) and for
-// staging environments.
+// Resolution chain (highest priority first):
+//   1. `--worker-url <wss-url>` CLI flag
+//   2. `REMOTEPI_WORKER_URL` environment variable
+//   3. default production URL `wss://remote-pi.sankabox.com/bridge`
+//
+// `--worker-url` / `REMOTEPI_WORKER_URL` are both useful for `wrangler
+// dev` (`ws://localhost:8787/bridge`) and for staging environments.
+// The env var is the friendlier form for wrappers (systemd, nohup, CI)
+// that don't want to thread flags through a process tree.
 import { fileURLToPath } from 'node:url';
 import { generateToken, shareUrl } from './token.js';
 import { BridgeClient, type WebSocketLike } from './client.js';
@@ -54,6 +60,15 @@ function parseWorkerUrlFlag(argv: readonly string[]): string | undefined {
   return undefined;
 }
 
+/** Read the worker URL from the `REMOTEPI_WORKER_URL` env var. Returns
+ *  undefined when unset OR set to an empty string — the latter so an
+ *  accidentally-exported `REMOTEPI_WORKER_URL=` doesn't silently break
+ *  the bridge by handing an empty URL to the WebSocket constructor. */
+function readEnvWorkerUrl(): string | undefined {
+  const v = process.env['REMOTEPI_WORKER_URL'];
+  return v !== undefined && v !== '' ? v : undefined;
+}
+
 /** Generate a token, print it + the share URL, and start the client.
  *  Exposed so tests can drive the lifecycle without spawning a child. */
 export function start(options: StartOptions = {}): {
@@ -68,12 +83,22 @@ export function start(options: StartOptions = {}): {
   const workerUrl =
     options.workerUrl ??
     parseWorkerUrlFlag(options.argv ?? process.argv.slice(2)) ??
+    readEnvWorkerUrl() ??
     DEFAULT_WORKER_URL;
 
-  // Two-line banner so it's trivially `grep`-able / paste-able for users
-  // running the bridge in a terminal or under a wrapper script.
+  // Multi-line banner so it's trivially `grep`-able / paste-able for users
+  // running the bridge in a terminal or under a wrapper script. The
+  // `worker URL:` line makes the actually-resolved endpoint visible —
+  // without it, an empty arg list silently connects to production
+  // (the #1 footgun users hit during local dev).
   log.info(`token: ${token}`);
   log.info(`share URL: ${shareLink}`);
+  log.info(`worker URL: ${workerUrl}`);
+  if (workerUrl === DEFAULT_WORKER_URL) {
+    log.info(
+      'hint: this is the production default — for local dev pass -- --worker-url ws://localhost:8787/bridge',
+    );
+  }
 
   const client = new BridgeClient(workerUrl, token, {
     createSocket: options.createSocket,

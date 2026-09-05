@@ -8,7 +8,7 @@
 // / `simulateClose` helpers so each test can drive the lifecycle
 // explicitly.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import {
   BACKOFF_BASE_MS,
   BACKOFF_CAP_MS,
@@ -18,6 +18,7 @@ import {
   PONG_TIMEOUTS_BEFORE_DEAD,
   type WebSocketLike,
 } from '../client.js';
+import { logger } from '../logger.js';
 
 // ----- Mock WebSocket --------------------------------------------------------
 
@@ -55,10 +56,11 @@ class MockSocket implements WebSocketLike {
     // the reconnect without `await`.
     if (this.readyState === 3) return; // already CLOSED
     this.readyState = 3;
-    // The bridge client ignores the CloseEvent payload — `onclose` is
-    // registered as `() => this.handleClose()` with no arguments — so
-    // we don't need to instantiate a real CloseEvent (which isn't
-    // available in the default `node` test environment anyway).
+    // Bridge-initiated closes don't carry a real CloseEvent (the
+    // default `node` env has no constructor for it), and the bridge
+    // only needs `code` / `reason` from server-initiated drops. So
+    // we pass `undefined` here; tests that want to exercise a real
+    // CloseEvent path call `simulateRemoteClose({ code, reason })`.
     this.onclose?.(undefined as unknown as CloseEvent);
   }
 
@@ -75,11 +77,17 @@ class MockSocket implements WebSocketLike {
   }
 
   /** Trigger a close WITHOUT recording it as a `close()` call — used to
-   *  simulate the server dropping the connection. */
-  simulateRemoteClose(): void {
+   *  simulate the server dropping the connection. The optional payload
+   *  is forwarded to `onclose` so tests can verify how the client
+   *  handles a real CloseEvent (with `.code` / `.reason`). */
+  simulateRemoteClose(payload?: { code?: number; reason?: string }): void {
     if (this.readyState === 3) return;
     this.readyState = 3;
-    this.onclose?.(undefined as unknown as CloseEvent);
+    if (payload !== undefined) {
+      this.onclose?.(payload as unknown as CloseEvent);
+    } else {
+      this.onclose?.(undefined as unknown as CloseEvent);
+    }
   }
 }
 
@@ -107,6 +115,20 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
 });
+
+// ----- Logger spies -----------------------------------------------------------
+
+// These are opt-in: only tests that care about log output set them up
+// (spying globally would change `console.log` reference identity and
+// could mask ordering bugs in the no-log-assertion tests).
+let infoSpy: MockInstance<typeof logger.info> | undefined;
+let warnSpy: MockInstance<typeof logger.warn> | undefined;
+
+function installLoggerSpies(): void {
+  infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+  warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+}
 
 // ----- Tests -----------------------------------------------------------------
 
@@ -262,5 +284,73 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
 
     client.stop();
     vi.useRealTimers();
+  });
+
+  it('handleClose logs the disconnected URL with close code/reason when the platform provides a CloseEvent', () => {
+    // Real-world diagnostic value: 1006 is the canonical "abnormal
+    // closure" code users see when the server doesn't reply or the
+    // network drops mid-handshake. Without code/reason in the log,
+    // a user staring at "reconnecting in 800ms (attempt 1)" has zero
+    // clue whether to blame DNS, routing, auth, or the server itself.
+    installLoggerSpies();
+    vi.useFakeTimers();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      // Push the heartbeat far away so the test only exercises the
+      // close path, not the pong-timeout cycle.
+      pingIntervalMs: 60_000,
+      // Pin jitter to the bottom of the band so the logged delay is
+      // deterministic (800ms for attempt 1 with rng=()=>0).
+      rng: () => 0,
+    });
+    client.start();
+    const sock = MockSocket.instances[0]!;
+    sock.simulateOpen();
+    sock.simulateRemoteClose({ code: 1006, reason: '' });
+    vi.advanceTimersByTime(BACKOFF_BASE_MS);
+
+    // The log must contain the target URL, the close code, the empty
+    // reason (typical for 1006 — no payload comes back), the delay, and
+    // the attempt number — all in one human-grep-able line.
+    expect(infoSpy).toHaveBeenCalledWith(
+      "disconnected from wss://example.test/bridge (code=1006, reason='') — reconnecting in 800ms (attempt 1)",
+    );
+
+    client.stop();
+    vi.useRealTimers();
+  });
+
+  it('onerror logs a warn instead of silently swallowing the event', () => {
+    // The previous behaviour was `ws.onerror = () => undefined;` — any
+    // error event vanished, so the only observable signal was the
+    // follow-on close (often code=1006 with no context). The fix:
+    // surface the message immediately so users can correlate "DNS
+    // resolution failed" / "ECONNREFUSED" / etc. with the eventual
+    // close. Close still drives the reconnect — onerror stays advisory.
+    installLoggerSpies();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      pingIntervalMs: 60_000,
+    });
+    client.start();
+    const sock = MockSocket.instances[0]!;
+
+    // Drive the ErrorEvent branch with a real `message` payload.
+    sock.onerror?.({ message: 'connect ECONNREFUSED 127.0.0.1:8787' } as unknown as Event);
+
+    expect(warnSpy).toHaveBeenCalledWith('socket error: connect ECONNREFUSED 127.0.0.1:8787');
+
+    // Second branch: no `message`, but a typed `Error` on `.error`.
+    sock.onerror?.({ error: new Error('getaddrinfo ENOTFOUND host') } as unknown as Event);
+    expect(warnSpy).toHaveBeenCalledWith('socket error: getaddrinfo ENOTFOUND host');
+
+    // Third branch: empty event — we still log something rather than
+    // going silent, but without a bogus string in the output.
+    sock.onerror?.({} as Event);
+    expect(warnSpy).toHaveBeenCalledWith('socket error (close will follow)');
+
+    client.stop();
   });
 });
