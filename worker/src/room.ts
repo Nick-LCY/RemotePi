@@ -55,6 +55,8 @@ import {
 
 /** WebSocket close code for terminal-error frames (control.md §配套常量). */
 const FATAL_CLOSE_CODE = 1008;
+/** The one subprotocol selected for every authenticated worker upgrade. */
+const SUBPROTOCOL_VERSION = 'remotepi.v1';
 /** WebSocket close code used when the heartbeat declares a connection stale. */
 const STALE_CLOSE_CODE = 1000;
 
@@ -151,9 +153,8 @@ export class Room implements DurableObject {
     const client = pair[0];
     const server = pair[1];
     // Non-Hibernation API: `server.accept()` registers the server side with
-    // the runtime; the runtime then dispatches messages to this DO instance
-    // via `webSocketMessage`/`webSocketClose`/`webSocketError`. No call to
-    // `state.acceptWebSocket` — that's reserved for Hibernation.
+    // the runtime. Keep the connection on the standard event API (rather
+    // than `state.acceptWebSocket`, which enables Hibernation).
     server.accept();
 
     const meta: ConnMeta = {
@@ -179,7 +180,28 @@ export class Room implements DurableObject {
 
     this.webs.set(server, meta);
 
-    return new Response(null, { status: 101, webSocket: client });
+    // `server.accept()` alone registers the pair with the standard WebSocket
+    // API; route its message/close/error events into the Room handlers.
+    server.addEventListener('message', (event) => {
+      if (isWebSocketMessageData(event.data)) {
+        this.webSocketMessage(server, event.data);
+      }
+    });
+    server.addEventListener('close', (event) => {
+      this.webSocketClose(server, event.code, event.reason, event.wasClean);
+    });
+    server.addEventListener('error', () => {
+      this.webSocketError(server, new Error('WebSocket error'));
+    });
+
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+      // RFC 6455 requires the server to select exactly one value from the
+      // client's offered subprotocol list. The token is deliberately omitted:
+      // it is an auth input, not a protocol to advertise after the upgrade.
+      headers: { 'Sec-WebSocket-Protocol': SUBPROTOCOL_VERSION },
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -628,6 +650,10 @@ export class Room implements DurableObject {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isWebSocketMessageData(value: unknown): value is string | ArrayBuffer {
+  return typeof value === 'string' || value instanceof ArrayBuffer;
 }
 
 function stringifyLite(value: unknown): string {
