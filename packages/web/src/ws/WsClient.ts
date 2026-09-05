@@ -32,6 +32,7 @@
 import {
   Envelope,
   PROTOCOL_VERSION,
+  SessionStatePayloadSchema,
   type AbortPayload,
   type BlockedOnEntryPayload,
   type Envelope as EnvelopeType,
@@ -42,6 +43,7 @@ import {
   type PongPayload,
   type PromptPayload,
   type SessionPhase,
+  type SessionStatePayload,
   type SteerPayload,
 } from '@remotepi/shared';
 
@@ -120,6 +122,18 @@ export interface DialogExpiredNotice {
  *  the regular `on()` type listener so dialog components don't need to
  *  re-parse the envelope. */
 export type DialogExpiredHandler = (notice: DialogExpiredNotice) => void;
+
+/** Callback fired by the WsClient when an inbound envelope carries a
+ *  `reply_to` matching an id a subscriber previously registered for.
+ *  Used by the recovery ceremony (`recovery.ts`) to wait for the
+ *  dual-query replies without coupling itself to the central
+ *  `handleControlFrame` / `handlePiFrame` routing — the central
+ *  handlers still update `sessionPhase` / `messages` for everyone
+ *  observing the store; this callback is the "I personally want to
+ *  know" channel for the gate. Multiple subscribers may register
+ *  for the same id (fan-out); the resolver is called with the
+ *  matched envelope verbatim. */
+export type ReplyResolver = (envelope: EnvelopeType) => void;
 
 /** Broadcast payload for any non-dialog `command_result{success:false}`
  *  (PRD §4.5 — ordinary commands: prompt / steer / follow_up). The
@@ -231,6 +245,24 @@ export class WsClient {
    *  unbounded (each id is ~36 chars). 200 mirrors QUEUE_CAP — the
    *  queue's practical upper bound on outstanding user submissions. */
   private readonly OUTBOUND_IDS_CAP = QUEUE_CAP;
+  /** Reply-to resolvers — the recovery ceremony (`recovery.ts`)
+   *  registers callbacks keyed by the outbound id it generated for
+   *  its `pi/get_messages` and `control/get_state` queries. When a
+   *  matching inbound envelope arrives (matched on `reply_to`),
+   *  every registered callback is invoked. The ceremony is the only
+   *  current consumer; future subsystems (e.g. an explicit
+   *  "refresh history" button) can register additional resolvers
+   *  against the same id for fan-out, or against fresh ids for
+   *  independent queries. We key by `reply_to` rather than by
+   *  `reply_to + type` because outbound ids are UUIDs — collisions
+   *  are practically impossible and a fan-out API keeps the surface
+   *  simple. The map has no explicit dispose path — cleanup happens
+   *  via the unsubscribe closure returned by `registerReplyResolver`,
+   *  which the recovery ceremony invokes from `cancelActive()` /
+   *  `dispose()`. `dispatchReplyResolvers` also drops the entry on
+   *  each match (one-shot semantics), so a normal reply-yes-and-done
+   *  cycle leaves nothing behind. */
+  private replyResolvers = new Map<string, Set<ReplyResolver>>();
 
   constructor(url: string) {
     this.url = url;
@@ -326,6 +358,45 @@ export class WsClient {
     this.commandErrorListeners.add(handler);
     return () => {
       this.commandErrorListeners.delete(handler);
+    };
+  }
+
+  /**
+   * Register a callback to be invoked when an inbound envelope carries
+   * `reply_to === replyToId`. Used by the recovery ceremony to await
+   * the dual-query replies (`pi/get_messages` → `pi/snapshot`,
+   * `control/get_state` → `control/result`). The callback receives the
+   * matched envelope verbatim — the ceremony is responsible for any
+   * shape narrowing (it's the only consumer right now and knows
+   * exactly which type it's waiting for).
+   *
+   * Multiple subscribers may register against the same id (fan-out);
+   * each callback fires independently. Returns an unsubscribe
+   * function. Subscriptions are auto-removed when the matching reply
+   * is dispatched (one-shot) — the recovery ceremony expects to
+   * consume a single reply and then move on, so a leaky subscription
+   * that lingers across the next ceremony would surprise a future
+   * caller. The auto-removal happens inside `dispatchReplyResolvers`.
+   *
+   * `replyToId` is the outbound envelope id the caller put in their
+   * request's `id` field; the bridge's outstanding-commands table
+   * (task 04) echoes that id into the reply's `reply_to` field
+   * (`snapshot` for get_messages, `result` for get_state).
+   */
+  registerReplyResolver(replyToId: string, resolver: ReplyResolver): () => void {
+    let set = this.replyResolvers.get(replyToId);
+    if (set === undefined) {
+      set = new Set();
+      this.replyResolvers.set(replyToId, set);
+    }
+    set.add(resolver);
+    return () => {
+      const current = this.replyResolvers.get(replyToId);
+      if (current === undefined) return;
+      current.delete(resolver);
+      if (current.size === 0) {
+        this.replyResolvers.delete(replyToId);
+      }
     };
   }
 
@@ -561,14 +632,34 @@ export class WsClient {
       case 'handshake':
       case 'session_list':
       case 'get_state':
-      case 'result':
       case 'error':
         // Server-to-client frames we don't act on centrally: handshakes
-        // (worker doesn't send us), session_list / get_state / result
-        // are handled by their subscribers (recovery.ts will subscribe
-        // in task 07), error is read-only on web (logged via the type
-        // listener if anyone cares).
+        // (worker doesn't send us), session_list / get_state / error
+        // are read-only on web (logged via the type listener if anyone
+        // cares). `result` is handled below — it's the dual-query
+        // recovery ceremony's get_state reply and the central
+        // `sessionPhase` + `blockedOn` revalidation lives there.
         break;
+      case 'result': {
+        // `control/result` is the unified reply for session_list
+        // (M2) and get_state (M3). The only consumer shape we know
+        // is `SessionStatePayloadSchema` (the get_state reply: phase
+        // + blocked_on?). We revalidate `data` defensively and only
+        // mutate store state when the shape matches — other callers
+        // (session_list) carry a different `data` shape and are
+        // silently dropped. The decode is shared with the recovery
+        // ceremony via `tryDecodeGetStateData` so the schema lives
+        // in one place. Reply-to resolvers (the recovery ceremony)
+        // still fire regardless so the gate can mark itself ready /
+        // error based on the actual envelope.
+        const state = tryDecodeGetStateData(envelope);
+        if (state !== null) {
+          this.setSessionPhase(state.phase);
+          this.setBlockedOn(state.blocked_on ?? []);
+        }
+        this.dispatchReplyResolvers(envelope);
+        break;
+      }
     }
   }
 
@@ -588,6 +679,13 @@ export class WsClient {
         // A snapshot often arrives at the end of a turn — clear any
         // leftover streaming draft so the UI doesn't show stale text.
         this.setStreamingDraft(null);
+        // Fire any registered reply-to resolvers (the recovery
+        // ceremony awaits the get_messages reply via this hook).
+        // Dispatch happens AFTER the store mutation so a resolver
+        // that triggers a React re-render (via the ceremony's
+        // subscribe listeners) sees the freshest messages when it
+        // eventually flips `ready: true`.
+        this.dispatchReplyResolvers(envelope);
         break;
       }
       case 'event': {
@@ -918,6 +1016,48 @@ export class WsClient {
     this.emitStateChange();
   }
 
+  /** Fan-out a single inbound envelope to every resolver registered
+   *  for its `reply_to` id, then auto-remove the now-consumed
+   *  subscription (one-shot). A resolver that throws is logged
+   *  with `console.warn` and swallowed — a buggy subscriber
+   *  must not break the inbound frame loop for the rest of the
+   *  chain, but the throw itself is the kind of operator-visible
+   *  signal the web package's console.warn budget DOES cover
+   *  (it indicates a programming error in the recovery ceremony
+   *  or any future reply-resolver consumer). Returns silently
+   *  when the envelope has no `reply_to` (most control / pi
+   *  frames don't, and we don't want to scan an empty key). */
+  private dispatchReplyResolvers(envelope: EnvelopeType): void {
+    const replyTo = envelope.reply_to;
+    if (replyTo === undefined || replyTo.length === 0) return;
+    const set = this.replyResolvers.get(replyTo);
+    if (set === undefined) return;
+    // Snapshot the set so a resolver that unsubscribes during dispatch
+    // (via its returned cleanup) doesn't shift the iteration; the
+    // unsubscribe path also short-circuits the size-zero delete below
+    // by checking the live map.
+    const resolvers = Array.from(set);
+    // Drop the entry BEFORE invoking — a resolver that calls
+    // registerReplyResolver with the same id during dispatch would
+    // otherwise see its own callback fired in the same tick (loop
+    // re-iteration semantics). The ceremony's contract is "one
+    // reply per id, no double-fire".
+    this.replyResolvers.delete(replyTo);
+    for (const resolver of resolvers) {
+      try {
+        resolver(envelope);
+      } catch (err) {
+        // Logged-and-swallowed — see the JSDoc on this method.
+        // A throw here is a bug in the resolver (the recovery
+        // ceremony's outcome recording, or any future fan-out
+        // consumer); the inbound frame loop must keep going for
+        // the other subscribers in the chain.
+        // eslint-disable-next-line no-console
+        console.warn('[WsClient] reply resolver threw:', err);
+      }
+    }
+  }
+
   private setBridgeStatus(info: BridgeStatusInfo): void {
     this._bridgeStatus = info;
     this.emitStateChange();
@@ -1034,6 +1174,22 @@ export class WsClient {
   }
 
   private setBlockedOn(entries: BlockedOnEntryPayload[]): void {
+    // Shallow-equality guard: `entries.slice()` would always produce
+    // a fresh array reference, forcing every `useBlockedOn` consumer
+    // to re-render even when the contents are identical. The PRD
+    // §4.2 dialog-close rule fires off a `session_state` broadcast
+    // on every state machine transition (not just dialog changes),
+    // so a no-op blocked_on update is common — comparing lengths
+    // and per-element identity keeps React quiet in that hot path.
+    // The entries themselves are the store's authoritative objects,
+    // so reference equality is sufficient (no deep walk needed).
+    const current = this._blockedOn;
+    if (
+      current.length === entries.length &&
+      current.every((entry, idx) => entry === entries[idx])
+    ) {
+      return;
+    }
     this._blockedOn = entries.slice();
     this.emitStateChange();
   }
@@ -1102,8 +1258,29 @@ export class WsClient {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers — defensive shape extraction for open event payloads
+// Helpers — envelope-level shape extraction + dual-ceremony shared decoder
 // ---------------------------------------------------------------------------
+
+/** Try to decode a `control/result` reply as a `get_state` payload.
+ *  Returns the validated `SessionStatePayload` on success, or `null`
+ *  when the envelope isn't a get_state result (e.g. a session_list
+ *  reply, an `ok: false` failure, or a success with a malformed
+ *  `data` shape). Both the WsClient's central `case 'result'`
+ *  handler AND the recovery ceremony (`recovery.ts`) consume this
+ *  — the schema check lives in one place so a future schema change
+ *  ripples through both call sites automatically. The schema is
+ *  intentionally strict (`SessionStatePayloadSchema` is a `z.object`
+ *  without `.passthrough`); we revalidate on every inbound reply so
+ *  a corrupt bridge (e.g. an empty `blocked_on`) can't poison the
+ *  store state. */
+export function tryDecodeGetStateData(envelope: EnvelopeType): SessionStatePayload | null {
+  if (envelope.kind !== 'control' || envelope.type !== 'result') return null;
+  if (envelope.payload.ok !== true) return null;
+  if (envelope.payload.data === undefined) return null;
+  const validation = SessionStatePayloadSchema.safeParse(envelope.payload.data);
+  if (!validation.success) return null;
+  return validation.data;
+}
 
 /** Coerce a value to a string when it is one. Anything else (number,
  *  boolean, null, undefined, object) returns null so the caller can

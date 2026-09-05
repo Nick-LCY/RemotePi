@@ -273,6 +273,36 @@ td code {
   font-size: 0.85rem;
 }
 
+/* ---- RecoveryView ------------------------------------------------------ */
+
+.recovery-in-flight,
+.recovery-error {
+  /* Inherits `.card` chrome but stays a standalone block so the
+     user can spot the "we're not ready yet" state at a glance. */
+  text-align: left;
+}
+
+.recovery-in-flight h2,
+.recovery-error h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.recovery-in-flight p,
+.recovery-error p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.recovery-error button {
+  align-self: flex-start;
+}
+
+.recovery-error[data-error] h2 {
+  color: var(--state-offline);
+}
+
 /* ---- ChatView / MessageList ------------------------------------------- */
 
 .chat-view {
