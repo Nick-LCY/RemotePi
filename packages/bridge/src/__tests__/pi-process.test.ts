@@ -1585,7 +1585,7 @@ describe('Stdio buffering (roadmap §4.2 ⚠)', () => {
     }
   });
 
-  it('10.2 emits auth.json missing hint to stderr (not the shared logger.warn path)', () => {
+  it('10.2 emits auth.json not found hint to stderr (not the shared logger.warn path)', () => {
     // W4 review follow-up: the auth.json nudge routes through
     // `console.error` directly, NOT `logger.warn`. The previous
     // `logger.warn` form would have re-routed other warn
@@ -1605,12 +1605,12 @@ describe('Stdio buffering (roadmap §4.2 ⚠)', () => {
       manager.start();
       const authConsoleLine = errorSpy.mock.calls
         .map((args) => args.map((a) => String(a)).join(' '))
-        .find((line) => line.includes('auth.json missing'));
+        .find((line) => line.includes('auth.json not found'));
       expect(authConsoleLine).toBeDefined();
       expect(authConsoleLine).toMatch(/^\[bridge\]/);
       // Logger.warn must NOT have been used for this hint.
       const authWarn = warnSpy.mock.calls.find((args) =>
-        String(args[0]).includes('auth.json missing'),
+        String(args[0]).includes('auth.json not found'),
       );
       expect(authWarn).toBeUndefined();
     } finally {

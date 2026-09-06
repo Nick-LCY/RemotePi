@@ -59,7 +59,10 @@ status: doing
 ### 前置准备（5 步）
 
 1. **写 `bridge.json`**：参考 [[getting-started.md#3.5 配置文件 JSON 字段说明|getting-started §3.5]]；最小三字段 `worker_url`（本地 `ws://localhost:8787/bridge`）+ `web_base_url`（`https://remote-pi.sankabox.com`，与主域对齐）+ `work_dir`（本地任意项目绝对路径，bridge 不会 mkdir——路径必须已存在且可读）。路径：`~/.config/remotepi/bridge.json`（默认 XDG）或 `--config <path>` 指定。
-2. **`pi login`**：在 `<configDir>/pi-agent/` 下跑一次 `pi login` 写 `auth.json`（bridge 启动会 stderr warn 但不退出；首次未登录则所有 pi 家族命令失败）。
+2. **认证 pi（写入 `auth.json`）**：bridge 启动会 stderr warn 但不退出；首次未认证则所有 pi 家族命令失败。两种方式二选一：
+   - **方式 ②（推荐，最快）**：复制本机已有的 `~/.pi/agent/auth.json` 到 `<configDir>/pi-agent/auth.json`，权限 `0600`。
+   - **方式 ①**：进 TUI 走 `/login`——`PI_CODING_AGENT_DIR=<configDir>/pi-agent pi`，TUI 内输入 `/login` 或 `/login <provider>`，跟着提示完成 OAuth。
+   - **注意**：pi **没有** `pi login` 顶层命令（pi 0.85.1 子命令仅 `install` / `remove` / `uninstall` / `update` / `list` / `config` / `auth`，其中 `auth` 只读）；登录入口是 TUI 内斜杠命令 `/login`。完成后可用 `pi auth check`（只读子命令）验证凭证可用性。详见 [[getting-started.md#3.5 配置文件 JSON 字段说明|getting-started §3.5]] `pi 凭据与 auth.json` 小节。
 3. **启动 bridge**：`pnpm --filter @remotepi/bridge dev`（默认读 §1 配置），stdout 打印三行——`token` / `share URL` / `worker URL`；记下 `share URL`（含 token）。**bridge 重启会换 token**，每次重启重做 §3-§4。
 4. **浏览器开主域带 token**：浏览器新开 tab 粘 `share URL`（如 `https://remote-pi.sankabox.com/#<token>`）→ StatusBar 出现 `online` + `bridge_status.reason='connected'` 表示 handshake 通过。
 5. **（可选）切本地 dev**：本机 worker 在 `http://localhost:8787/`，本地 dev 把 `bridge.json.worker_url` 改 `ws://localhost:8787/bridge` 重启 bridge 即可。bridge 当前只连一个 worker URL，**不能同时**连本机 + 生产——手测要么全本地、要么全生产（推荐全生产，因为网页合并到主域 `https://remote-pi.sankabox.com/`，手测与真实环境同源）。

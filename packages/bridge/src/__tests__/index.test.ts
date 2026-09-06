@@ -60,6 +60,14 @@ function writeConfig(
 let infoSpy: MockInstance<typeof logger.info>;
 let errorSpy: MockInstance<typeof logger.error>;
 
+/** Snapshot of `XDG_CONFIG_HOME` taken at the start of each test so
+ *  the afterEach cleanup can restore it. Tests that call
+ *  `isolateXdgConfigHome()` overwrite this snapshot's value for the
+ *  duration of one test; without the snapshot + restore pair, a test
+ *  run that flips `XDG_CONFIG_HOME` would leak the empty tmpdir into
+ *  the developer's effective XDG root for any subsequent vitest run. */
+let originalXdgConfigHome: string | undefined;
+
 /** Track every tmpdir we created so `afterEach` can clean them up.
  *  Even successful tests should not leak — tmp dirs accumulate on
  *  CI workers and can trigger disk-pressure flakes. */
@@ -69,6 +77,9 @@ beforeEach(() => {
   infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
   vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
   errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+  // Snapshot XDG so `afterEach` can restore it; see note above on
+  // why this lives per-test rather than at module load.
+  originalXdgConfigHome = process.env['XDG_CONFIG_HOME'];
 });
 
 afterEach(() => {
@@ -80,7 +91,36 @@ afterEach(() => {
       // Best-effort — leaks here are cosmetic, not test-affecting.
     }
   }
+  // Restore XDG_CONFIG_HOME so the test process never leaves the
+  // developer's machine with the empty test tmpdir as its effective
+  // XDG root. Undefined-in / undefined-out vs. defined-in / same-out
+  // is handled so we don't accidentally promote `undefined` into a
+  // string and confuse downstream code that does `process.env.XDG`.
+  if (originalXdgConfigHome === undefined) {
+    delete process.env['XDG_CONFIG_HOME'];
+  } else {
+    process.env['XDG_CONFIG_HOME'] = originalXdgConfigHome;
+  }
 });
+
+/** Redirect `XDG_CONFIG_HOME` to a fresh empty tmpdir so that
+ *  `resolveDefaultConfigPath()` deterministically resolves to a
+ *  nonexistent path inside that tmpdir. Required by the argv-parsing
+ *  regression tests below — they rely on `--config` falling through
+ *  to the default path (when its value is a flag-shaped token or
+ *  follows a `--` terminator) and the default path then failing to
+ *  load. On a developer machine with a valid `~/.config/remotepi/
+ *  bridge.json`, that fallback would SILENTLY succeed and the tests
+ *  would flip from "expect throw" to "expect a working bridge" — the
+ *  bug would only show up on CI. Forcing the default path into a
+ *  sealed empty dir makes the behaviour hermetic regardless of host
+ *  state. The dir is registered with `createdDirs` so afterEach
+ *  cleans it up; the env var is restored separately. */
+function isolateXdgConfigHome(): void {
+  const dir = mkdtempSync(path.join(tmpdir(), 'remotepi-test-'));
+  createdDirs.push(dir);
+  process.env['XDG_CONFIG_HOME'] = dir;
+}
 
 /** Wrap `writeConfig` so we can register the dir for cleanup without
  *  every test having to remember. */
@@ -227,9 +267,14 @@ describe('start (config-driven entry)', () => {
     // `!next.startsWith('-')`, returning undefined when the next
     // token looks flag-shaped. We verify by passing `-D` directly
     // after `--config` and asserting the function falls back to the
-    // default config path — which doesn't exist in this test env, so
-    // the bridge reports a friendly config error rather than trying
-    // to open `-D` as a literal file path.
+    // default config path — which we force to a guaranteed-empty
+    // tmpdir via `isolateXdgConfigHome()` so the load attempt
+    // deterministically fails with `parse_failed`. Without the
+    // isolation, a developer with a valid `~/.config/remotepi/
+    // bridge.json` would see the bridge start cleanly here (it
+    // would silently load their real config), turning this test
+    // into a no-op assertion that pretends to validate argv parsing.
+    isolateXdgConfigHome();
     const createSocket = (): WebSocketLike => new NoopSocket();
     expect(() =>
       start({
@@ -246,8 +291,12 @@ describe('start (config-driven entry)', () => {
     // Regression guard for S1: argv of `['--', '--config', '/tmp/x']`
     // must NOT resolve `/tmp/x` as the config path — once the `--`
     // terminator is seen, everything after it is positional. The
-    // bridge falls back to the default config path (which doesn't
-    // exist) and surfaces a parse_failed error.
+    // bridge falls back to the default config path, which we seal
+    // into an empty tmpdir via `isolateXdgConfigHome()` so the load
+    // attempt deterministically surfaces a `parse_failed` error
+    // (see the W3 test above for why hermetic default-path state
+    // matters here too).
+    isolateXdgConfigHome();
     const createSocket = (): WebSocketLike => new NoopSocket();
     expect(() =>
       start({

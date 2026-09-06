@@ -20,6 +20,8 @@ M3 把 [[roadmap.md#5-里程碑|roadmap §5 M3 行]]、[[architecture/decisions/
 > 3. 不破锁则 web 端只能用 `get_messages` 间接探测状态，浪费带宽 + 引入冗余字段；
 > 4. envelope 演进规则 (b) 中"control 家族 v1 内不再新增 type"同步改为"除已破锁的 `get_state` 外不再新增"。
 > 同步在 envelope.md 锁版承诺清单与 ADR-0003 末尾标注此破锁。
+>
+> **修订注记（2026-09-05）**：§2.3 "bridge 启动时若 `auth.json` 缺失 → 提示用户配 `pi login`" 与「用户操作清单」"**认证**：在 `<config-dir>/pi-agent/` 下跑 `pi login` 生成 `auth.json`"——两处 `pi login` 表述**有误**（用户实测反馈 + scout 实证 pi 0.85.1）。pi 0.85.1 **没有** `pi login` 顶层命令（子命令仅 `install` / `remove` / `uninstall` / `update` / `list` / `config` / `auth`，其中 `auth` 只读）；真正登录入口是 pi **TUI 内斜杠命令 `/login`**（可带 provider 名，如 `/login anthropic`），OAuth 完成后凭证写入 `getAgentDir()/auth.json`（权限 `0600`）。依项目惯例**不改定稿正文**，实际认证两种方式二选一——(a) 进 TUI：`PI_CODING_AGENT_DIR=<configDir>/pi-agent pi` → TUI 内输入 `/login`（或 `/login <provider>`）跟提示完成 OAuth；(b) **推荐，最快**：复制本机已有的 `~/.pi/agent/auth.json` 到 `<configDir>/pi-agent/auth.json`（权限 `0600`；本机目录解析：`PI_CODING_AGENT_DIR` env 优先，否则 `~/.pi/agent`）；完成后可用 `pi auth check` 验证凭证。bridge stderr 提示文案已同步修正（去掉 "pi login" 字样，改为指引到上述两种方式）。完整版指引见 [[getting-started.md#3.5 配置文件 JSON 字段说明|getting-started §3.5]] `pi 凭据与 auth.json` 小节。
 
 ## 目标
 

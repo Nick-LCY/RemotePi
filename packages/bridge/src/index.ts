@@ -252,8 +252,9 @@ export function start(options: StartOptions = {}): {
   // Isolation directory lives next to the config file so a single
   // `rm -rf ~/.config/remotepi` purges both bridge config + pi auth
   // (PRD §2.3 — "与配置同根, 便于清退"). The directory is NOT created
-  // eagerly — `pi login` writes auth.json into it during setup, and
-  // `mkdir -p` happens implicitly when pi creates its session subdir.
+  // eagerly — the pi TUI's `/login` slash command writes auth.json
+  // into it during setup, and `mkdir -p` happens implicitly when pi
+  // creates its session subdir.
   const isolationDir = path.join(path.dirname(configPath), 'pi-agent');
   const manager =
     options.piProcessManager ??

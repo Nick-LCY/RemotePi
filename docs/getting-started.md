@@ -223,14 +223,28 @@ $XDG_CONFIG_HOME/remotepi/bridge.json        # XDG 优先
 
 **`pi` 凭据与 auth.json**：
 
-bridge 在 `<configDir>/pi-agent/` 下跑 pi 子进程（与 `bridge.json` 同根；M3 PRD §2.5）。`<configDir>/pi-agent/auth.json` 缺失时 bridge 启动打 **stderr warn 但不退出**——提醒用户手动跑一次 `pi login`：
+bridge 在 `<configDir>/pi-agent/` 下跑 pi 子进程（与 `bridge.json` 同根；M3 PRD §2.5）。pi 的凭据优先级：`<configDir>/pi-agent/auth.json` > `*_API_KEY` 环境变量 > `--api-key` 参数（roadmap §4.8）。`<configDir>/pi-agent/auth.json` 缺失时 bridge 启动打 **stderr warn 但不退出**——提醒用户补凭据。
+
+> **注意**：pi **没有** `pi login` 顶层命令（pi 0.85.1 子命令仅 `install` / `remove` / `uninstall` / `update` / `list` / `config` / `auth`，其中 `auth` 只读）。登录入口是 pi TUI 内的斜杠命令 `/login`（可带 provider 名，如 `/login anthropic`），OAuth 完成后凭证写入 `getAgentDir()/auth.json`（权限 `0600`）。
+
+在隔离目录认证有两种方式：
 
 ```bash
-# 一性次：初始化 pi 凭据（auth.json 写到 <configDir>/pi-agent/auth.json）
-cd <configDir>/pi-agent
-pi login
-# 跟着 pi 提示完成 OAuth；之后 bridge 启动不再 warn
+# 方式 ①：进 TUI 走 /login（一次性交互）
+PI_CODING_AGENT_DIR=<configDir>/pi-agent pi
+# TUI 内输入：
+#   /login                  # 列出 provider 选一个
+#   /login anthropic        # 直接进指定 provider 的 OAuth
+# 跟着 TUI 提示完成 OAuth；auth.json 落在 <configDir>/pi-agent/auth.json（0600）
+
+# 方式 ②（推荐，最快）：复制本机已有的 auth.json 到隔离目录
+# 本机 pi 目录解析：PI_CODING_AGENT_DIR 环境变量优先；否则 ~/.pi/agent
+cp ~/.pi/agent/auth.json <configDir>/pi-agent/auth.json
+chmod 600 <configDir>/pi-agent/auth.json
+# 之后 bridge 启动不再 warn
 ```
+
+完成后可在隔离目录用 `pi auth check`（只读子命令）验证凭证可用性。
 
 **XDG 路径解析顺序**：
 

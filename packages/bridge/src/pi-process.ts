@@ -456,9 +456,14 @@ export class PiProcessManager {
       // with everything else the bridge prints while restricting
       // the stream change to this single site.
       // PRD §2.3 + 已敲定决策: bridge does NOT auto-login; it just
-      // nudges the operator to run `pi login`.
+      // nudges the operator to authenticate via the TUI's `/login`
+      // slash command (or copy an existing ~/.pi/agent/auth.json
+      // into the isolation dir). Note: there is no top-level CLI
+      // command for authentication — login only happens
+      // interactively in the pi TUI at
+      // $PI_CODING_AGENT_DIR/auth.json (0600).
       console.error(
-        `[bridge] auth.json missing at ${this.authJsonPath} — run 'pi login' to authenticate`,
+        `[bridge] auth.json not found at ${this.authJsonPath}. Run: PI_CODING_AGENT_DIR=${this.isolationDir} pi  (then type /login inside the TUI), or copy an existing ~/.pi/agent/auth.json into ${this.isolationDir}.`,
       );
     }
     logger.info(`PI_CODING_AGENT_DIR=${this.isolationDir}`);
