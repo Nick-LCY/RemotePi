@@ -17,13 +17,15 @@
 
 ### 1.1 已有测试面
 
-| 包 / 维度 | 测试形态 | 数量（2026-09-07 快照） | 覆盖范围 |
+| 包 / 维度 | 测试形态 | 数量（2026-09-07 收口后快照） | 覆盖范围 |
 |-----------|---------|-----------------------|---------|
-| `packages/shared` | Vitest 单元（zod schema + envelope 解析） | ~83 条 | envelope v2 全 9 个 pi schema + 9 个 control type + blocked_on + extension_ui_response refine |
-| `packages/bridge` | Vitest 单元（`FakeChild` mock 子进程） | ~186 条 | 5 相位状态机 / 启动握手 / 5min idle kill / 自主 kill / exit 三路径 / session 扫描 / outstanding 表 / ExtensionUIRouter / wire 翻译三态 / 多 web 先答者胜 / 广播原则 / clearAll / `translateToPiWire` / `normalizePiError` / `encodeCwdForPi` |
+| `packages/shared` | Vitest 单元（zod schema + envelope 解析） | 83 条（`envelope.test.ts` 22 + `pi.test.ts` 19 + `block-on.test.ts` 21 + `session-state.test.ts` 12 + `get-state.test.ts` 9） | envelope v2 全 9 个 pi schema + 9 个 control type + blocked_on + extension_ui_response refine |
+| `packages/bridge` | Vitest 单元（`FakeChild` mock 子进程） | 193 条（`client.test.ts` 8 + `token.test.ts` 3 + `index.test.ts` 15 + `pi-cwd-encoder.test.ts` 29 + `config.test.ts` 17 + `extension-ui.test.ts` 37 + `pi-process.test.ts` 84） | 5 相位状态机 / 启动握手 / 5min idle kill / 自主 kill / exit 三路径 / session 扫描（含 ground-truth 与文件落地形态）/ outstanding 表 / ExtensionUIRouter / wire 翻译三态 / 多 web 先答者胜 / 广播原则 / clearAll / `translateToPiWire` / `normalizePiError` / `encodeCwdForPi` / raw 事件分发（8 type） / `extension_ui_response` wire round-trip |
 | `worker/` | 无 | 0 | DO 房间路由、转发、广播、握手回显 — **零测试基建** |
 | `packages/web` | 无（vitest 基建未建） | 0 | ChatView / DialogHost / WsClient / 6 出站方法 / 恢复仪式 / F5 — **零测试基建** |
-| 真 pi 集成 | 仅用户手测 + 一次性 `/tmp` 探针 | 0（**非回归资产**） | 用户实测发现 bridge→pi 翻译层字段错位、cwd 编码占位实现错误、spawning 死锁 |
+| 真 pi 集成 | 仅用户手测 + 一次性 `/tmp` 探针 | 0（**非回归资产**） | 用户实测发现 bridge→pi 翻译层字段错位、cwd 编码占位实现错误、spawning 死锁、pi 裸事件对象分发、web 事件提取器位置键 |
+
+> **"真 pi 0"补充一句**（2026-09-07 收口轮注记）：§1 表"真 pi 集成 = 0（**非回归资产**）"易被读作"完全没测过真 pi"——**实则** 诊断期 `/tmp` 探针 + 用户手测已在 [[current-state.md#最近变更]] 2026-09-07 全部 12 个手测问题维度上**实证**了关键形状（cwd 编码 / bridge→pi 翻译层 / error 归一 / 握手写入 / spawn cwd / child error / pi 裸事件对象分发 / web 提取器位置键），落盘到 [[current-state.md]] 与对应 ADR 补注。**§2 集成测试（假 LLM server + 隔离 pi）即把该诊断期实证**固化为可 CI 跑的回归套件——从此"非回归资产"变成回归资产，零外网 + fixture port 0 + 进程内 HTTP server，详见 §2。
 
 ### 1.2 现有覆盖的强项与盲区
 
@@ -43,8 +45,8 @@
 M3 联调共暴露 **12 个**问题（详见 [[current-state.md#最近变更]] 2026-09-07 三条 + 历史变更的 9 条），其中 **6 个**直接根因是"bridge 单测层与 pi 实物不一致"：
 
 1. **cwd 编码占位实现**（commit `cc00a3f`）— `encodeURIComponent(cwd).replace(/%/g,'')` 与 pi `session-manager.js` 的真实算法不一致，扫描落空 → spawn 不带 `--session` → 每次都是新会话。**单测层无法发现**，因为测试只 mock 了 bridge 自己的编码。
-2. **bridge→pi 命令帧字段名错位**（commit `837d1de`）— pi 0.85.1 RPC schema 要求 `prompt` 用 `message` 字段，bridge 误发 `content`，pi 读 `undefined` 崩。**单测层无法发现**，因为 FakeChild 不验证 schema 严格匹配。
-3. **bridge→pi 失败响应 `error` 形状**（commit `44960b9`）— pi 失败响应 `error` 恒为 `string`，bridge 透传给 worker schema 拒收。**单测层无法发现**，因为 FakeChild 模拟的是 happy path。
+2. **bridge→pi 命令帧字段名错位**（commit `44960b9`）— pi 0.85.1 RPC schema 要求 `prompt` 用 `message` 字段，bridge 误发 `content`，pi 读 `undefined` 崩。**单测层无法发现**，因为 FakeChild 不验证 schema 严格匹配。
+3. **bridge→pi 失败响应 `error` 形状**（commit `837d1de`）— pi 失败响应 `error` 恒为 `string`，bridge 透传给 worker schema 拒收。**单测层无法发现**，因为 FakeChild 模拟的是 happy path。
 4. **spawning 握手写入缺失**（commit `52557fb`）— bridge spawn 后从不写 `get_state`，pi 静默等输入、bridge 等响应死锁。**单测层无法发现**，因为 FakeChild 默认不模拟"等输入就报错"。
 5. **spawn cwd 缺失**（commit `52557fb` 同条）— `PiSpawnOptions` 无 `cwd`，pi 跑在 bridge 进程目录，session 落盘目录与扫描目录错位。**单测层无法发现**，因为 FakeChild 不真正 spawn。
 6. **child error 裸奔**（commit `52557fb` 同条）— 无 handler 时 `ENOENT` 触发 `uncaughtException` → bridge `exit(1)`。**单测层无法发现**，因为 FakeChild 走的是 happy exit。

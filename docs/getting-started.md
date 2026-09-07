@@ -121,9 +121,9 @@ pnpm --filter worker dev:inspector
 
 > **端口被占用**：`wrangler dev` 默认绑 8787，被占用就报 `EADDRINUSE`。换端口：把 worker `package.json` 的 `dev` script 改成 `wrangler dev --port 8788`（或直接 `wrangler dev --port 8788` 一次性用）；验证完改回默认配置即可。
 
-### 3.4 M2 三端齐起（本地联调 / 验收准备）
+### 3.4 三端齐起（本地联调 / 手测验收准备）
 
-M2 三端联调（web ↔ worker ↔ bridge）需要三个终端各起一个 dev 服务。**worker 先起**（触发 DO `new_sqlite_classes` migration），再起 bridge（生成 token），最后起 web（粘 token 进 URL）。
+M3 三端联调（web ↔ worker ↔ bridge）需要三个终端各起一个 dev 服务。**worker 先起**（触发 DO `new_sqlite_classes` migration），再起 bridge（生成 token），最后起 web（粘 token 进 URL）。
 
 **终端 A — worker**
 
@@ -171,13 +171,17 @@ pnpm --filter @remotepi/web dev
 http://localhost:5173/#<token>
 ```
 
-**验证要点**（按 [[prds/m2-tunnel.md#验收清单|M2 PRD 验收清单]]）：
+**验证要点**（M3 ChatView 可见行为验证 — M2 时代的 `PingTester` / `BroadcastLog` 验证组件已在 [[tasks/m3/06-web-chat.md|task 06]] 删除，**勿**在新手测中寻找这两个组件）：
 
 - **StatusBar 绿** — 状态条出现 `online` + `bridge_status.reason='connected'`，表示 handshake 通过。
-- **PingTester 往返** — 点 PingTester 发 `control/ping`，收到 `control/pong` 显示 nonce 与 RTT（ms）。
-- **双 tab 广播** — 开两个 tab 都粘同一 token，两边 `<BroadcastLog />` 互收对方/bridge 消息。
+- **ChatView 渲染** — `<ChatView />` 挂在 `<App />` 内（`packages/web/src/components/ChatView.tsx`），由 `PhaseIndicator` / `MessageList` / `QueueIndicator` / `InputBar` / `DialogHost` 五块组成；恢复仪式完成后自动渲染，先显示 `RecoveryInFlight` spinner，到位切 ChatView。
+- **对话闭环** — 在 `<InputBar />` 输入文字点 Send → `<MessageList />` 出现打字机暂显（`message_update` 流式渲染）+ `<PhaseIndicator />` 从 `ready` 转 `running` → pi 收尾（`message_end` + `agent_settled`）后转 `idle` + 输入框可用 + 提示"5 分钟自动休眠"。**多轮对话**：每条消息按 `<MessageList />` 顺序追加，刷新（F5）后聊天记录 / phase / blocked_on 全部恢复（web 端无 localStorage）。
+- **4 类阻塞弹窗** — pi 内部扩展触发 `extension_ui_request`（4 类：select / confirm / input / editor）→ bridge 透传 → `<DialogHost />` 渲染对应弹窗（`<SelectDialog />` / `<ConfirmDialog />` 三按钮 Cancel=cancelled:true / No=value:false / Yes=value:true / `<InputDialog />` / `<EditorDialog />`）；倒计时显示（editor 无超时除外）；提交后 `<DialogHost />` 自动收起。
+- **双 tab 广播** — 开两个 tab 都粘同一 token；M3 已无独立 `<BroadcastLog />`，弹窗先答者胜——任一 tab 提交，两端 `<DialogHost />` 同步收起；后续答者收 toast"已过期"+ 自动收起。
 - **杀 bridge 变离线** — 在终端 B 按 `Ctrl+C`，两 tab 5 秒内 StatusBar 变 `offline` + `reason='closed'`。
 - **心跳判死** — 在终端 B `kill -STOP $(pgrep -f '@remotepi/bridge')`，两 tab 90 秒内 `reason='stale'`；再 `kill -CONT` → 自动重连恢复 `connected`。
+
+> §3.4 标题原为"M2 三端齐起"（任务 [[tasks/m2/05-web-components.md|M2 task 05]] 时落）；M3 期间已多次小修订（M2→M3 标注），本轮统一收敛为"三端齐起"。**M2 时代的 `PingTester` / `BroadcastLog` 验证组件已随 [[tasks/m3/06-web-chat.md|task 06]] 删除**（commit `073f4c6`），新手测中**勿**寻找这两组件；想看 wire 层 ping/pong 用 [[#10.6 wscat 冒烟（不打开网页也能验 worker 路由）|§10.6 wscat 通道]]。
 
 > bridge 端 PID 取法：`pgrep -f 'remotepi/bridge'` 或 `ps aux | grep bridge` 都行；`tsx watch` 起的进程组是同一棵，`kill -- -<pgid>` 可一并清掉子进程。
 
