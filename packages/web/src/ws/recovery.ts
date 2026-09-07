@@ -71,9 +71,10 @@ export interface RecoveryState {
 }
 
 /** Recovery ceremony handle. Lives across React re-renders
- *  (caller memoizes via useMemo / useRef); `dispose()` tears down
- *  timers and reply-resolver subscriptions when the host component
- *  unmounts (StrictMode dev double-mount, hot-reload, etc.).
+ *  (caller memoizes via useMemo / useRef). The gate's lifetime follows
+ *  its owning component instance; active ceremony timers and listeners
+ *  are cancelled by retry or naturally become inert when no listeners
+ *  remain.
  *
  *  `getSnapshot` and `subscribe` are exposed as **arrow field
  *  references** (bound at gate-construction time, not methods
@@ -104,10 +105,7 @@ export interface RecoveryGate {
    *  cleared, its reply-resolvers unsubscribed) and a new pair
    *  of dual queries goes out. */
   retry(): void;
-  /** Tear down the gate. Called from the host component's
-   *  useEffect cleanup; subsequent `retry()` calls become
-   *  no-ops, the `subscribe()` listeners stop firing. Idempotent. */
-  dispose(): void;
+  retry(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,11 +159,9 @@ export function initiateRecovery(
   // App.tsx call site drop its wrapping arrow.
   let snapshot: RecoveryState = { ready: false, error: null };
   const listeners = new Set<() => void>();
-  let disposed = false;
   let active: ActiveCeremony | null = null;
 
   const setState = (next: { ready: boolean; error: RecoveryError | null }): void => {
-    if (disposed) return;
     // Replace-on-change: equal in both fields → no-op (preserves the
     // current snapshot reference AND suppresses the listener fan-out).
     // This is the second half of the snapshot-stability contract —
@@ -208,10 +204,9 @@ export function initiateRecovery(
    *  attempt's outcome is recorded (a stale attempt is dropped
    *  by setting `stale = true` on disposal / retry). */
   const startCeremony = (): void => {
-    if (disposed) return;
     // Cancel any in-flight attempt first — its timers must not
     // fire after a new attempt's state has been set, and its
-    // resolvers must not see this attempt's replies. We dispose
+    // resolvers must not see this attempt's replies. We cancel
     // the active ceremony which clears timers + unsubscribes.
     cancelActive();
     setState({ ready: false, error: null });
@@ -392,12 +387,6 @@ export function initiateRecovery(
       };
     },
     retry: startCeremony,
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      cancelActive();
-      listeners.clear();
-    },
   };
 }
 
@@ -410,7 +399,7 @@ interface ActiveCeremony {
   readonly stateId: string;
   snapshotOutcome: 'pending' | 'ok' | 'fail';
   stateOutcome: 'pending' | 'ok' | 'fail';
-  /** Set true on disposal / retry-cancellation. Late timer
+  /** Set true on retry-cancellation. Late timer
    *  firings + late reply-resolver callbacks observe this and
    *  short-circuit instead of mutating the (now-cancelled)
    *  attempt's outcome. */

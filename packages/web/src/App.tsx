@@ -106,29 +106,22 @@ export function App() {
 // appropriate view based on its state.
 // ---------------------------------------------------------------------------
 
-/** Wire-level entry: one `RecoveryGate` per mount, disposed on
- *  unmount. Pulled out of `<App />` so the gate instance survives
- *  any future re-renders triggered by hash changes / context
- *  consumers below it. The component is intentionally small —
+/** Wire-level entry: one `RecoveryGate` per component instance.
+ *  Pulled out of `<App />` so the gate instance survives any future
+ *  re-renders triggered by hash changes / context consumers below it.
+ *  The component is intentionally small —
  *  the real gating logic lives in the gate object (`recovery.ts`)
  *  and the renderer (`RecoveryView`) below. */
 function RecoveryShell({ token }: { token: string }) {
   const client = useWsClient();
   // `useMemo` is the wrong tool here in StrictMode dev: the factory
   // runs on every mount, so a dev-mode double-invoke would create
-  // two gates. The first one is disposed via the cleanup below;
-  // the second one is the live one. We pair the `useRef`-backed
-  // instance with a `useEffect` cleanup to keep StrictMode honest.
+  // `useRef` keeps one gate for this component instance. The gate is
+  // intentionally not disposed by effect cleanup (see RecoveryShell).
   const gateRef = useGateRef(client);
-  useEffect(() => {
-    return () => {
-      // Dispose on unmount (StrictMode first-mount teardown +
-      // real unmount on token revocation). The gate's timers +
-      // reply-resolver subscriptions are released; subsequent
-      // `retry()` calls become no-ops.
-      gateRef.dispose();
-    };
-  }, [gateRef]);
+  // The gate follows this component instance's lifetime. Do not dispose
+  // it from effect cleanup: StrictMode uses cleanup as a simulated
+  // teardown before the second setup, and disposal is irreversible.
   return <RecoveryView gate={gateRef} token={token} />;
 }
 
