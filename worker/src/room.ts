@@ -436,7 +436,7 @@ export class Room implements DurableObject {
         return;
       }
 
-      // Catch-all: every other envelope type passes through verbatim.
+        // Catch-all: every other envelope type passes through verbatim.
         // control.md §中间层处理规则 reserves deep handling to handshake /
         // bridge_status / error (all handled above or in handleHandshake)
         // and gives ping/pong the nonce-pairing carve-out (also above).

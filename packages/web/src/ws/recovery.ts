@@ -71,7 +71,7 @@ export interface RecoveryState {
 }
 
 /** Recovery ceremony handle. Lives across React re-renders
- *  (caller memoizes via useMemo / useRef). The gate's lifetime follows
+ *  (caller keeps one per component instance via useRef). The gate's lifetime follows
  *  its owning component instance; active ceremony timers and listeners
  *  are cancelled by retry or naturally become inert when no listeners
  *  remain.
@@ -103,8 +103,16 @@ export interface RecoveryGate {
    *  call from the UI's "retry" button always restarts from
    *  scratch — any in-flight ceremony is cancelled (its timers
    *  cleared, its reply-resolvers unsubscribed) and a new pair
-   *  of dual queries goes out. */
-  retry(): void;
+   *  of dual queries goes out.
+   *
+   *  The gate intentionally exposes no `dispose()` entry point —
+   *  the host component owns the gate for its lifetime via
+   *  `useRef`, and listeners are torn down naturally when
+   *  `useSyncExternalStore`'s unsubscribe closure runs (the
+   *  effect cleanup the host does NOT install for the gate).
+   *  Inert timers and reply-resolvers either fire into an empty
+   *  listener set or no-op on `stale`, so an unmounted gate
+   *  holds no live state worth actively cleaning up. */
   retry(): void;
 }
 

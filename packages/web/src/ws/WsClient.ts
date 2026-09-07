@@ -258,8 +258,8 @@ export class WsClient {
    *  are practically impossible and a fan-out API keeps the surface
    *  simple. The map has no explicit dispose path — cleanup happens
    *  via the unsubscribe closure returned by `registerReplyResolver`,
-   *  which the recovery ceremony invokes from `cancelActive()` /
-   *  `dispose()`. `dispatchReplyResolvers` also drops the entry on
+   *  which the recovery ceremony invokes from `cancelActive()`.
+   *  `dispatchReplyResolvers` also drops the entry on
    *  each match (one-shot semantics), so a normal reply-yes-and-done
    *  cycle leaves nothing behind. */
   private replyResolvers = new Map<string, Set<ReplyResolver>>();

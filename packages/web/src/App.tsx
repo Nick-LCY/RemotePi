@@ -114,10 +114,9 @@ export function App() {
  *  and the renderer (`RecoveryView`) below. */
 function RecoveryShell({ token }: { token: string }) {
   const client = useWsClient();
-  // `useMemo` is the wrong tool here in StrictMode dev: the factory
-  // runs on every mount, so a dev-mode double-invoke would create
-  // `useRef` keeps one gate for this component instance. The gate is
-  // intentionally not disposed by effect cleanup (see RecoveryShell).
+  // `useRef` keeps one gate per component instance under StrictMode
+  // dev's double-invoke; the gate is intentionally not disposed by
+  // effect cleanup (see RecoveryShell).
   const gateRef = useGateRef(client);
   // The gate follows this component instance's lifetime. Do not dispose
   // it from effect cleanup: StrictMode uses cleanup as a simulated
