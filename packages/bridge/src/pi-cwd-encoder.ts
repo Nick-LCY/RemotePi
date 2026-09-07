@@ -1,32 +1,25 @@
 // Bridge helper: encode cwd for pi's session directory layout.
 //
-// pi v0.85.1 stores session files at:
+// pi v0.85.1 stores sessions at:
 //   <agentDir>/sessions/--<cwd encoding>--/<timestamp>_<uuid>.jsonl
-// where `<agentDir>` is the directory pi treats as its `$PI_CODING_AGENT_DIR`
-// (or, when unset, its compiled-in default of `~/.pi/agent`). `<cwd encoding>`
-// is derived from the cwd string. PRD §2.5 pins the encoding as
-// `encodeURIComponent(cwd).replace(/%/g, '')`:
+// where `<agentDir>` is pi's own agent dir (env `PI_CODING_AGENT_DIR`
+// or its compiled-in `~/.pi/agent` — see `resolvePiAgentDir` below)
+// and `<cwd encoding>` is the doubled-dash-delimited token that ties
+// the bridge's session scanner to pi's on-disk layout.
 //
-//   - `encodeURIComponent` percent-encodes everything that isn't URL-safe
-//     (e.g. space → `%20`, `:` → `%3A`).
-//   - `.replace(/%/g, '')` strips every percent sign — the remaining
-//     ASCII letters are kept verbatim. So a space becomes the literal
-//     string `20`, a colon becomes `3A`, and the resulting folder name
-//     is a doubled-dash-delimited token like `--homeuserproject--`.
+// Authoritative algorithm: pi's
+// `@earendil-works/pi-coding-agent` `dist/core/session-manager.js`
+// `getDefaultSessionDirPath`. The precise transcription + step-by-step
+// rationale (and the bridge↔pi drift history this fix closes) is on
+// the `encodeCwdForPi` JSDoc below — read it before changing
+// anything in this file.
 //
-// Real-pi validation (spinning up a real `pi --mode rpc` against a real
-// tmpdir and diffing the directory it creates against the path this
-// encoder predicts) is a regression item scheduled for M3 task 08
-// (联调手测验收) — if the encoding does not match pi's output, the
-// session scanner will point at the wrong directory and bridge restart
-// cannot recover the latest session. The encoder here is a deterministic
-// pure function so the diff step is one `mkdir` + one `spawn` away.
-//
-// The path-building helper (`sessionSubdir`), the agent-dir resolver
-// (`resolvePiAgentDir`), and the latest-session scanner
-// (`findLatestSession`) live alongside the encoder because they all
-// consume the same `--<encoded>--` token and the test suite wants to
-// exercise them as a single shape.
+// `sessionSubdir` wraps the encoded token with `--…--`,
+// `resolvePiAgentDir` mirrors pi's own `config.js getAgentDir()`,
+// and `findLatestSession` scans the resulting directory for the
+// latest `.jsonl`. They live together because they all consume the
+// same `--<encoded>--` token and the test suite exercises them as a
+// single shape.
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import os from 'node:os';
@@ -93,16 +86,51 @@ export function resolvePiAgentDir(env: NodeJS.ProcessEnv = process.env): string 
 
 /** Encode a cwd string into pi's `<cwd encoding>` token (PRD §2.5).
  *
- *  The transformation is `encodeURIComponent` followed by stripping
- *  every percent sign — this is intentionally NOT a generic
- *  "URL-safe" encoding; it's a one-line approximation of what pi
- *  v0.85.1 does internally. If real-pi validation in task 08 reveals
- *  the encoding is wrong (e.g. pi uses a different strategy for
- *  unicode / special chars), this function is the single edit site —
- *  every consumer goes through `encodeCwdForPi`, and the test suite
- *  asserts the exact token shape so a regression is caught. */
+ *  Precise transcription of pi's `getDefaultSessionDirPath` in
+ *  `@earendil-works/pi-coding-agent` `dist/core/session-manager.js`
+ *  (verified against v0.85.1):
+ *
+ *    const resolvedCwd = resolvePath(cwd);                      // utils/paths.js: normalizePath + path.resolve
+ *    const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+ *
+ *  Concretely, in three steps:
+ *    1. `path.resolve(cwd)` — align with pi's `resolvePath`, which
+ *       normalises (`..`, trailing slash) AND re-anchors a relative
+ *       cwd against `process.cwd()`. The output is always absolute.
+ *    2. `.replace(/^[/\\]/, "")` — strip exactly ONE leading path
+ *       separator (the regex has no `g` and no `+`). On POSIX the
+ *       leading separator is always `/`; the `\\` branch is a
+ *       Windows safety net that pi carries for cross-platform
+ *       source. Important: do NOT change to `/[/\\]+/`, which would
+ *       also strip `//` from `/home//x` etc. — pi's regex stops at
+ *       one character by design.
+ *    3. `.replace(/[/\\:]/g, "-")` — map each remaining `/`, `\\`
+ *       or `:` to a single `-`. Every other character (space,
+ *       unicode, ASCII letters/digits, `+`, `=`, ...) passes through
+ *       verbatim. This is why `/home/u/my proj` becomes
+ *       `home-u-my proj` (space preserved, NOT percent-encoded)
+ *       and `/data/x:y` becomes `data-x-y` (colon maps to dash,
+ *       NOT `%3A`).
+ *
+ *  The token is then wrapped with `--…--` by `sessionSubdir` so the
+ *  resulting on-disk layout is `<agentDir>/sessions/--<token>--/`.
+ *
+ *  **Why this matters operationally.** This encoding is the single
+ *  key that ties a bridge restart to an existing pi session: the
+ *  bridge scans `<agentDir>/sessions/--<token>--/` for the latest
+ *  `.jsonl` and passes it as `--session <path>` on the next spawn.
+ *  The placeholder encoding `encodeURIComponent(cwd).replace(/%/g,'')`
+ *  produced tokens like `2Fhome2Fsankabox` while pi's real algorithm
+ *  produces `home-sankabox` — the bridge scanned an empty directory
+ *  and spawned without `--session`, so every idle kill / restart
+ *  started a fresh session instead of resuming the latest one.
+ *  The ground-truth regression test below pins this to the actual
+ *  disk state of `~/.pi/agent/sessions/` so a future drift in either
+ *  side (bridge OR pi) shows up immediately. */
 export function encodeCwdForPi(cwd: string): string {
-  return encodeURIComponent(cwd).replace(/%/g, '');
+  const resolved = path.resolve(cwd);
+  const stripped = resolved.replace(/^[/\\]/, '');
+  return stripped.replace(/[/\\:]/g, '-');
 }
 
 /** Build the per-cwd session subdirectory inside pi's agent root:

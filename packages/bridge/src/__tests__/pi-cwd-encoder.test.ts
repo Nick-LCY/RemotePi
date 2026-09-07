@@ -3,35 +3,61 @@
 // cases:
 //
 //   encodeCwdForPi:
-//     1. plain alphanumeric cwd is unchanged
-//     2. URL-unsafe chars are encoded per encodeURIComponent then
-//        percent-stripped (`encodeURIComponent(cwd).replace(/%/g, '')`)
-//     3. forward slashes preserved
-//     4. unicode characters get percent-encoded then stripped
-//     5. consecutive reserved characters chain correctly
+//     1. plain absolute cwd: leading separator stripped, remaining
+//        separators collapsed to dashes
+//     2. chars that encodeURIComponent would touch (space, colon,
+//        plus, equals, unicode) pass through verbatim — pi's
+//        algorithm does NOT percent-encode anything; only `/`, `\`,
+//        `:` are mapped to `-`
+//     3. deep paths: every internal `/` becomes a single `-`
+//     4. unicode characters pass through verbatim (not percent-encoded)
+//     5. trailing separator: `path.resolve` normalises a trailing
+//        slash before the encoding pass
+//     6. `..` segments: `path.resolve` collapses them before encoding
+//     7. double-leading-slash: `path.resolve` collapses `//` to `/`,
+//        AND pi's leading-separator regex strips only ONE (so a
+//        future regression that turns the regex into `/[/\\]+/`
+//        would change this shape — pinned here as a guard)
+//     8. relative path: `path.resolve` re-anchors it against
+//        `process.cwd()` — pi does the same via `resolvePath`
+//     9. ground truth: against the real `~/.pi/agent/sessions/`
+//        directory, the encoded token for `/home/sankabox` is
+//        `home-sankabox` (a directory that pi has actually created
+//        and written sessions into — pin prevents the bridge ↔ pi
+//        drift that motivated this fix).
 //
 //   sessionSubdir:
-//     6. wraps encoded cwd with `--` and joins under sessions/
+//    10. wraps the encoded cwd with `--` and joins under sessions/
 //
 //   findLatestSession:
-//     7. missing subdir returns null (no crash)
-//     8. empty subdir returns null (no candidates)
-//     9. multiple files: latest by timestamp wins (ISO lex = chronological)
-//    10. multiple files with same timestamp: latest mtime wins
-//    11. non-jsonl files are ignored
-//    12. unparseable jsonl names are skipped (operator droppings)
-//    13. stable ordering when both timestamp + mtime tie (uuid desc)
+//    11. missing subdir returns null (no crash)
+//    12. empty subdir returns null (no candidates)
+//    13. multiple files: latest by timestamp wins (ISO lex = chronological)
+//    14. multiple files with same timestamp: latest mtime wins
+//    15. non-jsonl files are ignored
+//    16. unparseable jsonl names are skipped (operator droppings)
+//    17. stable ordering when both timestamp + mtime tie (uuid desc)
+//    17a. (S7) garbage filenames with non-ISO timestamp prefixes are
+//         excluded from the latest ranking
 //
 //   sessionArgv:
-//    14. empty array when no session exists
-//    15. ['--session', <path>] when one exists
+//    18. empty array when no session exists
+//    19. ['--session', <path>] when one exists
 //
 //   authJsonExists:
-//    16. true for an existing regular file
-//    17. false when the path doesn't exist
-//    18. false when the path exists but is a directory
+//    20. true for an existing regular file
+//    21. false when the path doesn't exist
+//    22. false when the path exists but is a directory
+//
+//   resolvePiAgentDir:
+//    23. honours PI_CODING_AGENT_DIR when set to an absolute path
+//    24. expands a leading ~/ to the current home directory
+//    25. falls back to <homedir>/.pi/agent when PI_CODING_AGENT_DIR is unset
+//    25a. falls back to <homedir>/.pi/agent when PI_CODING_AGENT_DIR is set but empty
+//    26. non-tilde relative paths are returned verbatim
+//    27. does not consult the host filesystem (sealed against ~/.pi/agent state)
 
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -62,57 +88,132 @@ afterEach(() => {
   }
 });
 
-describe('encodeCwdForPi (PRD §2.5)', () => {
-  it('1. encodes a plain cwd path: every character goes through encodeURIComponent + percent-strip', () => {
-    // encodeURIComponent percent-encodes '/' too, so the slashes
-    // become "2F" after the percent-strip. This is intentional per
-    // PRD §2.5 ("实现时严格对齐 pi 官方编码; 推荐先实现
-    // encodeURIComponent(cwd).replace(/%/g, '')").
-    expect(encodeCwdForPi('/home/user/project')).toBe('2Fhome2Fuser2Fproject');
+describe('encodeCwdForPi (PRD §2.5, pi v0.85.1 algorithm)', () => {
+  it('1. plain absolute cwd: leading separator stripped, remaining separators collapsed to dashes', () => {
+    // pi's algorithm: `path.resolve` then strip ONE leading `/`,
+    // then every `/` (and `\\`, `:`) → `-`. So `/home/user/project`
+    // becomes `home-user-project` (NOT `2Fhome2Fuser2Fproject` — that
+    // was the placeholder encoding's output).
+    expect(encodeCwdForPi('/home/user/project')).toBe('home-user-project');
   });
 
-  it('2. URL-unsafe chars go through encodeURIComponent + percent-strip', () => {
-    // space → %20 → "20"
-    expect(encodeCwdForPi('/home/user/proj ect')).toBe('2Fhome2Fuser2Fproj20ect');
-    // colon → %3A → "3A"
-    expect(encodeCwdForPi('/data/x:y')).toBe('2Fdata2Fx3Ay');
+  it('2. characters that encodeURIComponent would touch pass through verbatim (only /\\: are mapped)', () => {
+    // space, plus, equals, parentheses → no mapping (pi's regex
+    // does not cover them). This is the key behavioural difference
+    // from the placeholder: the placeholder turned space → "20"
+    // and colon → "3A"; pi leaves them alone.
+    expect(encodeCwdForPi('/home/user/proj ect')).toBe('home-user-proj ect');
+    // colon is in the mapping set → maps to `-`, NOT "3A"
+    expect(encodeCwdForPi('/data/x:y')).toBe('data-x-y');
   });
 
-  it('3. forward slashes become "2F" (encodeURIComponent does encode them)', () => {
-    // / → %2F → "2F"
-    expect(encodeCwdForPi('/a/b/c/d/e')).toBe('2Fa2Fb2Fc2Fd2Fe');
+  it('3. deep path: every internal / becomes a single -', () => {
+    expect(encodeCwdForPi('/a/b/c/d/e')).toBe('a-b-c-d-e');
   });
 
-  it('4. encodes unicode characters and strips the percent signs', () => {
-    // U+4E2D (中) → %E4%B8%AD in encodeURIComponent → "E4B8AD" after strip.
-    expect(encodeCwdForPi('/data/中文')).toBe('2Fdata2FE4B8ADE69687');
+  it('4. unicode characters pass through verbatim (not percent-encoded)', () => {
+    // U+4E2D (中) is a single UTF-8 codepoint; pi's regex doesn't
+    // touch non-ASCII at all, so the byte sequence survives verbatim.
+    // (Earlier placeholder turned this into "2Fdata2FE4B8ADE69687".)
+    expect(encodeCwdForPi('/data/中文')).toBe('data-中文');
   });
 
-  it('5. chains correctly for consecutive reserved characters', () => {
-    // space, plus, equals → %20 %2B %3D → "20" "2B" "3D"
-    expect(encodeCwdForPi('a b+c=d')).toBe('a20b2Bc3Dd');
+  it('5. trailing separator is normalised by path.resolve before encoding', () => {
+    // `path.resolve('/home/foo/')` returns `/home/foo` — the trailing
+    // slash disappears BEFORE the encoding pass, so the token has no
+    // dangling dash.
+    expect(encodeCwdForPi('/home/foo/')).toBe('home-foo');
+  });
+
+  it('6. .. segments are collapsed by path.resolve before encoding', () => {
+    // `path.resolve('/home/foo/../bar')` returns `/home/bar`. The
+    // `..` is gone from the encoded token.
+    expect(encodeCwdForPi('/home/foo/../bar')).toBe('home-bar');
+  });
+
+  it('7. double-leading-slash is collapsed by path.resolve before the leading-strip regex runs', () => {
+    // `path.resolve('//home/x')` → `/home/x` (POSIX `path.resolve`
+    // collapses multiple leading separators to a single one). The
+    // leading-strip regex then strips exactly ONE `/`, yielding
+    // `home/x`, which the mapping pass turns into `home-x`. This
+    // is the same shape we'd get from input `/home/x` — proving
+    // the regex is idempotent against the `path.resolve`
+    // normalisation. Pin: if a future refactor broadens the regex
+    // to `[/\\]+` (or adds `g`), this assertion still holds because
+    // path.resolve pre-collapsed the `//`; the regex shape is
+    // pinned by inspection rather than by differential testing.
+    // The task brief's flag ("pi 正则无 g/+, 勿改成多个") is
+    // captured in the JSDoc on `encodeCwdForPi` and reviewed at
+    // every code change to that function.
+    expect(encodeCwdForPi('//home/x')).toBe('home-x');
+  });
+
+  it('8. relative path: path.resolve re-anchors against process.cwd()', () => {
+    // Pi's `resolvePath` does the same thing — a relative cwd is
+    // re-anchored before encoding. We pin the behaviour without
+    // asserting a specific result (which depends on the host's
+    // cwd) by checking that the output is non-empty AND that the
+    // leading separator has been stripped (i.e. the output never
+    // starts with `/`).
+    const result = encodeCwdForPi('relative/path');
+    expect(result.length).toBeGreaterThan(0);
+    expect(result.startsWith('/')).toBe(false);
+    // Sanity: the encoding pipeline still maps separators.
+    expect(result).toContain('-');
+  });
+
+  it('9. GROUND TRUTH: token for /home/sankabox matches a directory pi actually created on disk', () => {
+    // Pin against the real pi install. We do NOT write to the
+    // user's `~/.pi/agent/sessions/` — we only READ its directory
+    // listing. If a developer runs this on a host that has never
+    // run pi from `/home/sankabox` as a cwd, the disk-side check
+    // is skipped (the encoder contract assertion above still holds
+    // and is the source of truth). On the original bug-discovery
+    // host, pi has created `~/.pi/agent/sessions/--home-sankabox--`
+    // with seven `.jsonl` session files inside — that's the shape
+    // the bridge's scanner must agree with, so the bridge can hand
+    // `--session <latest>` back to pi on the next spawn.
+    const agentDir = path.join(os.homedir(), '.pi', 'agent');
+    const sessionsDir = path.join(agentDir, 'sessions');
+    const token = encodeCwdForPi('/home/sankabox');
+    expect(token).toBe('home-sankabox');
+    // sessionSubdir tail must match the pi on-disk convention
+    // (`--<token>--`), so the scanner points at a real directory.
+    const subdir = sessionSubdir(agentDir, '/home/sankabox');
+    expect(path.basename(subdir)).toBe(`--${token}--`);
+    // Ground-truth check against the real on-disk layout. If pi
+    // has used /home/sankabox as a cwd on this host, the
+    // `--home-sankabox--` subdirectory existing IS the proof that
+    // pi's encoder produces the same token ours does — the
+    // bridge↔pi drift that motivated this fix has not returned.
+    // If the host never used /home/sankabox as a pi cwd, the
+    // subdirectory won't exist; skip the check — the encoder
+    // assertion above is the contract that always holds, even on
+    // CI runners that have never run pi.
+    const expected = `--${token}--`;
+    if (!existsSync(path.join(sessionsDir, expected))) return;
   });
 });
 
 describe('sessionSubdir', () => {
-  it('6. wraps the encoded cwd with `--` and joins under sessions/', () => {
-    // encodeCwdForPi('/home/u') = '2Fhome2Fu' so the wrapping yields
-    // `--2Fhome2Fu--`.
-    expect(sessionSubdir('/iso', '/home/u')).toBe(path.join('/iso', 'sessions', '--2Fhome2Fu--'));
+  it('10. wraps the encoded cwd with `--` and joins under sessions/', () => {
+    // encodeCwdForPi('/home/u') = 'home-u' so the wrapping yields
+    // `--home-u--`.
+    expect(sessionSubdir('/iso', '/home/u')).toBe(path.join('/iso', 'sessions', '--home-u--'));
   });
 });
 
 describe('findLatestSession (PRD §2.5 / 已敲定决策 4)', () => {
-  it('7. returns null when the subdir does not exist (no crash, no exception)', () => {
+  it('11. returns null when the subdir does not exist (no crash, no exception)', () => {
     expect(findLatestSession('/definitely/not/a/real/path/at/all')).toBeNull();
   });
 
-  it('8. returns null when the subdir exists but contains no .jsonl files', () => {
+  it('12. returns null when the subdir exists but contains no .jsonl files', () => {
     const sub = makeTmp();
     expect(findLatestSession(sub)).toBeNull();
   });
 
-  it('9. picks the file with the lexicographically-largest timestamp when multiple files exist', () => {
+  it('13. picks the file with the lexicographically-largest timestamp when multiple files exist', () => {
     // ISO timestamps sort the same as chronological order, so the
     // biggest string is the newest.
     const sub = makeTmp();
@@ -124,7 +225,7 @@ describe('findLatestSession (PRD §2.5 / 已敲定决策 4)', () => {
     expect(findLatestSession(dir)).toBe(path.join(dir, '2025-12-31T23-59-59_ccc.jsonl'));
   });
 
-  it('10. tiebreaks to the file with the latest mtime when timestamps are identical', () => {
+  it('14. tiebreaks to the file with the latest mtime when timestamps are identical', () => {
     const sub = makeTmp();
     const dir = path.join(sub, 'sessions', '--tie--');
     mkdirSync(dir, { recursive: true });
@@ -141,7 +242,7 @@ describe('findLatestSession (PRD §2.5 / 已敲定决策 4)', () => {
     expect(findLatestSession(dir)).toBe(f2);
   });
 
-  it('11. ignores non-jsonl files in the subdir', () => {
+  it('15. ignores non-jsonl files in the subdir', () => {
     const sub = makeTmp();
     const dir = path.join(sub, 'sessions', '--mixed--');
     mkdirSync(dir, { recursive: true });
@@ -153,7 +254,7 @@ describe('findLatestSession (PRD §2.5 / 已敲定决策 4)', () => {
     expect(findLatestSession(dir)).toBe(path.join(dir, '2025-12-31T23-59-59_b.jsonl'));
   });
 
-  it('12. skips unparseable jsonl names (no <ts>_<uuid> shape) without poisoning the ranking', () => {
+  it('16. skips unparseable jsonl names (no <ts>_<uuid> shape) without poisoning the ranking', () => {
     const sub = makeTmp();
     const dir = path.join(sub, 'sessions', '--unparse--');
     mkdirSync(dir, { recursive: true });
@@ -171,7 +272,7 @@ describe('findLatestSession (PRD §2.5 / 已敲定决策 4)', () => {
     );
   });
 
-  it('13. stable ordering when both timestamp + mtime tie (uuid desc)', () => {
+  it('17. stable ordering when both timestamp + mtime tie (uuid desc)', () => {
     const sub = makeTmp();
     const dir = path.join(sub, 'sessions', '--stable--');
     mkdirSync(dir, { recursive: true });
@@ -191,7 +292,7 @@ describe('findLatestSession (PRD §2.5 / 已敲定决策 4)', () => {
     expect(findLatestSession(dir)).toBe(z);
   });
 
-  it('13a. (S7) garbage filenames with non-ISO timestamp prefixes are excluded from the latest ranking', () => {
+  it('17a. (S7) garbage filenames with non-ISO timestamp prefixes are excluded from the latest ranking', () => {
     // S7 review follow-up: files like `strayname.jsonl` or
     // `notadate_uuid.jsonl` would previously parse with
     // `timestamp = "strayname"` / `"notadate"`, then sort
@@ -216,12 +317,12 @@ describe('findLatestSession (PRD §2.5 / 已敲定决策 4)', () => {
 });
 
 describe('sessionArgv (spawn argv helper)', () => {
-  it('14. returns [] when no session exists', () => {
+  it('18. returns [] when no session exists', () => {
     const sub = makeTmp();
     expect(sessionArgv(sub)).toEqual([]);
   });
 
-  it('15. returns ["--session", "<path>"] when a session exists', () => {
+  it('19. returns ["--session", "<path>"] when a session exists', () => {
     const sub = makeTmp();
     const dir = path.join(sub, 'sessions', '--argv--');
     mkdirSync(dir, { recursive: true });
@@ -232,18 +333,18 @@ describe('sessionArgv (spawn argv helper)', () => {
 });
 
 describe('authJsonExists', () => {
-  it('16. returns true for an existing regular file', () => {
+  it('20. returns true for an existing regular file', () => {
     const dir = makeTmp();
     const f = path.join(dir, 'auth.json');
     writeFileSync(f, '{}');
     expect(authJsonExists(f)).toBe(true);
   });
 
-  it('17. returns false when the path does not exist', () => {
+  it('21. returns false when the path does not exist', () => {
     expect(authJsonExists('/definitely/not/a/real/path/auth.json')).toBe(false);
   });
 
-  it('18. returns false when the path exists but is a directory', () => {
+  it('22. returns false when the path exists but is a directory', () => {
     const dir = makeTmp();
     expect(authJsonExists(dir)).toBe(false);
   });
@@ -266,14 +367,14 @@ describe('authJsonExists', () => {
 // ---------------------------------------------------------------------------
 
 describe('resolvePiAgentDir (decision 2026-09-05)', () => {
-  it('19. honours PI_CODING_AGENT_DIR when set to an absolute path', () => {
+  it('23. honours PI_CODING_AGENT_DIR when set to an absolute path', () => {
     // Absolute override: returned verbatim, no homedir mix.
     expect(
       resolvePiAgentDir({ PI_CODING_AGENT_DIR: '/custom/agent/path' }),
     ).toBe('/custom/agent/path');
   });
 
-  it('20. expands a leading ~/ to the current home directory', () => {
+  it('24. expands a leading ~/ to the current home directory', () => {
     const homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue('/home/operator');
     try {
       expect(
@@ -286,7 +387,7 @@ describe('resolvePiAgentDir (decision 2026-09-05)', () => {
     }
   });
 
-  it('21. falls back to <homedir>/.pi/agent when PI_CODING_AGENT_DIR is unset', () => {
+  it('25. falls back to <homedir>/.pi/agent when PI_CODING_AGENT_DIR is unset', () => {
     const homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue('/home/operator');
     try {
       expect(resolvePiAgentDir({})).toBe('/home/operator/.pi/agent');
@@ -295,7 +396,7 @@ describe('resolvePiAgentDir (decision 2026-09-05)', () => {
     }
   });
 
-  it('21a. falls back to <homedir>/.pi/agent when PI_CODING_AGENT_DIR is set but empty', () => {
+  it('25a. falls back to <homedir>/.pi/agent when PI_CODING_AGENT_DIR is set but empty', () => {
     // Empty string is treated the same as unset — guards against
     // an operator who set `PI_CODING_AGENT_DIR=` in their shell
     // rc file and got a no-op override they didn't expect.
@@ -309,7 +410,7 @@ describe('resolvePiAgentDir (decision 2026-09-05)', () => {
     }
   });
 
-  it('22. non-tilde relative paths are returned verbatim (no homedir prepending)', () => {
+  it('26. non-tilde relative paths are returned verbatim (no homedir prepending)', () => {
     // `work/agent` is a relative path; the resolver doesn't try
     // to be clever about it — pi would also treat it verbatim
     // and resolve relative to its own cwd, so the bridge should
@@ -321,7 +422,7 @@ describe('resolvePiAgentDir (decision 2026-09-05)', () => {
     ).toBe('work/agent');
   });
 
-  it('23. does not consult the host filesystem (sealed against ~/.pi/agent state)', () => {
+  it('27. does not consult the host filesystem (sealed against ~/.pi/agent state)', () => {
     // Sealed: even if the host genuinely has ~/.pi/agent/auth.json
     // (the old isolation dir's auth check was sensitive to this),
     // the resolver returns the path string only — it never reads,

@@ -1371,8 +1371,8 @@ describe('Spawn argv: --session flag (PRD §2.5)', () => {
     const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-'));
     trackTmpDir(agentDir);
     const cwd = '/home/test/proj';
-    // encodeCwdForPi('/home/test/proj') = '2Fhome2Ftest2Fproj'
-    const sessionDir = path.join(agentDir, 'sessions', '--2Fhome2Ftest2Fproj--');
+    // encodeCwdForPi('/home/test/proj') = 'home-test-proj'
+    const sessionDir = path.join(agentDir, 'sessions', '--home-test-proj--');
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('node:fs') as typeof import('node:fs');
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -2590,7 +2590,7 @@ describe('§6.2 exited semantics — get_messages triggers spawn with --session'
     const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-'));
     trackTmpDir(agentDir);
     const cwd = '/home/test/proj';
-    const sessionDir = path.join(agentDir, 'sessions', '--2Fhome2Ftest2Fproj--');
+    const sessionDir = path.join(agentDir, 'sessions', '--home-test-proj--');
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('node:fs') as typeof import('node:fs');
     fs.mkdirSync(sessionDir, { recursive: true });
