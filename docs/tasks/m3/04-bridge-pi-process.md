@@ -76,5 +76,8 @@ status: done
 
 ### 未在本任务收尾的项（移交）
 
-- **cwd 编码真实 pi 比对回归**：[[prds/m3-single-session.md#§2.5 session 目录扫描|PRD §2.5]] 要求 `encodeCwdForPi(cwd)` 与真实 pi 落盘路径回归比对；本任务先实现 `encodeURIComponent(cwd).replace(/%/g, '')`，回归项留给 [[tasks/m3/08-docs-and-validation.md|tasks/08]] 文档与验证阶段执行。
 - **`extension_ui_response` web 入站翻译**：弹窗回执 → pi 原生三态 → `command_result` 广播——留 [[tasks/m3/05-bridge-popup-core.md|tasks/05]] 落地。
+
+### 勘误注记（2026-09-07）
+
+**cwd 编码占位实现（`encodeURIComponent` 路线）已于 2026-09-07 实测否决并替换为 pi 真实算法转写**——任务书原文中"先 `encodeURIComponent(cwd).replace(/%/g,'')`，再用真实 pi 启动一次 + 落盘路径回归比对"那段推荐实现与 pi `session-manager.js` 的 `getDefaultSessionDirPath`（`path.resolve` → 去单开头分隔符 → `/` `\` `:` 映射为 `-`）不一致；占位实现编出 `--2Fhome2Fsankabox--`，pi 真实落盘 `--home-sankabox--`，bridge 扫描落空导致 idle 5min kill 后 spawn 均为新 session（用户实测：再对话接不回同一 session）。commit `cc00a3f` 落盘 3 行精确转写 + 测试翻转（旧断言钉的是错误形状）+ 地面真值回归（断言编码命中磁盘真实目录，宿主无该目录则跳过）；bridge 测试 269 → 281 全绿。**任务书原文 `encodeURIComponent` 推荐路线不再成立**。详见 [[prds/m3-single-session.md|M3 PRD]] 顶部 2026-09-07 修订注记 + [[current-state.md#最近变更|current-state 2026-09-07]] 条目。原"cwd 编码真实 pi 比对回归"挂账已由本轮实测完成比对、占位实现被否决而清账。
