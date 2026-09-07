@@ -20,8 +20,8 @@
 //
 // Commands arriving during `spawning` are QUEUED — the bridge can't
 // write them yet (handshake pending). When the handshake completes,
-// queued commands are flushed in arrival order, then the phase moves
-// to `running`.
+// queued commands are flushed in arrival order; the phase moves to
+// `running` only when at least one flushed command is a write.
 //
 // ## Exit handling (PRD §2.6)
 //
@@ -958,10 +958,10 @@ export class PiProcessManager {
     });
   }
 
-  /** Move spawning → ready + drain the deferred command queue. If the
-   *  queue is non-empty, the first command causes ready → running
-   *  (per PRD §2.3: "首个 prompt / steer / follow_up" drives the
-   *  transition). */
+  /** Move spawning → ready + drain the deferred command queue. A queued
+   *  write command (prompt / steer / follow_up) causes ready → running;
+   *  read-only commands such as get_messages leave the manager in ready
+   *  and must not emit a running broadcast. */
   private completeHandshake(): void {
     this.transitionTo('ready');
     const queued = this.deferredCommands;
@@ -969,7 +969,7 @@ export class PiProcessManager {
     for (const cmd of queued) {
       this.writeCommand(cmd);
     }
-    if (queued.length > 0) {
+    if (queued.some((cmd) => isWriteCommand(cmd.type))) {
       this.transitionTo('running');
     }
   }

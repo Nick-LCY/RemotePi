@@ -271,6 +271,87 @@ describe('PiProcessManager state machine (PRD §2.3)', () => {
     expect(spawnChildren[0]?.stdinLines).toHaveLength(2);
   });
 
+  it('1.3a completes handshake with only queued get_messages: stays ready without running broadcast', () => {
+    const { manager, spawnChildren, outbound } = makeManager();
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'get_messages',
+      id: 'gm-queued',
+      payload: {},
+    });
+
+    expect(manager.getPhase()).toBe<SessionPhase>('spawning');
+    const handshake = JSON.parse(spawnChildren[0]?.stdinLines[0] ?? '{}') as {
+      id?: string;
+    };
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({
+        type: 'response',
+        command: 'get_state',
+        id: handshake.id,
+        success: true,
+      }) + '\n',
+    );
+
+    expect(manager.getPhase()).toBe<SessionPhase>('ready');
+    const states = sessionStates(outbound);
+    expect(states.phases).toEqual(['spawning', 'ready']);
+    expect(states.phases).not.toContain('running');
+
+    // The read command is still flushed; it simply does not change
+    // the lifecycle phase or emit a running transition.
+    const writes = spawnChildren[0]?.stdinLines ?? [];
+    expect(writes.map((line) => (JSON.parse(line) as { type?: string }).type)).toEqual([
+      'get_state',
+      'get_messages',
+    ]);
+  });
+
+  it('1.3b completes handshake with mixed queued read and prompt: transitions to running', () => {
+    const { manager, spawnChildren, outbound } = makeManager();
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'get_messages',
+      id: 'gm-mixed',
+      payload: {},
+    });
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p-mixed',
+      payload: { content: 'first prompt' },
+    });
+
+    const handshake = JSON.parse(spawnChildren[0]?.stdinLines[0] ?? '{}') as {
+      id?: string;
+    };
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({
+        type: 'response',
+        command: 'get_state',
+        id: handshake.id,
+        success: true,
+      }) + '\n',
+    );
+
+    expect(manager.getPhase()).toBe<SessionPhase>('running');
+    expect(sessionStates(outbound).phases).toEqual(['spawning', 'ready', 'running']);
+
+    // Both deferred commands are flushed in arrival order, and the
+    // write is what authorizes the ready → running transition.
+    const writes = spawnChildren[0]?.stdinLines ?? [];
+    expect(writes.map((line) => (JSON.parse(line) as { type?: string }).type)).toEqual([
+      'get_state',
+      'get_messages',
+      'prompt',
+    ]);
+  });
+
   it('1.4 transitions running → idle when agent_settled fires + starts 5-min timer', () => {
     vi.useFakeTimers();
     try {
