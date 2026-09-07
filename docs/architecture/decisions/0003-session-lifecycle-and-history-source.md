@@ -33,7 +33,7 @@
   - "在浏览器关闭后仍在跑"的体验与本地 pi 一致；session 资源占用可控（5 min idle kill）。
   - web 端实现复杂度集中在"重连后状态恢复"协议（增量流 vs 全量快照，待决问题）。
   - 多端冲突处理需要在 PRD 阶段做交互原型（乐观 UI？以服务端最后一致为准？）。
-  - 相关条目：[[architecture/overview.md]]、[[architecture/decisions/0001-three-component-topology-with-cf-do.md]]、[[architecture/decisions/0002-monorepo-and-tech-stack.md]]、[[architecture/decisions/0004-extension-ui-dialog-forwarding.md]]、[[architecture/decisions/0006-protocol-v1-get-state-unlock.md]]。
+  - 相关条目：[[architecture/overview.md]]、[[architecture/decisions/0001-three-component-topology-with-cf-do.md]]、[[architecture/decisions/0002-monorepo-and-tech-stack.md]]、[[architecture/decisions/0004-extension-ui-dialog-forwarding.md]]、[[architecture/decisions/0006-protocol-v1-get-state-unlock.md]]、[[architecture/decisions/0007-host-shared-pi-agent-dir.md]]。
 
 ## 补注（M3 落地后回写，2026-09-05）
 
@@ -62,10 +62,15 @@
 
 **`ready` 阶段收到 `agent_settled` 被忽略**。任务 [[tasks/m3/04-bridge-pi-process.md|04]] review 捕获：原 §3 "收到 `agent_settled` 后开始 5 分钟空闲计时"未限制相位，但 [[prds/m3-single-session.md#§2.3 pi 子进程状态机|PRD §2.3]] 状态机只定义 `running → idle`（`agent_settled` 是工作量收敛信号，`ready` 阶段尚无工作量，谈不上 idle）。**裁定**：`ready` 阶段收到 `agent_settled` 事件 → 静默忽略（不迁移 `ready → idle`，不起 5min 计时器）；计时器仅在 `running → idle` 迁移时起 `setTimeout(IDLE_TIMEOUT_MS)`。这与 [[prds/m3-single-session.md|PRD §2.3]] 字面一致，也与 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]] 的"5 相位枚举不破锁"承诺一致。
 
+## 补注（去隔离改造，2026-09-05）
+
+按 [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] 用户裁定（commit `1985fbd`）落地：session 扫描基准由历史隔离目录 `<configDir>/pi-agent/` 改为宿主机共享 agent 目录（`resolvePiAgentDir()` 解析：`PI_CODING_AGENT_DIR` 优先 / tilde 展开 / 默认 `~/.pi/agent`，与 pi `getAgentDir()` 一致）。本 ADR §2 第 3 条“session 落盘路径”仍准确；§3 第 1 条中“bridge 专属目录”表述为历史状态，修订为：spawn 不注入 `PI_CODING_AGENT_DIR`、子进程继承宿主环境，使 web 端能接管同一 `work_dir` 最近会话（含终端里正在聊的）。已接受的设计后果（同会话双写 / 非官方布局局限）详见 ADR-0007 与 [[tasks/m3/09-host-shared-agent-dir.md|tasks/09]]。
+
 ## 双向引用（M3 协同）
 
+- [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] —— session 扫描基准已由历史隔离目录修订为宿主机 agent 目录；共享池的“取最新”与同会话双写后果见该 ADR。
 - [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]] —— control 8 → 9 type 破锁，`get_state` 是恢复仪式中两条命令之一。
-- [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]] —— 阻塞弹窗不触发 `agent_settled` → idle 计时不误触；并发多端"先答者胜"语义。
+- [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]] —— 阻塞弹窗不触发 `agent_settled` → idle 计时不误触；并发多端“先答者胜”语义。
 - [[architecture/protocol/envelope.md#锁版承诺v1-存续期内不可变|envelope.md 锁版承诺]] —— control type 数量与演进规则 (a)/(b) 同步修订的承载点。
 - [[tasks/m3/04-bridge-pi-process.md|tasks/04]] —— 5 相位状态机 + 自主 kill 标记 + exited 触发集 + ready 忽略 agent_settled 裁定。
 - [[tasks/m3/07-web-recovery.md|tasks/07]] —— 双查询仪式 + 5s 超时常量 + F5 同路径。

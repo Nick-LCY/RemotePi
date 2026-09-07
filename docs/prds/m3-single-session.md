@@ -22,6 +22,8 @@ M3 把 [[roadmap.md#5-里程碑|roadmap §5 M3 行]]、[[architecture/decisions/
 > 同步在 envelope.md 锁版承诺清单与 ADR-0003 末尾标注此破锁。
 >
 > **修订注记（2026-09-05）**：§2.3 "bridge 启动时若 `auth.json` 缺失 → 提示用户配 `pi login`" 与「用户操作清单」"**认证**：在 `<config-dir>/pi-agent/` 下跑 `pi login` 生成 `auth.json`"——两处 `pi login` 表述**有误**（用户实测反馈 + scout 实证 pi 0.85.1）。pi 0.85.1 **没有** `pi login` 顶层命令（子命令仅 `install` / `remove` / `uninstall` / `update` / `list` / `config` / `auth`，其中 `auth` 只读）；真正登录入口是 pi **TUI 内斜杠命令 `/login`**（可带 provider 名，如 `/login anthropic`），OAuth 完成后凭证写入 `getAgentDir()/auth.json`（权限 `0600`）。依项目惯例**不改定稿正文**，实际认证两种方式二选一——(a) 进 TUI：`PI_CODING_AGENT_DIR=<configDir>/pi-agent pi` → TUI 内输入 `/login`（或 `/login <provider>`）跟提示完成 OAuth；(b) **推荐，最快**：复制本机已有的 `~/.pi/agent/auth.json` 到 `<configDir>/pi-agent/auth.json`（权限 `0600`；本机目录解析：`PI_CODING_AGENT_DIR` env 优先，否则 `~/.pi/agent`）；完成后可用 `pi auth check` 验证凭证。bridge stderr 提示文案已同步修正（去掉 "pi login" 字样，改为指引到上述两种方式）。完整版指引见 [[getting-started.md#3.5 配置文件 JSON 字段说明|getting-started §3.5]] `pi 凭据与 auth.json` 小节。
+>
+> **修订注记（2026-09-05，去隔离改造）**：§2.3 "spawn 命令 `PI_CODING_AGENT_DIR=<bridge专属隔离目录>`"、§2.5 "会话发现走目录扫描（PI_CODING_AGENT_DIR 隔离目录下扫固定 work_dir 对应子目录…）" 与「用户操作清单」中"在 `<config-dir>/pi-agent/` 下跑 `pi login` 生成 `auth.json`、复制本机 `auth.json` 到 `<configDir>/pi-agent/`"——上述隔离目录与 `auth.json` 复制表述**已被 [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] 取代**：bridge 完整复用宿主机 pi 环境、`resolvePiAgentDir()` 与 pi `getAgentDir()` 语义一致、sessions 共享池扫描、auth 缺失仅 stderr warn 提示 TUI `/login` 或 `*_API_KEY` env；正文作为历史设计保留，不回改。当前行为以 ADR-0007 / [[tasks/m3/09-host-shared-agent-dir.md|tasks/09]] / [[getting-started.md#3.5 配置文件 JSON 字段说明|getting-started §3.5]] 为准。
 
 ## 目标
 

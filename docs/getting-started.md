@@ -88,7 +88,7 @@ npm i -g @earendil-works/pi-coding-agent
 pi --version   # 应 ≥ 0.84.4
 ```
 
-bridge **不**自带 pi，宿主全局安装是事实约束。M2 起 bridge spawn 子进程调用 pi；M3 起在隔离目录 `<configDir>/pi-agent/` 下运行（与配置文件同根），详见 [[prds/m3-single-session.md|M3 PRD §2]]。
+bridge **不**自带 pi，宿主全局安装是事实约束。M2 起 bridge spawn 子进程调用 pi；M3 起桥接进程与宿主机 TUI 共用同一份 pi 环境（sessions 与 auth 天然共享），详见 [[prds/m3-single-session.md|M3 PRD §2]] 与 [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]]。
 
 ### 3.2 web — Vite
 
@@ -223,28 +223,28 @@ $XDG_CONFIG_HOME/remotepi/bridge.json        # XDG 优先
 
 **`pi` 凭据与 auth.json**：
 
-bridge 在 `<configDir>/pi-agent/` 下跑 pi 子进程（与 `bridge.json` 同根；M3 PRD §2.5）。pi 的凭据优先级：`<configDir>/pi-agent/auth.json` > `*_API_KEY` 环境变量 > `--api-key` 参数（roadmap §4.8）。`<configDir>/pi-agent/auth.json` 缺失时 bridge 启动打 **stderr warn 但不退出**——提醒用户补凭据。
+bridge 直接复用宿主机 pi agent 目录（与 [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] 协同）——凭据来自宿主 `~/.pi/agent/auth.json`（或 `PI_CODING_AGENT_DIR` 指向的自定义目录），无需额外配置或复制。bridge 启动时若该目录下缺少 `auth.json` 会向 stderr 打 **warn 但不退出**——提醒用户完成认证，但不强依赖；该 warn 出现后实际命令仍会因无凭据而失败。
 
 > **注意**：pi **没有** `pi login` 顶层命令（pi 0.85.1 子命令仅 `install` / `remove` / `uninstall` / `update` / `list` / `config` / `auth`，其中 `auth` 只读）。登录入口是 pi TUI 内的斜杠命令 `/login`（可带 provider 名，如 `/login anthropic`），OAuth 完成后凭证写入 `getAgentDir()/auth.json`（权限 `0600`）。
 
-在隔离目录认证有两种方式：
+完成认证有两种等价方式（任选其一）：
 
 ```bash
 # 方式 ①：进 TUI 走 /login（一次性交互）
-PI_CODING_AGENT_DIR=<configDir>/pi-agent pi
+pi
 # TUI 内输入：
 #   /login                  # 列出 provider 选一个
 #   /login anthropic        # 直接进指定 provider 的 OAuth
-# 跟着 TUI 提示完成 OAuth；auth.json 落在 <configDir>/pi-agent/auth.json（0600）
+# 跟着 TUI 提示完成 OAuth；auth.json 落在 ~/.pi/agent/auth.json（0600）
 
-# 方式 ②（推荐，最快）：复制本机已有的 auth.json 到隔离目录
-# 本机 pi 目录解析：PI_CODING_AGENT_DIR 环境变量优先；否则 ~/.pi/agent
-cp ~/.pi/agent/auth.json <configDir>/pi-agent/auth.json
-chmod 600 <configDir>/pi-agent/auth.json
-# 之后 bridge 启动不再 warn
+# 方式 ②（推荐，最快）：直接设置 *_API_KEY 环境变量，免去交互
+export ANTHROPIC_API_KEY=sk-ant-...   # provider 决定环境变量名
+# pi 读取顺序：auth.json > *_API_KEY 环境变量 > --api-key 参数
 ```
 
-完成后可在隔离目录用 `pi auth check`（只读子命令）验证凭证可用性。
+完成后可用 `pi auth check`（只读子命令）验证凭证可用性。
+
+**高级覆盖：`PI_CODING_AGENT_DIR`**——bridge spawn 不注入此变量，子进程继承宿主环境，使 TUI 与 bridge 共享同一份会话与认证。用户若把 pi 装到自定义目录（如包级改名 / fork 版改了 env 名）需自行设置 `PI_CODING_AGENT_DIR`，bridge 会同步透传并以该目录为扫描基准；详见 [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] 的“已知布局局限”。
 
 **XDG 路径解析顺序**：
 

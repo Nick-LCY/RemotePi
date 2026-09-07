@@ -28,4 +28,5 @@
 - [[architecture/protocol/envelope.md#锁版承诺v1-存续期内不可变]] —— 锁版承诺清单（control 8 → 9 type）与演进规则 (a)/(b) 同步修订的承载点。
 - [[architecture/decisions/0003-session-lifecycle-and-history-source.md|ADR-0003]] —— 末尾注明：恢复仪式中 web 端握手后并行发 `pi/get_messages` + `control/get_state`（本 ADR 增补的 `get_state` 即其中之一）；自主 kill 标记 + exited 后 spawn 触发集 + get_state 永不 spawn 协同语义在此协同。
 - [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]] —— 末尾注明：弹窗模型升级为 `session_state.blocked_on` 状态帧驱动；`get_state` 回执中的 `blocked_on` 字段是弹窗模型状态帧驱动的真相源之一（与事件流 `pi/event` 双路并行）。
+- [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] —— 共享 session 的恢复仪式由本 ADR 增补的 `get_state` 承载；web 端接管的最近会话即宿主机共享 agent 目录下的会话（与 M3 隔离方案的分歧点）。
 
