@@ -12,6 +12,24 @@
 
 ---
 
+## bridge→pi 翻译层（实现注记）
+
+> 本节是「bridge 把本协议命令帧翻译成 pi 原生 stdin 帧」的实现层注记。**web wire 形状不变**（协议文档里看到的就是网页发的形状），bridge 在写 stdin 时按本节规则翻译——`DeferredCommand` 持有 web wire，写出时单点翻译（`translateToPiWire`）。该层是 [[roadmap.md#4-pi-rpc-协议要点|roadmap §4]] 与本协议的衔接点。
+
+以下四条规则均经 pi 0.85.1 实证（依据：`rpc-types.d.ts` 命令 schema + `rpc-mode.js` 工厂 + 实际回执），由 commit `837d1de` / `44960b9` 落地：
+
+1. **字段名翻译：`content` → `message`**。web wire 的 `prompt` / `steer` / `follow_up` payload 用 `content`（本协议 §命令的命名），pi 原生 RPC schema 要求 `message`。bridge 误发 `content` → pi 读到 `undefined` → 调用 `.startsWith(...)` 抛 `TypeError`（用户手测时在 prompt 命令观察到的现象）。**翻译位置**：`translateToPiWire` 单点处理——web wire 与 DeferredCommand 不感知此差异，未来若 pi 再次重命名字段只需改一处。
+
+2. **`get_messages.since` 在翻译边界丢弃**。web wire 保留 `since`（协议 §`get_messages` payload 字段）以备 M+ 切换到 `get_entries` 时复用；pi 的 `get_messages` 不接受 `since`（该字段属 `get_entries`），`translateToPiWire` 在写 stdin 时直接丢弃，stderr 不告警（语义上属"web wire 字段在 bridge→pi 单向不可用"，与 §字段名翻译 同样属翻译边界处置）。
+
+3. **失败响应 `error` 形状归一化**。pi 原生 RPC 失败响应（带 `success: false` 或缺失）的 `error` 恒为 **string**（`rpc-mode.js` 工厂实证）；worker 的 `command_result.error` schema 要求 `{code, message}` 对象，原样透传会被 zod 拒。bridge 在转发前走 `normalizePiError` 统一归一为 `{code: 'pi_error', message}`（六分支覆盖 `string` / `Error` / `{code,message}` / `{message}` / `null` / 缺省）。**翻译位置**：bridge 收 pi 响应 → `normalizePiError` → `command_result` envelope → worker schema 校验通过 → 转发 web。
+
+4. **`extension_ui_response` 翻译注记见下文 §命令对应小节**——web wire 的 `cancelled` / `value` 三态翻译为 pi 原生 `cancelled` / `value` / 弃 value，是翻译层规则的同类特例，沿用 `translateToPiWire` 单点；本节不复述。
+
+> **测试覆盖**：§命令 wire 保真（10 条 `toEqual` 正向 + `not.toHaveProperty` 反向）+ 整帧 `safeParse` 回归（10 条）+ `normalizePiError` 六分支单测；bridge 测试 247 → 269。**历史教训**：旧测试 §1.3 长期断言错误 wire 形状（`content`），与 pi 真 schema 错位却仍绿，使字段名 bug 存活至今——本次修复同步将断言改为正向 `message` + 反向 `not.toHaveProperty('content')`。
+
+---
+
 ## 命令（网页 → bridge）
 
 ### prompt
