@@ -122,6 +122,105 @@ function isWriteCommand(type: string): type is WriteCommand {
   return (WRITES as readonly string[]).includes(type);
 }
 
+/** Shape of the `error` field that the shared `CommandResultPayloadSchema`
+ *  accepts (`error: { code: string, message: string }.optional()`).
+ *  Re-declared here so the manager doesn't import a private schema
+ *  type from `@remotepi/shared`; the wire contract is captured by
+ *  the zod schema but every code path that builds the payload uses
+ *  this named local type. */
+export interface NormalizedCommandError {
+  code: string;
+  message: string;
+}
+
+/** Canonical code we stamp on pi error payloads that arrive as a raw
+ *  string (or any other non-`{code,message}` shape). Mirrors the
+ *  convention used by the extension UI router for `request_expired`
+ *  / `invalid_response` — a stable, machine-readable code lets the
+ *  web layer branch on failure modes without sniffing free-form
+ *  message text. */
+export const PI_ERROR_CODE = 'pi_error';
+
+/** Normalize the `error` field from a pi `response` frame into the
+ *  `{ code, message }` shape the shared protocol requires.
+ *
+ *  Pi's RPC contract (verified against
+ *  `@earendil-works/pi-coding-agent@0.85.1`'s `dist/modes/rpc/
+ *  rpc-mode.js:38` — `error = (id, command, message: string)` →
+ *  `{ success: false, error: message }`) emits `error` as a raw
+ *  string (e.g. `"Model not found: openai/gpt-5"`,
+ *  `"Failed to parse command: ..."`, `e.message` from a thrown
+ *  promise). The shared `CommandResultPayloadSchema` requires the
+ *  field to be `{ code: string, message: string }` when present;
+ *  passing a string through verbatim caused `Envelope.safeParse`
+ *  to fail with `payload.error expected object, received string`
+ *  and worker refused every command_result the bridge forwarded.
+ *
+ *  Branching rules (deliberately lenient — pi's wire shape is open):
+ *    - `undefined` / `null` → `undefined` (caller omits the field).
+ *    - `string` → `{ code: PI_ERROR_CODE, message: <raw> }` (the
+ *      dominant pi case: error.message / string literals).
+ *    - object with string `code` + string `message` → pass through
+ *      verbatim (defensive: future pi builds could converge on
+ *      `{code, message}` without a bridge change).
+ *    - object with non-string fields → fall back per-field: a
+ *      non-string `code` becomes `PI_ERROR_CODE` (so we never
+ *      stamp a number/null/undefined into the protocol's typed
+ *      string slot); a non-string `message` becomes
+ *      `JSON.stringify(...)` (rather than `String(...)`) to avoid
+ *      `[object Object]` on plain objects and to keep arrays /
+ *      nested values intact in the web UI.
+ *    - everything else (number, boolean, array, etc.) → wrap as
+ *      `{ code: PI_ERROR_CODE, message: JSON.stringify(raw) }`
+ *      so nothing is lost in the conversion (web can still see
+ *      the original shape in the message field). The `bigint` /
+ *      `symbol` branches are purely defensive: pi's RPC payload
+ *      reaches us via `JSON.parse` upstream, so those types are
+ *      unreachable in practice — `JSON.stringify` on a symbol
+ *      yields `undefined` which would then be stringified to
+ *      `undefined`, but the branch is kept so the type narrowing
+ *      is total for the `unknown` input.
+ *
+ *  Exported for unit-test direct coverage; production callers go
+ *  through `handlePiResponse` which applies the result when
+ *  constructing the `command_result` payload. */
+export function normalizePiError(raw: unknown): NormalizedCommandError | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === 'string') {
+    return { code: PI_ERROR_CODE, message: raw };
+  }
+  if (Array.isArray(raw)) {
+    // Arrays are typeof === 'object' in JS but not `{code, message}`
+    // shaped — JSON-stringify so the original elements survive the
+    // conversion. Web renders the message verbatim, so `[1,2,3]`
+    // becomes `[1,2,3]` in the UI rather than an empty string.
+    return { code: PI_ERROR_CODE, message: JSON.stringify(raw) };
+  }
+  if (typeof raw === 'object') {
+    const obj = raw as { code?: unknown; message?: unknown };
+    if (typeof obj.code === 'string' && typeof obj.message === 'string') {
+      return { code: obj.code, message: obj.message };
+    }
+    // Defensive coercion for partial object shapes (pi could emit
+    // a numeric code, null message, etc. — see upstream tolerance
+    // for unknown JSON shapes). We use JSON.stringify for the
+    // non-string message fallback rather than String() to avoid the
+    // eslint `no-base-to-string` rule (String() on a plain object
+    // would yield `[object Object]`, losing the original value).
+    const coercedCode = typeof obj.code === 'string' ? obj.code : PI_ERROR_CODE;
+    const coercedMessage =
+      typeof obj.message === 'string'
+        ? obj.message
+        : obj.message === undefined || obj.message === null
+          ? ''
+          : JSON.stringify(obj.message);
+    return { code: coercedCode, message: coercedMessage };
+  }
+  // Primitive non-string (number / boolean / bigint / symbol) →
+  // JSON-stringify so the original value survives the conversion.
+  return { code: PI_ERROR_CODE, message: JSON.stringify(raw) };
+}
+
 // ---------------------------------------------------------------------------
 // Child abstraction — keeps tests off the real spawn
 // ---------------------------------------------------------------------------
@@ -940,7 +1039,19 @@ export class PiProcessManager {
     // Forward all other replies as `command_result` envelopes. The
     // shared module's zod schema validates the shape (the bridge is
     // allowed to pass through any string for `command`).
+    //
+    // error normalization: pi's RPC contract emits `error` as a raw
+    // string (verified against `@earendil-works/pi-coding-agent@
+    // 0.85.1` `dist/modes/rpc/rpc-mode.js:38`), but the shared
+    // `CommandResultPayloadSchema` requires `error: { code: string,
+    // message: string }`. Passing the raw string through verbatim
+    // caused worker to refuse the envelope with `payload.error
+    // expected object, received string`. `normalizePiError` handles
+    // all four shapes (undefined / string / `{code,message}` /
+    // other) and returns `undefined` so the field is omitted when
+    // the reply was actually successful.
     const replyTo = matched?.webEnvelopeId ?? randomUUID();
+    const normalizedError = normalizePiError(frame.error);
     this.onOutbound({
       v: PROTOCOL_VERSION,
       kind: 'pi',
@@ -951,9 +1062,7 @@ export class PiProcessManager {
         command: frame.command,
         success: frame.success,
         ...(frame.data !== undefined ? { data: frame.data } : {}),
-        ...(frame.error !== undefined
-          ? { error: frame.error as { code: string; message: string } }
-          : {}),
+        ...(normalizedError !== undefined ? { error: normalizedError } : {}),
       },
     });
   }

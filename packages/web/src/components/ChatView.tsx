@@ -345,7 +345,17 @@ function InputBar() {
   // own timer fresh).
   useCommandErrorSubscription(
     useCallback((notice) => {
-      const display = `pi 已不再处理该请求（${notice.code}: ${notice.message}），可能是 idle 超时 kill`;
+      // Generic failure banner: both `request_expired` (idle-timeout
+      // / queued-too-long) and the `pi_error` family (model not
+      // found, parse failure, etc.) reach this callback via the
+      // shared `command_error` subscription. Earlier wording pinned
+      // every failure to "可能是 idle 超时 kill", which is only true
+      // for `request_expired` — `pi_error` failures come from pi
+      // itself. `request_expired` is handled by the extension's
+      // own notice flow and does not surface here, so a generic
+      // "命令失败 (code: message)" line is correct for everything
+      // that does.
+      const display = `命令失败（${notice.code}）：${notice.message}`;
       setCommandError(display);
       if (commandErrorTimerRef.current !== null) {
         clearTimeout(commandErrorTimerRef.current);

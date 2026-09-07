@@ -32,6 +32,7 @@ import {
   IDLE_TIMEOUT_MS,
   PiProcessManager,
   SIGKILL_DELAY_MS,
+  normalizePiError,
   type PiChild,
   type PiProcessOptions,
   type SessionStatePayload,
@@ -1779,6 +1780,238 @@ describe('reply_to pairing + snapshot envelope (W2/W3 review)', () => {
     expect(getMessagesWrite).toBeDefined();
     expect(getMessagesWrite?.since).toBe('2026-04-04T00:00:00Z');
     expect(getMessagesWrite?.id).toBe('gm-since');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8b. pi error normalization (worker reject bug)
+//
+// Regression suite for the bug where pi's RPC contract emits the
+// `error` field as a raw string (verified against
+// `@earendil-works/pi-coding-agent@0.85.1`'s `dist/modes/rpc/
+// rpc-mode.js:38` — `error = (id, command, message: string)`)
+// while the shared `CommandResultPayloadSchema` requires the
+// field to be `{ code: string, message: string }`. The previous
+// implementation cast the raw pi value through `as { code, message }`
+// and forwarded verbatim; worker rejected the envelope with
+// `payload.error expected object, received string` and the bridge
+// could not surface any command failure to web.
+//
+// Each test below ALSO round-trips the constructed command_result
+// envelope through `Envelope.safeParse` — the defence in depth
+// the bug demanded: a future shape drift (e.g. someone reverts
+// the normalizer, or pi starts sending a different shape) is
+// caught by the schema validation, not by a downstream worker
+// crash.
+// ---------------------------------------------------------------------------
+
+describe('pi error normalization (worker reject bug regression)', () => {
+  it('8b.1 normalizePiError: undefined → undefined (caller omits the field)', () => {
+    expect(normalizePiError(undefined)).toBeUndefined();
+  });
+
+  it('8b.2 normalizePiError: null → undefined (defensive — null is a missing field)', () => {
+    expect(normalizePiError(null)).toBeUndefined();
+  });
+
+  it('8b.3 normalizePiError: string → { code: pi_error, message: <raw> } (pi\'s dominant shape)', () => {
+    // The bug\'s smoking gun: pi emits `error: "Model not found: openai/gpt-5"`.
+    // Without normalization, worker rejects with
+    // `payload.error expected object, received string`.
+    const result = normalizePiError('Model not found: openai/gpt-5');
+    expect(result).toEqual({ code: 'pi_error', message: 'Model not found: openai/gpt-5' });
+  });
+
+  it('8b.4 normalizePiError: object {code, message} → pass through verbatim', () => {
+    // Defensive: a future pi build might converge on the shared
+    // shape. Don\'t mangle it.
+    const result = normalizePiError({ code: 'auth_required', message: 'No auth.json found' });
+    expect(result).toEqual({ code: 'auth_required', message: 'No auth.json found' });
+  });
+
+  it('8b.5 normalizePiError: object with non-string fields → coerce via String() (defensive)', () => {
+    // A future pi build emitting numeric code or null message
+    // must not crash the bridge. We coerce non-strings to strings;
+    // missing fields fall back to the pi_error sentinel.
+    expect(normalizePiError({ code: 42, message: 'bottleneck' })).toEqual({
+      code: 'pi_error',
+      message: 'bottleneck',
+    });
+    expect(normalizePiError({ code: 'rate_limit', message: null })).toEqual({
+      code: 'rate_limit',
+      message: '',
+    });
+  });
+
+  it('8b.6 normalizePiError: anything else (number, boolean, array) → wrap with JSON.stringify', () => {
+    // Preserve the original value in `message` so web can still
+    // inspect it — the alternative (dropping the field entirely)
+    // would silently lose the failure detail.
+    expect(normalizePiError(42)).toEqual({ code: 'pi_error', message: '42' });
+    expect(normalizePiError(false)).toEqual({ code: 'pi_error', message: 'false' });
+    expect(normalizePiError([1, 2, 3])).toEqual({ code: 'pi_error', message: '[1,2,3]' });
+  });
+});
+
+describe('command_result envelope round-trip through Envelope schema (pi error shape)', () => {
+  // Helper: run a web prompt through the manager and inject a
+  // pi response with the requested error shape. Returns the
+  // emitted command_result envelope (if any).
+  function replyWithError(rawError: unknown): EnvelopeT {
+    const { manager, spawnChildren, outbound } = makeManager();
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      payload: { content: 'go' },
+    });
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
+    );
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({
+        type: 'response',
+        command: 'prompt',
+        id: 'p1',
+        success: false,
+        error: rawError,
+      }) + '\n',
+    );
+    const results = outbound.mock.calls
+      .map((c) => c[0])
+      .filter((env) => env.kind === 'pi' && env.type === 'command_result');
+    expect(results).toHaveLength(1);
+    return results[0]!;
+  }
+
+  it('8b.7 pi error as STRING → command_result carries error={code:pi_error, message:<raw>} AND round-trips through Envelope.safeParse', () => {
+    // The exact bug scenario: web sends a prompt, pi replies with
+    // `success: false, error: "Model not found: openai/gpt-5"`.
+    // The bridge must (a) wrap to {code, message} and (b) the
+    // constructed envelope must validate against the shared schema.
+    // Without (a) worker rejects; without (b) worker would still
+    // reject. Both halves are required for the regression to be
+    // closed end-to-end.
+    const env = replyWithError('Model not found: openai/gpt-5');
+    expect(env.reply_to).toBe('p1');
+    if (env.type !== 'command_result') throw new Error('expected command_result');
+    expect(env.payload.command).toBe('prompt');
+    expect(env.payload.success).toBe(false);
+    expect(env.payload.error).toEqual({
+      code: 'pi_error',
+      message: 'Model not found: openai/gpt-5',
+    });
+    // Defence in depth: the FULL envelope must round-trip through
+    // the shared zod schema. This is the assertion worker makes
+    // before forwarding; pinning it here means a future shape
+    // drift is caught by bridge tests, not by an online crash.
+    const parsed = Envelope.safeParse(env);
+    expect(parsed.success).toBe(true);
+  });
+
+  it('8b.8 pi error as OBJECT {code, message} → pass through verbatim AND round-trips', () => {
+    // Defensive pass-through — a future pi build that converges on
+    // the shared shape must not be re-wrapped with the pi_error
+    // sentinel (web would lose the upstream code).
+    const env = replyWithError({ code: 'rate_limit', message: 'Slow down, retry in 30s' });
+    if (env.type !== 'command_result') throw new Error('expected command_result');
+    expect(env.payload.error).toEqual({
+      code: 'rate_limit',
+      message: 'Slow down, retry in 30s',
+    });
+    const parsed = Envelope.safeParse(env);
+    expect(parsed.success).toBe(true);
+  });
+
+  it('8b.9 pi response with NO error field → command_result omits `error` AND round-trips', () => {
+    // Successful reply shape: `success: true, data: {...}` carries no
+    // error field. The forwarder must not invent one. PRD §1.2:
+    // "缺省视为空数组" — same minimal-surface principle applies to
+    // the optional error field.
+    const { manager, spawnChildren, outbound } = makeManager();
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      payload: { content: 'go' },
+    });
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
+    );
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({
+        type: 'response',
+        command: 'prompt',
+        id: 'p1',
+        success: true,
+        data: { ok: 1 },
+      }) + '\n',
+    );
+    const results = outbound.mock.calls
+      .map((c) => c[0])
+      .filter((env) => env.kind === 'pi' && env.type === 'command_result');
+    expect(results).toHaveLength(1);
+    const env = results[0]!;
+    if (env.type !== 'command_result') throw new Error('expected command_result');
+    expect(env.payload.error).toBeUndefined();
+    const parsed = Envelope.safeParse(env);
+    expect(parsed.success).toBe(true);
+  });
+
+  it('8b.10 error string with embedded 中文 (UTF-8 regression — verify the round-trip survives non-ASCII message text)', () => {
+    // Belt-and-braces UTF-8 test: pi\'s RPC `e.message` is often a
+    // thrown Error from an LLM call, which can carry user-facing
+    // CJK text. The bridge must not corrupt the bytes through the
+    // StringDecoder → JSON.stringify → command_result chain.
+    const { manager, spawnChildren, outbound } = makeManager();
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p-zh',
+      payload: { content: '开始吧' },
+    });
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
+    );
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({
+        type: 'response',
+        command: 'prompt',
+        id: 'p-zh',
+        success: false,
+        error: '模型未找到: openai/gpt-5',
+      }) + '\n',
+    );
+    const results = outbound.mock.calls
+      .map((c) => c[0])
+      .filter((env) => env.kind === 'pi' && env.type === 'command_result');
+    expect(results).toHaveLength(1);
+    const env = results[0]!;
+    if (env.type !== 'command_result') throw new Error('expected command_result');
+    expect(env.payload.error).toEqual({
+      code: 'pi_error',
+      message: '模型未找到: openai/gpt-5',
+    });
+    // Round-trip — the schema must accept the CJK bytes intact.
+    const parsed = Envelope.safeParse(env);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    // Narrow the whole envelope on its discriminator, then read the
+    // payload through the envelope (matches the pattern in
+    // `shared/src/protocol/__tests__/pi.test.ts` via the `narrow`
+    // helper). Discriminating on `payload.type` directly doesn't
+    // work because the payload union itself has no `type` field —
+    // `type` lives on the envelope wrapper.
+    if (parsed.data.type !== 'command_result') {
+      throw new Error(`expected command_result, got ${String(parsed.data.type)}`);
+    }
+    expect(parsed.data.payload.error?.message).toBe('模型未找到: openai/gpt-5');
   });
 });
 
