@@ -62,6 +62,17 @@
 
 **`ready` 阶段收到 `agent_settled` 被忽略**。任务 [[tasks/m3/04-bridge-pi-process.md|04]] review 捕获：原 §3 "收到 `agent_settled` 后开始 5 分钟空闲计时"未限制相位，但 [[prds/m3-single-session.md#§2.3 pi 子进程状态机|PRD §2.3]] 状态机只定义 `running → idle`（`agent_settled` 是工作量收敛信号，`ready` 阶段尚无工作量，谈不上 idle）。**裁定**：`ready` 阶段收到 `agent_settled` 事件 → 静默忽略（不迁移 `ready → idle`，不起 5min 计时器）；计时器仅在 `running → idle` 迁移时起 `setTimeout(IDLE_TIMEOUT_MS)`。这与 [[prds/m3-single-session.md|PRD §2.3]] 字面一致，也与 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]] 的"5 相位枚举不破锁"承诺一致。
 
+## 补注（child error 事件处理策略，2026-09-07）
+
+按用户手测发现 + commit `52557fb` 落地。原 §3 “子进程崩溃（exit ≠ 0）→ 重启”未覆盖 child process `error` 事件路径（例如 spawn 时 `ENOENT`、权限拒绝、`spawn EPERM` 等），未挂 handler 会触发 Node 默认未捕获异常（`uncaughtException`）→ bridge `process.exit(1)`，整个桥接进程意外崩—比“崩溃重启”更严重。落地策略：
+
+- **handler 永远挂**：spawn pi 后无条件 `child.on('error', handler)`（与 exit 并列），handler 三步——(a) **广播** `session_state{phase:'exited'}`（与原 §3 第 1 路径 “标记在”同形状，下同）；(b) **队列丢弃**：清除 outstanding 表中所有该 child 的 bridgeInitiated + web 入站命令记 warn（不发命令结果—web 端连接可能已断）；(c) **永不自动重启**。
+- **“永不自动重启”区别于 exit≠0 崩溃重启路径**：child `error` 是持续性错误（缺可执行 / 缺权限 / 路径不存在 / 系统级限制），退避机制下反复重试依然会 `error`—无价值、不限于 1-2 次。退出 `exited` 状态后，下一次 spawn 触发集命令（prompt / steer / follow_up / get_messages）抵达时再唤醒（与 §补注 4 “exited spawn 触发集”一致），get_state 永由内存回答。
+- **反向事件序竞态守卫**（review 捕获 W-1）：Node 某些场景 `exit` 与 `error` 可能反向到达（一个错误后子进程退出），若 exit handler 在错误前先走“崩溃重启”路径、之后 error handler 再走本策略，会“误杀”刚重启的新 spawn。裁定：exit / error handler 入口均以 **child 身份比对** 守卫（`handler(event)` 首个参数 = child 与 `this.child === child` 比对），不匹配则视为 “已进入新 child” 静默丢弃—双重保险。
+- **测试补盲区**：原任务 04 / 05 测试均为“灌响应”式（mock pi 主动 stdout），无人测“bridge 应主动写 stdin / 挂 error handler”。补 4 测试——handshake 写入断言（spawn 后须有 stdin write get_state）+ cwd 传递（spawn opts 含 `cwd: workDir`）+ child error handler 触发 + 反向事件序守卫（exit→error 与 error→exit 两种顺序都不误杀新 child）。
+
+**双向引用**：本策略与原 §3 三路径互补但语义独立—exit 三路径（标记在 / 标记不在 + code≠0 / 标记不在 + code=0）覆盖“正常退出”面，本补注覆盖“spawn/运行期异常”面，两者均走 `exited` 广播；区别仅在“永不自动重启”vs“崩溃重启”。代码 commit `52557fb`，相关文档最近变更见 [[current-state.md|current-state 2026-09-07 条目]]。
+
 ## 补注（去隔离改造，2026-09-05）
 
 按 [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] 用户裁定（commit `1985fbd`）落地：session 扫描基准由历史隔离目录 `<configDir>/pi-agent/` 改为宿主机共享 agent 目录（`resolvePiAgentDir()` 解析：`PI_CODING_AGENT_DIR` 优先 / tilde 展开 / 默认 `~/.pi/agent`，与 pi `getAgentDir()` 一致）。本 ADR §2 第 3 条“session 落盘路径”仍准确；§3 第 1 条中“bridge 专属目录”表述为历史状态，修订为：spawn 不注入 `PI_CODING_AGENT_DIR`、子进程继承宿主环境，使 web 端能接管同一 `work_dir` 最近会话（含终端里正在聊的）。已接受的设计后果（同会话双写 / 非官方布局局限）详见 ADR-0007 与 [[tasks/m3/09-host-shared-agent-dir.md|tasks/09]]。

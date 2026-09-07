@@ -56,6 +56,8 @@ status: doing
 
 三端联调手测验收由用户在浏览器手动执行，**不在编排者范围**——任务状态保持 `doing` 待用户全部勾完后由编排者改 `done`。下面 14 条原文来自 [[prds/m3-single-session.md#验收清单|M3 PRD §验收清单「浏览器闭环」]] + [[tasks/m3/08-docs-and-validation.md#完成标准|本任务完成标准]]，**不勾选**、仅留验收记录表格。
 
+> ⚠ **本修复改变了 bridge 行为**（commit `52557fb`，2026-09-07）——若此前测试中 bridge 已处于卡死 spawning 状态，需 **重启 bridge 进程** 后再测。详见 [[current-state.md|current-state 2026-09-07 条目]] 与 [[architecture/decisions/0003-session-lifecycle-and-history-source.md#补注child-error-事件处理策略2026-09-07|ADR-0003 child error 补注]]。
+
 ### 前置准备（5 步）
 
 1. **写 `bridge.json`**：参考 [[getting-started.md#3.5 配置文件 JSON 字段说明|getting-started §3.5]]；最小三字段 `worker_url`（本地 `ws://localhost:8787/bridge`）+ `web_base_url`（`https://remote-pi.sankabox.com`，与主域对齐）+ `work_dir`（本地任意项目绝对路径，bridge 不会 mkdir——路径必须已存在且可读）。路径：`~/.config/remotepi/bridge.json`（默认 XDG）或 `--config <path>` 指定。
