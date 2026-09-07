@@ -85,6 +85,13 @@ class FakeChild extends EventEmitter implements PiChild {
   simulateExit(code: number | null, signal: NodeJS.Signals | null = null): void {
     this.emit('exit', code, signal);
   }
+
+  /** Manually emit the 'error' event (simulates spawn failures like
+   *  ENOENT, broken IPC pipes, etc.). The manager's child-error
+   *  handler is registered on this event — see 1.10. */
+  simulateError(err: Error): void {
+    this.emit('error', err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -216,8 +223,19 @@ describe('PiProcessManager state machine (PRD §2.3)', () => {
       id: 'pi-p1',
       payload: { content: 'first prompt' },
     });
-    // The prompt is queued — no stdin write yet.
-    expect(spawnChildren[0]?.stdinLines).toEqual([]);
+    // The prompt is queued — but the bridge-initiated handshake
+    // get_state has already landed on stdin (see 1.9 for the
+    // handshake-write assertion). Web commands during spawning
+    // queue; only the handshake write is synchronous. At this
+    // point the stdin buffer holds exactly 1 line (the handshake
+    // get_state); the queued prompt is flushed AFTER pi replies to
+    // the handshake, so the count goes to 2 in the post-flush
+    // assertion below.
+    expect(spawnChildren[0]?.stdinLines).toHaveLength(1);
+    const firstLine = JSON.parse(spawnChildren[0]?.stdinLines[0] ?? '{}') as {
+      type?: string;
+    };
+    expect(firstLine.type).toBe('get_state');
 
     // pi replies to our get_state with success → handshake done.
     spawnChildren[0]?.stdout.write(
@@ -230,14 +248,27 @@ describe('PiProcessManager state machine (PRD §2.3)', () => {
     const states = sessionStates(outbound);
     expect(states.phases).toEqual(['spawning', 'ready', 'running']);
 
-    // The queued prompt must have been written to stdin.
-    expect(spawnChildren[0]?.stdinLines).toHaveLength(1);
-    const written = JSON.parse(spawnChildren[0]?.stdinLines[0] ?? '{}') as {
-      type?: string;
-      id?: string;
-      content?: string;
-    };
-    expect(written).toMatchObject({ type: 'prompt', id: 'pi-p1', content: 'first prompt' });
+    // The queued prompt must have been written to stdin. We use
+    // `find` rather than indexing because the handshake line is
+    // also present — pin the prompt by its id to avoid a brittle
+    // positional assertion.
+    const writes = spawnChildren[0]?.stdinLines ?? [];
+    const promptWrite = writes
+      .map((l) => JSON.parse(l) as { type?: string; id?: string; content?: string })
+      .find((w) => w.type === 'prompt');
+    expect(promptWrite).toMatchObject({ id: 'pi-p1', content: 'first prompt' });
+
+    // S-6 follow-up: after the handshake + flush, stdin holds
+    // exactly 2 lines — the bridge-initiated get_state handshake +
+    // the queued prompt flushed in `completeHandshake`. The exact
+    // count locks the wire shape: a future refactor that, say,
+    // drops the prompt from the flush loop (or writes it twice)
+    // would slip through the looser `toBeGreaterThanOrEqual(1)`
+    // check used previously. The pre-flush assertion above pins the
+    // count to 1 (handshake only); this post-flush check pins the
+    // final count to 2 (handshake + flushed prompt) — together
+    // they nail down both halves of the drain loop.
+    expect(spawnChildren[0]?.stdinLines).toHaveLength(2);
   });
 
   it('1.4 transitions running → idle when agent_settled fires + starts 5-min timer', () => {
@@ -408,6 +439,208 @@ describe('PiProcessManager state machine (PRD §2.3)', () => {
     const written =
       spawnChildren[0]?.stdinLines.map((l) => JSON.parse(l) as { type?: string }) ?? [];
     expect(written.some((w) => w.type === 'get_messages')).toBe(true);
+  });
+
+  it('1.9 spawn writes a get_state handshake to pi stdin synchronously + registers a bridge-initiated outstanding entry (PRD §2.3 step 2)', () => {
+    // Bug-fix pin: PRD §2.3 step 2 requires the bridge to write
+    // `get_state` to pi's stdin as part of the spawn sequence. The
+    // previous code skipped this (the comment in `handlePiResponse`
+    // even claimed "we sent in spawnNow" — the intent was there, the
+    // implementation was missing). Without the write, pi sits silent
+    // until the operator types something (no vim plugin = nothing
+    // happens) and the bridge waits for a response that never comes,
+    // deadlocking `spawning` forever. The fix is `writeHandshakeGetState`
+    // called synchronously after `attachChild + transitionTo`. We
+    // assert (a) the first stdin line is a valid get_state frame with
+    // a non-empty id, (b) the matching outstanding-commands entry is
+    // registered with `bridgeInitiated: true`, and (c) the spawned
+    // child has not been killed (write didn't fail).
+    const { manager, spawnChildren } = makeManager();
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      payload: { content: 'go' },
+    });
+    // Synchronous write — already on stdin before this assertion.
+    expect(spawnChildren[0]?.stdinLines.length).toBe(1);
+    const handshake = JSON.parse(spawnChildren[0]?.stdinLines[0] ?? '{}') as {
+      type?: string;
+      id?: string;
+    };
+    expect(handshake.type).toBe('get_state');
+    expect(typeof handshake.id).toBe('string');
+    expect((handshake.id ?? '').length).toBeGreaterThan(0);
+    // The outstanding entry carries the bridgeInitiated flag and a
+    // matching id; the web id equals the pi id (no web envelope to
+    // correlate against — the bridge is both sender and receiver).
+    const entry = manager.getOutstandingCommand(handshake.id ?? '');
+    expect(entry).toBeDefined();
+    expect(entry?.bridgeInitiated).toBe(true);
+    expect(entry?.command).toBe('get_state');
+    expect(entry?.webEnvelopeId).toBe(handshake.id);
+    // The spawned child is alive — no write failure path.
+    expect(spawnChildren[0]?.killSignals).toEqual([]);
+  });
+
+  it('1.10 child emits error → phase = exited, NO auto-restart, deferred queue dropped with warn', () => {
+    // Bug-fix pin: spawn failures (ENOENT / permission denied /
+    // broken IPC pipe) surface as the child's 'error' event. Without
+    // a handler, Node escalates to uncaughtException and the bridge
+    // process dies. We translate it to an explicit exited transition
+    // + warn so web sees `session_state{phase: 'exited'}` and the
+    // operator sees a useful log. ENOENT in particular is persistent,
+    // so we do NOT auto-restart (no backoff → restart loop); the
+    // next §2.7 spawn-trigger command is the recovery path.
+    //
+    // Idempotency: a subsequent 'exit' event for the same dying
+    // child must NOT trigger a second restart attempt — handleExit
+    // sees `this.child === null` and follows the no-restart path.
+    const { manager, spawnChildren, outbound } = makeManager();
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      payload: { content: 'go' },
+    });
+    expect(manager.getPhase()).toBe<SessionPhase>('spawning');
+    const spawnCountBefore = manager.getSpawnCount();
+    const statesBefore = sessionStates(outbound).phases.length;
+
+    // Simulate ENOENT — the 'error' event from spawn. The handler
+    // routes to forceExitedAfterSpawnFailure, which clears state +
+    // transitions to exited. The handshake write was synchronous and
+    // already succeeded (FakeChild PassThrough accepts writes), so
+    // only the 'error' event drives the transition here.
+    spawnChildren[0]?.simulateError(new Error('spawn ENOENT: pi not found'));
+
+    // Phase is now exited, broadcast reflects it.
+    expect(manager.getPhase()).toBe<SessionPhase>('exited');
+    expect(sessionStates(outbound).phases.length).toBe(statesBefore + 1);
+    const lastState = sessionStates(outbound).payloads.at(-1);
+    expect(lastState?.phase).toBe<SessionPhase>('exited');
+    // No auto-restart — spawn count is unchanged.
+    expect(manager.getSpawnCount()).toBe(spawnCountBefore);
+    // No kill signal was sent — the child was never running, the
+    // error came from the OS at spawn time.
+    expect(spawnChildren[0]?.killSignals).toEqual([]);
+
+    // A subsequent 'exit' event for the same dying child must NOT
+    // crash-restart. handleExit's `this.child === null` guard
+    // short-circuits the no-restart path cleanly.
+    spawnChildren[0]?.simulateExit(null, null);
+    expect(manager.getSpawnCount()).toBe(spawnCountBefore);
+    expect(manager.getPhase()).toBe<SessionPhase>('exited');
+  });
+
+  it('1.10b reverse order: crash exit + late error must NOT tear down the new child (W-1 sibling)', () => {
+    // W-1 review sibling: 1.10 covers the "error first, then exit"
+    // ordering (Node's typical spawn-failure sequence). This case
+    // covers the REVERSE: `exit` first (code=null → handleExit's
+    // crash branch fires and spawnNow is called → child B), THEN a
+    // late `error` event from the now-dead child A. Without the
+    // child identity check in `handleChildError`, the late error
+    // would tear down the freshly-spawned child B (this.child is B,
+    // not null) via forceExitedAfterSpawnFailure — a regression that
+    // would silently disrupt the crash-restart pathway and that the
+    // spawn-count + broadcast-stability assertions below catch.
+    //
+    // The fix: `attachChild` captures the child reference in the
+    // 'error' closure, and `handleChildError` short-circuits when
+    // `sourceChild !== this.child` (the late error came from a
+    // previous child, not the current one). Spawn count, phase,
+    // and broadcast count all stay stable across the late error.
+    //
+    // Note: simulateExit(null, null) here is NOT a "clean exit" in
+    // the PRD §2.6 sense — code=null goes through handleExit's
+    // `code !== 0` branch (since null !== 0), triggering crash-
+    // restart. That is exactly the scenario the W-1 review captured.
+    const { manager, spawnChildren, outbound } = makeManager();
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      payload: { content: 'go' },
+    });
+    expect(manager.getPhase()).toBe<SessionPhase>('spawning');
+    const spawnCountBefore = manager.getSpawnCount();
+    const statesBefore = sessionStates(outbound).phases.length;
+
+    // Crash exit from child A — previousPhase='spawning' so
+    // handleExit's path 2 (code !== 0, no self-kill flag) fires
+    // and spawnNow is called. Child B is now the current child.
+    spawnChildren[0]?.simulateExit(null, null);
+    expect(manager.getSpawnCount()).toBe(spawnCountBefore + 1);
+    expect(spawnChildren).toHaveLength(2);
+    const statesAfterRestart = sessionStates(outbound).phases;
+    // Two transitions observed: spawning → exited (exit broadcast)
+    // → spawning (restart broadcast). The exact delta locks the
+    // "no spurious intermediate broadcasts" contract.
+    expect(statesAfterRestart.length).toBe(statesBefore + 2);
+
+    // Late 'error' from child A (the now-dead one). With the W-1
+    // identity check, the handler sees sourceChild(A) !==
+    // this.child(B) and returns early — child B is preserved.
+    spawnChildren[0]?.simulateError(
+      new Error('late error from dying child A after crash-restart'),
+    );
+
+    // Spawn count must NOT increment again — no extra restart.
+    expect(manager.getSpawnCount()).toBe(spawnCountBefore + 1);
+    // Phase preserved — child B is still in spawning (waiting on its
+    // own handshake), untouched by the late error.
+    expect(manager.getPhase()).toBe<SessionPhase>('spawning');
+    // Broadcast count stable — late error triggered no
+    // session_state broadcast (no "broadcast 错乱").
+    expect(sessionStates(outbound).phases.length).toBe(statesAfterRestart.length);
+  });
+
+  it('1.11 spawn passes cwd=workDir to the spawn factory (PRD §2.5 spawn cwd)', () => {
+    // Bug-fix pin: PRD §2.5 spawn argv already carries
+    // `--session <path>` so pi loads the right session file, but the
+    // pi process itself was running in the bridge's CWD (whichever
+    // directory the operator launched the bridge from) rather than
+    // `workDir`. Any CWD-relative file ops pi performs (its own log
+    // paths, cwd-derived defaults) diverged from what web expects.
+    // We pin `cwd: workDir` on the spawn-options object the factory
+    // receives so production `defaultSpawn` forwards it to
+    // `nodeSpawn(cmd, args, { cwd })`.
+    const capturedOpts: Array<{ env: unknown; stdio: readonly unknown[]; cwd: unknown }> = [];
+    const spawn = (
+      _cmd: string,
+      _args: readonly string[],
+      opts: { env: unknown; stdio: readonly unknown[]; cwd: unknown },
+    ): PiChild => {
+      capturedOpts.push(opts);
+      return new FakeChild();
+    };
+    // We build the manager directly so we can plug in our cwd-aware
+    // spawn; `makeManager` accepts a custom spawn via overrides, so
+    // the harness still applies.
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-cwd-'));
+    trackTmpDir(tmp);
+    const manager = new PiProcessManager({
+      agentDir: tmp,
+      workDir: '/home/test/proj',
+      spawn,
+      onOutboundEnvelope: () => undefined,
+    });
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      payload: { content: 'go' },
+    });
+    expect(capturedOpts).toHaveLength(1);
+    expect(capturedOpts[0]?.cwd).toBe('/home/test/proj');
   });
 });
 

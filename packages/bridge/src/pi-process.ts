@@ -148,6 +148,14 @@ export type SpawnFn = (cmd: string, args: readonly string[], opts: PiSpawnOption
 export interface PiSpawnOptions {
   env: Record<string, string | undefined>;
   stdio: ['pipe', 'pipe', 'pipe'];
+  /** Working directory the spawned pi process inherits (PRD §2.5
+   *  spawn cwd). Bridge passes `workDir` from the operator
+   *  configuration so any CWD-relative file ops pi performs (cwd
+   *  resolution, log paths, etc.) line up with what web expects.
+   *  Without this, the child runs in the bridge's own CWD and
+   *  diverges from the session directory computed by the bridge
+   *  via `sessionSubdir(agentDir, workDir)`. */
+  cwd: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -574,7 +582,11 @@ export class PiProcessManager {
     logger.info(
       `spawning pi (count=${this.spawnCount}): pi ${args.join(' ')} (cwd=${this.workDir})`,
     );
-    const child = this.spawnFn('pi', args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = this.spawnFn('pi', args, {
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: this.workDir,
+    });
     this.child = child;
     // Reset stream state — a new child has fresh stdin/stdout, even
     // if we're recovering from a crash (carrying stale partial lines
@@ -585,13 +597,161 @@ export class PiProcessManager {
     this.stderrBuffer = '';
     this.attachChild(child);
     this.transitionTo('spawning');
+    // Spawn-write handshake (PRD §2.3 step 2). pi is silent until we
+    // ask — the bridge must kick off the get_state exchange
+    // synchronously after spawn, otherwise both sides wait forever
+    // (探针实证: pi stdout 8s 0 字节, bridge 等响应死锁). We write
+    // IMMEDIATELY after spawn (do NOT wait for any first stdout
+    // output — pi 静默场景下会重新死锁; OS pipe buffer absorbs the
+    // handful of bytes we write before pi's reader is ready).
+    this.writeHandshakeGetState();
   }
 
-  /** Wire the 'exit' + stream listeners onto a fresh child. */
+  /** Wire the 'exit' + 'error' + stream listeners onto a fresh child. */
   private attachChild(child: PiChild): void {
     child.on('exit', (code, signal) => this.handleExit(code, signal));
+    // 'error' fires when the spawn itself fails (ENOENT / permission
+    // denied / etc.) or when the IPC pipe breaks post-spawn. Without
+    // a handler, Node surfaces this as an uncaught exception and the
+    // bridge dies. We translate it to an explicit exited transition
+    // + warn so the operator sees a useful log line and web sees a
+    // session_state{phase:'exited'} instead of a phantom zombie.
+    //
+    // W-1 review follow-up: the 'error' closure captures `child`
+    // so the handler can identify whether the error came from the
+    // CURRENT child or a stale one. Without this identity check, a
+    // late 'error' event from child A arriving AFTER
+    // handleExit(code≠0) + spawnNow has replaced `this.child` with
+    // child B would tear down B via forceExitedAfterSpawnFailure
+    // (the reverse-order race: exit first, then late error). The
+    // `child === this.child` guard in `handleChildError` short-
+    // circuits that path. The simpler `this.child === null` guard
+    // alone is insufficient because by the time the late error
+    // arrives, this.child has been replaced with B (not null).
+    child.on('error', (err) => this.handleChildError(err, child));
     child.stdout.on('data', (chunk: Buffer | string) => this.feedStdout(chunk));
     child.stderr.on('data', (chunk: Buffer | string) => this.feedStderr(chunk));
+  }
+
+  /** Write the bridge-initiated `get_state` handshake to pi's stdin.
+   *  Called synchronously after `attachChild + transitionTo('spawning')`
+   *  in `spawnNow`. Generates a fresh UUID, JSONL-encodes the frame,
+   *  writes it, and registers a `bridgeInitiated: true` entry in the
+   *  outstanding-commands table so the matching response drives
+   *  `completeHandshake` (which consumes the entry without forwarding).
+   *
+   *  Failure handling: `stdin.write` may throw synchronously when the
+   *  pipe is already broken (EPIPE on a child that died before the
+   *  write landed — common with ENOENT / spawn failures). In that
+   *  case we route through `forceExitedAfterSpawnFailure`, which
+   *  mirrors `extension-ui`'s `forceExited` callback (log + transition
+   *  to `exited`). ENOENT in particular is a persistent problem with
+   *  no built-in backoff, so we do NOT auto-restart — the next
+   *  §2.7 spawn-trigger command (or operator restart) is the right
+   *  recovery path.
+   *
+   *  Note: this method runs synchronously inside `spawnNow`, BEFORE
+   *  the OS / Node event loop has had a chance to deliver an `error`
+   *  event. So if `child` was passed to `attachChild`, the `error`
+   *  handler isn't going to fire and clobber `this.child` underneath
+   *  us mid-write. We still defensively bail if `this.child === null`
+   *  (shouldn't happen in production, but covers any future
+   *  refactor that makes spawnNow async). */
+  private writeHandshakeGetState(): void {
+    const child = this.child;
+    if (child === null) return;
+    const id = randomUUID();
+    const line = JSON.stringify({ type: 'get_state', id }) + '\n';
+    try {
+      child.stdin.write(line);
+    } catch (err) {
+      logger.error(
+        `handshake get_state stdin write failed: ${(err as Error).message}`,
+      );
+      this.forceExitedAfterSpawnFailure('handshake stdin write failed');
+      return;
+    }
+    // Register the entry AFTER the write succeeds — if the write
+    // throws we leave the table alone (clearAll inside
+    // forceExitedAfterSpawnFailure handles any leftover bookkeeping).
+    this.outstandingCommands.set(id, {
+      webEnvelopeId: id,
+      command: 'get_state',
+      bridgeInitiated: true,
+    });
+    logger.info(`handshake get_state written (id=${id})`);
+  }
+
+  /** Translate a child 'error' event (spawn failure / broken pipe /
+   *  EPIPE) into an explicit exited transition. Without this handler
+   *  Node would emit `uncaughtException` and the bridge process
+   *  would exit. We surface the error to the operator log, drop the
+   *  outstanding / deferred state, and broadcast `session_state{
+   *  phase: 'exited'}` so web sees the bridge is offline.
+   *
+   *  Idempotency (W-1 review follow-up): two cases must short-circuit
+   *  without disturbing state:
+   *    1. After `handleExit` clears `this.child`, subsequent `error`
+   *       events from the SAME dying child see `this.child === null`
+   *       and return. (Original guard.)
+   *    2. After `handleExit(code≠0)` triggered a crash-restart and
+   *       `spawnNow` replaced `this.child` with the new child B, a
+   *       late `error` event from the OLD child A must NOT tear down
+   *       B. The identity check `sourceChild !== this.child` catches
+   *       this reverse-order race; without it, the late error would
+   *       route through `forceExitedAfterSpawnFailure` and kill B
+   *       even though B is alive and well. The simpler phase check
+   *       (`this.phase === 'exited'`) cannot catch this scenario
+   *       because after crash-restart the phase is `'spawning'`. */
+  private handleChildError(err: Error, sourceChild?: PiChild): void {
+    // W-1: stale error from a previous child (e.g., late 'error'
+    // from child A after exit+crash-restart spawned child B).
+    if (sourceChild !== undefined && sourceChild !== this.child) {
+      return;
+    }
+    if (this.child === null) return;
+    logger.error(`pi child error: ${err.message}`);
+    this.forceExitedAfterSpawnFailure(`child error: ${err.message}`);
+  }
+
+  /** Force `exited` for spawn-failure paths (ENOENT, EPIPE during
+   *  handshake, child 'error' events). Distinct from `handleExit`:
+   *    - Always takes the "no restart" path (ENOENT is persistent;
+   *      auto-restart without backoff would loop forever).
+   *    - Drops the deferred queue with a warn (S6 alignment: web
+   *      will retry on the next §2.7 spawn trigger, but operators
+   *      need a sentinel to correlate "I sent X, then nothing").
+   *    - Runs the same bookkeeping as the exit path (clear
+   *      outstanding + router + sigkill timer) so a subsequent
+   *      `exit` event sees `this.child === null` and short-circuits
+   *      via the idempotency guard in `handleChildError`.
+   *
+   *  The `transitionTo('exited')` call emits a `session_state`
+   *  broadcast; the preceding `extensionUIRouter.clearAll()` emits
+   *  a second one (idempotent — both carry `blocked_on: []` /
+   *  omitted when nothing was pending). This mirrors the dual-
+   *  broadcast pattern in `handleExit`. */
+  private forceExitedAfterSpawnFailure(reason: string): void {
+    if (this.child === null && this.phase === 'exited') {
+      // handleExit already ran and transitioned to exited; nothing
+      // left to do (the error / write-fail landed AFTER exit).
+      return;
+    }
+    logger.error(`forcing exited due to spawn failure: ${reason}`);
+    const droppedDeferred = this.deferredCommands.length;
+    this.deferredCommands = [];
+    this.flushStdout();
+    this.flushStderr();
+    this.child = null;
+    this.clearSigkillTimer();
+    this.outstandingCommands.clear();
+    this.extensionUIRouter.clearAll();
+    if (droppedDeferred > 0) {
+      logger.warn(
+        `queued commands dropped due to spawn failure, web should retry (${droppedDeferred} command(s))`,
+      );
+    }
+    this.transitionTo('exited');
   }
 
   /** Push a chunk of stdout bytes through the UTF-8 decoder + newline
@@ -712,11 +872,46 @@ export class PiProcessManager {
       this.outstandingCommands.delete(frame.id as string);
     }
 
+    // S-7 review follow-up: bridge-initiated entries (the handshake
+    // `get_state` we sent in `writeHandshakeGetState`) MUST be
+    // consumed locally regardless of `frame.success`. The previous
+    // code only matched `frame.command === 'get_state' && frame.success`
+    // — a failure reply (success=false) fell through to the
+    // command_result forwarder below, which used `matched.webEnvelopeId`
+    // (a bridge-internal UUID generated in `writeHandshakeGetState`)
+    // as `reply_to`. Web could never match that — the reply was
+    // leaked as a phantom command_result pointing at a UUID nobody
+    // sent. The fix: if the matched entry is bridge-initiated, the
+    // reply is ours to consume — success drives the handshake
+    // completion, failure (the child couldn't answer a basic
+    // get_state request) forces the bridge into exited because
+    // such a child is effectively unusable.
+    if (matched?.bridgeInitiated === true) {
+      if (frame.command === 'get_state' && frame.success) {
+        // Handshake completion (PRD §2.3 + roadmap §4.1 ⚠).
+        this.completeHandshake();
+      } else {
+        // Bridge-initiated failure: child can't even answer get_state,
+        // so the spawn is effectively dead. Force exited (no restart
+        // — ENOENT-style spawn failures don't auto-restart).
+        logger.warn(
+          `bridge-initiated ${frame.command} failed (success=${String(frame.success)}); forcing exited`,
+        );
+        this.forceExitedAfterSpawnFailure(
+          `bridge-initiated ${frame.command} failed`,
+        );
+      }
+      return;
+    }
+
     if (frame.command === 'get_state' && frame.success) {
-      // Handshake completion (PRD §2.3 + roadmap §4.1 ⚠). The
-      // outstanding entry (if any) is for the bridge-initiated
-      // get_state we sent in `spawnNow` — it has no web envelope
-      // counterpart, so nothing is forwarded.
+      // Handshake completion (PRD §2.3 + roadmap §4.1 ⚠). Reachable
+      // only when `matched` is undefined (stale get_state reply with
+      // no outstanding entry) — the bridge-initiated path above
+      // covers the live outstanding case. Keeping the check defensive:
+      // a stray success get_state from a previous child still
+      // completes the handshake rather than forwarding as
+      // command_result.
       this.completeHandshake();
       return;
     }
@@ -1340,6 +1535,16 @@ export class PiProcessManager {
     return this.extensionUIRouter.getBlockedOn();
   }
 
+  /** Read an outstanding-commands entry by its pi-side id (test
+   *  seam). Lets the new handshake-write test verify that the
+   *  bridge-initiated `get_state` carries the expected flags
+   *  without exposing the underlying Map. */
+  getOutstandingCommand(
+    id: string,
+  ): { webEnvelopeId: string; command: string; bridgeInitiated: boolean } | undefined {
+    return this.outstandingCommands.get(id);
+  }
+
   /** Quick assertion helper — every phase must be one of the lock-
    *  versioned enum values. Exposed for tests so they can verify
    *  transitions are constrained. */
@@ -1358,6 +1563,7 @@ function defaultSpawn(cmd: string, args: readonly string[], opts: PiSpawnOptions
   const child: ChildProcess = nodeSpawn(cmd, [...args], {
     env: opts.env,
     stdio: opts.stdio,
+    cwd: opts.cwd,
   });
   return child as unknown as PiChild;
 }
