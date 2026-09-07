@@ -203,6 +203,25 @@ export class WsClient {
   // Chat-state (M3 PRD §4.1) -------------------------------------------------
   private _messages: AgentMessage[] = [];
   private _streamingDraft: StreamingDraft | null = null;
+  /** Set when the current streaming draft has already received a
+   *  `*_delta` event (text_delta / thinking_delta / defensive
+   *  top-level fallback). Reset when the draft is cleared (snapshot /
+   *  message_end / reconnect / recovery) OR a new `message_start`
+   *  arrives. While set, a `*_end` event carrying the full content
+   *  is DROPPED — the draft already holds the accumulated text from
+   *  the deltas, so appending `*_end`'s full-content field would
+   *  duplicate the text until the matching `message_end` overwrites
+   *  via `upsertMessage` (a noticeable flicker in the UI).
+   *
+   *  The flag is per-draft, not per-event: a stream that emits
+   *  `text_delta*` then `thinking_end` (cross-block) still treats
+   *  the `thinking_end` as redundant — the reasoning content from
+   *  the matching `thinking_delta*` already accumulated into the
+   *  draft, so re-appending would duplicate. The flag resets on
+   *  `message_start` (new draft) so a stream that jumps straight to
+   *  `*_end` (rare: non-token-chunk providers that don't emit any
+   *  `*_delta`) still has the full-text fallback path available. */
+  private _draftHasDelta = false;
   private _queue: QueueState = { steering: [], followUp: [] };
   private _sessionPhase: SessionPhase | null = null;
   private _blockedOn: BlockedOnEntryPayload[] = [];
@@ -437,6 +456,7 @@ export class WsClient {
   resetChatState(): void {
     this._messages = [];
     this._streamingDraft = null;
+    this._draftHasDelta = false;
     this._queue = { steering: [], followUp: [] };
     this._sessionPhase = null;
     this._blockedOn = [];
@@ -739,18 +759,59 @@ export class WsClient {
   private handlePiEvent(event: string, data: unknown): void {
     switch (event) {
       case 'message_update': {
-        // Streaming delta. pi-native shape is roughly
-        // `{ messageId, content: [{type:'text', text:'…'}, …], … }`
-        // but the exact field names have shifted across pi versions,
-        // so we hunt for text in a few common spots:
-        //   - data.text_delta (PRD §4.3 wording)
-        //   - data.delta
-        //   - data.content (treated as already-rendered text)
-        //   - data.text
-        // If we find something, append it to the streaming draft;
-        // otherwise leave the draft untouched (the next message_end
-        // will reset it via the messageId matching path).
-        const delta = extractTextDelta(data);
+        // Streaming delta / end. pi 0.85.1's wire shape (verified
+        // against `@earendil-works/pi-coding-agent@0.85.1`'s
+        // `dist/modes/json-event.js` `toJsonEvent` +
+        // `dist/modes/rpc/rpc-mode.js`) is:
+        //   `{ assistantMessageEvent: { type, contentIndex,
+        //      delta|content|id|toolName|... } }`
+        // where `assistantMessageEvent.type` is one of `start` /
+        // `text_start` / `text_delta` / `text_end` /
+        // `thinking_start` / `thinking_delta` / `thinking_end` /
+        // `toolcall_start` / `toolcall_delta` / `toolcall_end` /
+        // `done` / `error`.
+        //
+        // The bug we fix here: `*_delta` accumulates text into the
+        // streaming draft, and `*_end` carries the SAME text as a
+        // full-content field. If we treat both the same (append on
+        // arrival), the draft duplicates its tail on every `*_end`
+        // until the matching `message_end` overwrites via
+        // `upsertMessage` — a visible flicker. The fix is the
+        // `_draftHasDelta` flag: once we've appended any delta for
+        // this draft, `*_end` is dropped on arrival.
+        const innerType = innerEventType(data);
+        if (innerType === 'text_delta' || innerType === 'thinking_delta') {
+          // Streaming delta — typewriter appends this to the draft
+          // and arms `_draftHasDelta` via `appendStreamingDraft`.
+          const delta = extractDeltaText(data);
+          if (delta === null) return;
+          this.appendStreamingDraft(data, delta);
+          return;
+        }
+        if (innerType === 'text_end' || innerType === 'thinking_end') {
+          // Full content block — only useful when no `*_delta`
+          // preceded it. While `_draftHasDelta` is set the draft
+          // already holds the accumulated text; appending would
+          // duplicate. Drop the event.
+          if (this._draftHasDelta) return;
+          // No prior delta — use the full content as the bootstrap
+          // text so a stream that only emits `*_end` (rare: non-
+          // token-chunk providers) still renders.
+          const full = extractEndContent(data);
+          if (full === null) return;
+          this.appendStreamingDraft(data, full);
+          return;
+        }
+        // Unknown / defensive-fallback shapes (no inner
+        // `assistantMessageEvent`, or top-level `text_delta` /
+        // `delta` / `text` / `content`, or nested content array).
+        // Treat as deltas — same behaviour as the original
+        // `extractTextDelta` fallback — and arm the flag so any
+        // later `*_end` is dropped too. (Note: `extractTextDelta`
+        // was split into `extractDeltaText` / `extractEndContent`
+        // in the same patch that added the `_draftHasDelta` flag;
+        // the comment keeps the historical name for traceability.)
+        const delta = extractDeltaText(data);
         if (delta === null) return;
         this.appendStreamingDraft(data, delta);
         break;
@@ -803,6 +864,18 @@ export class WsClient {
         // components read blockedOn and ignore the event envelope.
         break;
       case 'message_start':
+        // New draft starting. Reset `_draftHasDelta` so the next
+        // draft starts fresh — a stream that emits `*_end` without
+        // preceding `*_delta` (or with deltas that arrive after
+        // `*_end` due to an out-of-order bridge forwarding) still
+        // has the full-text fallback path available. The draft
+        // itself is left untouched: pi typically emits `message_start`
+        // BEFORE the first content block, so any pre-existing draft
+        // would belong to a previous turn (already cleared by
+        // `message_end`); an absent draft here is the normal case
+        // and the first `*_delta` / `*_end` creates it.
+        this._draftHasDelta = false;
+        break;
       case 'turn_start':
       case 'turn_end':
       case 'agent_start':
@@ -1118,6 +1191,14 @@ export class WsClient {
 
   private setStreamingDraft(draft: StreamingDraft | null): void {
     this._streamingDraft = draft;
+    // Centralised reset point: whenever the draft goes to null we
+    // also drop `_draftHasDelta` so the next draft starts fresh —
+    // covers `snapshot` (clear leftover draft) and `message_end`
+    // (authoritative replacement). `appendStreamingDraft` re-arms
+    // it on the first delta of the next draft.
+    if (draft === null) {
+      this._draftHasDelta = false;
+    }
     this.emitStateChange();
   }
 
@@ -1149,14 +1230,25 @@ export class WsClient {
         text: delta,
       };
     }
+    // We just appended a delta — the draft now holds accumulated
+    // text. Any subsequent `*_end` for this draft would carry the
+    // same text as a full-content field, so flag it to make
+    // `handlePiEvent`'s `message_update` branch skip the `*_end`
+    // extraction. The flag is reset on draft clear (snapshot /
+    // message_end / resetChatState) and on `message_start` (new
+    // draft).
+    this._draftHasDelta = true;
     this.emitStateChange();
   }
 
   private clearStreamingDraft(messageId: string): void {
     const draft = this._streamingDraft;
     if (draft !== null && draft.messageId === messageId) {
-      this._streamingDraft = null;
-      this.emitStateChange();
+      // Route through `setStreamingDraft(null)` so the
+      // `_draftHasDelta` reset stays centralised — a future refactor
+      // that touches one path but not the other would silently
+      // re-introduce the `*_end` duplication bug.
+      this.setStreamingDraft(null);
     }
   }
 
@@ -1291,25 +1383,76 @@ function asStringOrNull(value: unknown): string | null {
   return null;
 }
 
-/** Pluck a text delta from a `message_update` payload. pi-native
- *  shape is unstable across versions, so we accept any of:
- *    - data.text_delta        — PRD §4.3 wording
- *    - data.delta             — common shorthand
- *    - data.content           — already-rendered text content (treated
- *                               as a delta rather than the full text —
- *                               pi typically sends these deltas with
- *                               the SAME shape as the message content)
- *    - data.text
- *  Returns `null` when nothing usable is found — caller treats this
- *  as a no-op (the matching `message_end` will overwrite the draft). */
-function extractTextDelta(data: unknown): string | null {
+/** Read the inner `assistantMessageEvent.type` discriminator — used
+ *  by `handlePiEvent`'s `message_update` branch to route `*_delta`
+ *  vs `*_end` to the right extraction path. Returns `undefined`
+ *  when the payload doesn't carry the inner envelope (defensive
+ *  fallback shapes) — the caller falls through to the delta path,
+ *  which is the original behaviour for any unknown shape. */
+function innerEventType(data: unknown): string | undefined {
+  if (data === null || typeof data !== 'object') return undefined;
+  const inner = (data as Record<string, unknown>).assistantMessageEvent;
+  if (inner === null || typeof inner !== 'object') return undefined;
+  const t = (inner as Record<string, unknown>).type;
+  return typeof t === 'string' ? t : undefined;
+}
+
+/** Pluck a streaming delta string from a `*_delta` event payload
+ *  (or its top-level equivalent on non-pi builds). The pi 0.85.1
+ *  wire shape (verified against
+ *  `@earendil-works/pi-coding-agent@0.85.1`'s
+ *  `dist/modes/json-event.js` `toJsonEvent` + `dist/modes/rpc/rpc-mode.js`)
+ *  is:
+ *    { usage, assistantMessageEvent: { type, contentIndex, delta|content|id|toolName|... } }
+ *  where the delta field lives under `assistantMessageEvent.delta`
+ *  for `text_delta` / `thinking_delta`. The PRD §4.3 wording
+ *  pre-dates this transformation — `text_delta` is NOT a top-level
+ *  field, it's nested inside `assistantMessageEvent`. The previous
+ *  top-level-only lookup produced `null` for every real pi frame,
+ *  which is why the typewriter never appeared.
+ *
+ *  We hit the nested shape first (the real pi wire) and keep the
+ *  top-level `text_delta` / `delta` fallback as a defensive net for
+ *  unknown / future event variants. `text` / `content` are
+ *  intentionally NOT in the fallback list — they're full-text
+ *  fields, not incremental updates; including them here would
+ *  treat every full payload as a delta and re-trigger the
+ *  `*_end` duplication bug for any future shape that also sends
+ *  `*_end`. The nested content array fallback is also kept for
+ *  the same defensive reason (rare: some non-pi builds).
+ *
+ *  Returns `null` when nothing usable is found — caller treats
+ *  this as a no-op (the matching `message_end` will overwrite
+ *  the draft via `upsertMessage`). */
+function extractDeltaText(data: unknown): string | null {
   if (data === null || typeof data !== 'object') return null;
   const obj = data as Record<string, unknown>;
-  for (const key of ['text_delta', 'delta', 'text', 'content']) {
+  // pi 0.85.1 wire: `data.assistantMessageEvent.delta` for
+  // text_delta / thinking_delta.
+  const inner = obj.assistantMessageEvent;
+  if (inner !== null && typeof inner === 'object') {
+    const innerObj = inner as Record<string, unknown>;
+    if (
+      (innerObj.type === 'text_delta' || innerObj.type === 'thinking_delta') &&
+      typeof innerObj.delta === 'string'
+    ) {
+      // Streaming delta — the typewriter appends this to the draft.
+      // We treat thinking_delta like text_delta for now (the user
+      // sees the model's reasoning alongside its final answer); a
+      // future collapsible thinking panel can branch here without
+      // touching the WsClient pipeline.
+      return innerObj.delta;
+    }
+  }
+  // Defensive fallback — unknown pi builds (older / future) may
+  // put the delta at the top level. Accept `text_delta` / `delta`
+  // (the documented incremental-update field names) so a
+  // non-standard event still renders instead of silently dropping.
+  for (const key of ['text_delta', 'delta']) {
     const value = obj[key];
     if (typeof value === 'string') return value;
   }
-  // Nested content array — pi sometimes sends
+  // Nested content array — some non-pi shapes send
   // `{ content: [{type:'text', text:'…'}] }`. Concatenate the text
   // pieces; the caller appends the join so the draft keeps its tail.
   if (Array.isArray(obj.content)) {
@@ -1321,6 +1464,45 @@ function extractTextDelta(data: unknown): string | null {
       }
     }
     if (combined.length > 0) return combined;
+  }
+  return null;
+}
+
+/** Pluck the FULL content string from a `*_end` event payload.
+ *  Symmetric counterpart to `extractDeltaText`: where
+ *  `extractDeltaText` reads `assistantMessageEvent.delta` for
+ *  `*_delta`, this reads `assistantMessageEvent.content` for
+ *  `*_end`. The `*_end` field is intentionally NOT in the
+ *  top-level fallback list — it carries the full block text,
+ *  not a delta, so conflating the two would re-trigger the
+ *  duplication bug for any future shape that also sends
+ *  `*_end`.
+ *
+ *  Returns `null` for non-end events and shapes without usable
+ *  text. The caller decides whether to use the result as a
+ *  fallback (when no `*_delta` preceded) or drop it (when the
+ *  draft already carries the accumulated text — see
+ *  `_draftHasDelta` in `handlePiEvent`). */
+function extractEndContent(data: unknown): string | null {
+  if (data === null || typeof data !== 'object') return null;
+  const obj = data as Record<string, unknown>;
+  const inner = obj.assistantMessageEvent;
+  if (inner !== null && typeof inner === 'object') {
+    const innerObj = inner as Record<string, unknown>;
+    if (
+      (innerObj.type === 'text_end' || innerObj.type === 'thinking_end') &&
+      typeof innerObj.content === 'string'
+    ) {
+      // `*_end` carries the FULL text of the content block. By
+      // the time `end` arrives every preceding `*_delta` has
+      // already accumulated the same string in the draft buffer,
+      // so the normal case drops this field via `_draftHasDelta`;
+      // a stream that emits `end` only (rare: non-token-chunk
+      // providers) still renders, and the normal case is
+      // idempotent because the matching message_end overwrites
+      // via upsertMessage anyway.
+      return innerObj.content;
+    }
   }
   return null;
 }
@@ -1337,12 +1519,41 @@ function extractMessageId(data: unknown): string | undefined {
   return undefined;
 }
 
-/** Pluck the `role` from an event payload when present. */
+/** Pluck the `role` from an event payload when present. Three
+ *  shapes to handle:
+ *
+ *  - `data.role` — legacy / direct role on the envelope (rare,
+ *    kept as a fallback).
+ *  - `data.message.role` — `message_end` / `message_start` shapes:
+ *    the role lives on the wrapped message object (UserMessage /
+ *    AssistantMessage / ToolResultMessage per pi 0.85.1's
+ *    `@earendil-works/pi-ai/dist/types.d.ts`). The previous
+ *    top-level-only lookup returned `undefined` for every real
+ *    pi `message_end`, leaving the rendered role stuck at
+ *    `'unknown'` for assistant turns.
+ *  - `data.assistantMessageEvent` present (no `message`) —
+ *    `message_update` shape: pi's `toJsonEvent` only allows
+ *    assistant role for `message_update` (json-event.js throws
+ *    "message_update message is not an assistant message"
+ *    otherwise), AND the outer `message` field is dropped during
+ *    the transformation. The structural hint that this is an
+ *    assistant stream is the presence of `assistantMessageEvent`
+ *    itself; infer `'assistant'` so the draft renders the right
+ *    role label without a real role lookup.
+ *
+ *  Returns `undefined` when nothing matches — caller falls back
+ *  to the draft's existing role (or `'assistant'` via
+ *  `MessageList`'s `draft.role ?? 'assistant'`). */
 function extractRole(data: unknown): string | undefined {
   if (data === null || typeof data !== 'object') return undefined;
   const obj = data as Record<string, unknown>;
-  const role = obj.role;
-  return typeof role === 'string' ? role : undefined;
+  if (typeof obj.role === 'string') return obj.role;
+  if (obj.message !== null && typeof obj.message === 'object') {
+    const inner = (obj.message as Record<string, unknown>).role;
+    if (typeof inner === 'string') return inner;
+  }
+  if (obj.assistantMessageEvent !== undefined) return 'assistant';
+  return undefined;
 }
 
 /** Pluck the authoritative message from a `message_end` payload.

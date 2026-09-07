@@ -187,49 +187,99 @@ function messageToItem(
   return { key, role, text, isDraft };
 }
 
-/** A stable string key for React rendering — uses the messageId when
- *  available, then a JSON fingerprint, and finally falls back to the
- *  caller's index (S3 review: `Math.random()` made the fallback
- *  unstable across renders, which inflated React's reconciliation
- *  cost for unknown-shape rows; `'idx:' + index` is stable per mount
- *  and sufficient because every unknown-shape row either has a real
- *  id or it falls into a small fixed tail). */
-function stableKey(raw: unknown, index: number): string {
-  if (raw !== null && typeof raw === 'object') {
-    const obj = raw as Record<string, unknown>;
-    for (const k of ['messageId', 'message_id', 'id']) {
-      if (typeof obj[k] === 'string') return String(obj[k]);
-    }
-  }
-  try {
-    return 'idx:' + JSON.stringify(raw).slice(0, 64);
-  } catch {
-    return 'idx:' + index;
-  }
+/** A stable string key for React rendering. Pi 0.85.1's
+ *  AssistantMessage / UserMessage / ToolResultMessage (verified
+ *  against `@earendil-works/pi-coding-agent@0.85.1`'s
+ *  `node_modules/@earendil-works/pi-ai/dist/types.d.ts`) have NO
+ *  top-level id field — the previous `messageId` / `message_id` /
+ *  `id` lookup therefore ALWAYS fell through to the JSON-fingerprint
+ *  fallback. When two messages had identical content (e.g. two
+ *  assistant turns with the same answer, or the user re-sent the
+ *  same prompt), `JSON.stringify(raw).slice(0, 64)` collided and
+ *  React logged `Encountered two children with the same key`. The
+ *  user-visible symptom (warning in dev console, marginal
+ *  reconciliation noise in prod) is benign on its own, but the
+ *  LOG noise masks any real React issue that comes after.
+ *
+ *  The `messages` array is order-stable within a single render —
+ *  `setMessages` replaces wholesale, `upsertMessage` slices in
+ *  place, the only mutation in flight is append at the tail — so
+ *  positional indices make perfectly stable React keys. Switching
+ *  to a pure positional key makes the collision impossible.
+ *
+ *  `responseId` (present on assistant messages but not on user /
+ *  toolResult) was considered as a weak key and rejected: it's
+ *  provider-specific, not present uniformly across message types,
+ *  and not authoritative for the row identity we want React to
+ *  track. */
+function stableKey(_raw: unknown, index: number): string {
+  return 'idx:' + index;
 }
 
 /** Extract a text payload from the common pi-native `content`
  *  variants:
- *    - string                  → use as-is
- *    - `{ text: string }`      → use the text field
- *    - `[{ type:'text', text:'…' }, …]` → join text fields
+ *    - string                       → use as-is
+ *    - `{ text: string }`           → use the text field
+ *    - `{ type:'thinking', thinking:string }` → use the thinking field
+ *    - `[{ type:'text', text:'…' }, …]`           → join text fields
+ *    - `[{ type:'thinking', thinking:'…' }, …]`   → join thinking fields
  *  Returns `undefined` for shapes we don't recognise so the caller
- *  can fall back to JSON rendering. */
+ *  can fall back to JSON rendering.
+ *
+ *  Thinking blocks are handled explicitly because pi 0.85.1's
+ *  ThinkingContent type (verified against
+ *  `@earendil-works/pi-coding-agent@0.85.1`'s
+ *  `node_modules/@earendil-works/pi-ai/dist/types.d.ts:242`)
+ *  carries a `thinking` field, NOT a `text` field — the previous
+ *  implementation silently dropped every ThinkingContent block
+ *  (joined as empty string), so models that emitted thinking
+ *  before their final answer appeared to skip straight to the
+ *  answer in the rendered conversation. We preserve render order
+ *  (thinking first, then text) and use a newline separator so
+ *  the two blocks don't run together — the `MessageList` renderer
+ *  splits on `\n` and renders each segment in its own span.
+ *
+ *  ToolCall blocks (the third member of AssistantMessage.content's
+ *  union: `ToolCall = { type:'toolCall', name, arguments, … }`)
+ *  are intentionally skipped — the dialog host surfaces tool
+ *  activity via `extension_ui_request`, not via the message list,
+ *  and rendering a raw `arguments` object as text would be
+ *  confusing. A future iteration can branch on `type === 'toolCall'`
+ *  and render a compact "ran tool foo(args)" pill here without
+ *  touching the WsClient pipeline. */
 function extractText(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
   if (value === null || typeof value !== 'object') return undefined;
   const obj = value as Record<string, unknown>;
+  // Direct text content (legacy / non-pi shapes).
   if (typeof obj.text === 'string') return obj.text;
+  // Thinking content — pi's ThinkingContent blocks carry a
+  // `thinking` field (NOT `text`).
+  if (obj.type === 'thinking' && typeof obj.thinking === 'string') return obj.thinking;
   if (Array.isArray(value)) {
-    const joined = value
-      .map((piece) => {
-        if (piece === null || typeof piece !== 'object') return null;
-        const text = (piece as Record<string, unknown>).text;
-        return typeof text === 'string' ? text : null;
-      })
-      .filter((s): s is string => s !== null)
-      .join('');
-    return joined.length > 0 ? joined : undefined;
+    const parts: string[] = [];
+    let isFirst = true;
+    for (const piece of value) {
+      if (piece === null || typeof piece !== 'object') continue;
+      const p = piece as Record<string, unknown>;
+      if (p.type === 'text' && typeof p.text === 'string') {
+        // Only NON-FIRST blocks get a leading '\n' so the first
+        // block renders top-aligned (no leading blank line) and
+        // adjacent blocks stay separated. The trailing trimEnd()
+        // drops the redundant blank after the last block.
+        parts.push((isFirst ? '' : '\n') + p.text);
+        isFirst = false;
+      } else if (p.type === 'thinking' && typeof p.thinking === 'string') {
+        // Newline separator so thinking doesn't run into adjacent
+        // blocks; the renderer splits on '\n' anyway. Same first/
+        // non-first rule as the text branch — a sole thinking block
+        // starts with no leading '\n' so its first line top-aligns.
+        parts.push((isFirst ? '' : '\n') + p.thinking);
+        isFirst = false;
+      }
+      // ToolCall / unknown shapes are intentionally skipped.
+    }
+    return parts.length > 0 ? parts.join('').trimEnd() : undefined;
   }
   return undefined;
 }
