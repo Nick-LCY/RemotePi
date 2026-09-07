@@ -187,15 +187,18 @@ function useGateRef(client: WsClient): RecoveryGate {
  *  torn down before the fresh pair of dual queries goes out. */
 function RecoveryView({ gate, token }: { gate: RecoveryGate; token: string }) {
   const connState = useConnState();
-  // `useSyncExternalStore` expects subscribe/getSnapshot to be free
-  // of `this` binding (React calls them as bare functions). The gate
-  // is a plain object — its methods are technically unbound — so we
-  // wrap them in arrows to satisfy `@typescript-eslint/unbound-method`
-  // and to make the React contract explicit at the call site.
-  const view = useSyncExternalStore(
-    (listener) => gate.subscribe(listener),
-    () => gate.getSnapshot(),
-  );
+  // `gate.subscribe` and `gate.getSnapshot` are arrow fields on the
+  // gate object (stable per mount, see `RecoveryGate` JSDoc) — pass
+  // them through verbatim. Inline arrows here would re-create the
+  // function identity on every render; React's `useSyncExternalStore`
+  // tolerates that but would re-validate / re-subscribe each time. The
+  // critical bug being guarded against is `gate.getSnapshot` returning
+  // a freshly constructed `{ ready, error }` on every call — the
+  // gate now returns the cached snapshot reference, so React's
+  // referential-equality check sees identity-stable output across
+  // no-op transitions and skips re-render (fixes the
+  // `Maximum update depth exceeded` crash on page load).
+  const view = useSyncExternalStore(gate.subscribe, gate.getSnapshot);
   // Render-stable ref so the auto-start effect doesn't re-run on
   // every gate transition (the gate instance is stable for the
   // mount lifetime).

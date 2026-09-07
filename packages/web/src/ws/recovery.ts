@@ -73,17 +73,31 @@ export interface RecoveryState {
 /** Recovery ceremony handle. Lives across React re-renders
  *  (caller memoizes via useMemo / useRef); `dispose()` tears down
  *  timers and reply-resolver subscriptions when the host component
- *  unmounts (StrictMode dev double-mount, hot-reload, etc.). */
+ *  unmounts (StrictMode dev double-mount, hot-reload, etc.).
+ *
+ *  `getSnapshot` and `subscribe` are exposed as **arrow field
+ *  references** (bound at gate-construction time, not methods
+ *  re-bound per access) so React's `useSyncExternalStore` sees a
+ *  stable function identity across renders. This is the contract
+ *  useSyncExternalStore wants — `getSnapshot` must also return a
+ *  stable reference when the underlying state hasn't changed (see
+ *  the cached `snapshot` field in `initiateRecovery`). Returning
+ *  a fresh `{ ready, error }` object on every call would trip
+ *  React's referential-equality check and trigger an infinite
+ *  re-render loop (PRD §-bug-2026-09-07 — `Maximum update depth
+ *  exceeded`). */
 export interface RecoveryGate {
-  /** Read the current `ready` / `error` pair. `useSyncExternalStore`
-   *  expects a stable reference shape — we return a freshly
-   *  constructed object on every call so React's referential
-   *  equality check works. */
-  getSnapshot(): RecoveryState;
+  /** Read the current `ready` / `error` pair. Returns the
+   *  cached snapshot reference verbatim — identity is preserved
+   *  across calls when the gate hasn't transitioned, so
+   *  `useSyncExternalStore` skips re-render. Stable per gate
+   *  instance (arrow field, not a method). */
+  getSnapshot: () => RecoveryState;
   /** Subscribe to gate state changes. Fires on every transition
    *  (in-flight → ready, in-flight → error, error → in-flight on
-   *  retry, etc.). Returns an unsubscribe function. */
-  subscribe(listener: () => void): () => void;
+   *  retry, etc.). Returns an unsubscribe function. Stable per
+   *  gate instance (arrow field). */
+  subscribe: (listener: () => void) => () => void;
   /** Trigger a fresh ceremony. Idempotent in the sense that a
    *  call from the UI's "retry" button always restarts from
    *  scratch — any in-flight ceremony is cancelled (its timers
@@ -128,23 +142,41 @@ export function initiateRecovery(
   const onTransition = options.onTransition;
 
   // ---- state ---------------------------------------------------------------
-  let ready = false;
-  let error: RecoveryError | null = null;
+  // Cached snapshot — replace-on-change semantics. `useSyncExternalStore`
+  // calls `getSnapshot` on every render and compares the result to the
+  // previous call's return with `Object.is`. Returning a freshly
+  // constructed `{ ready, error }` on every call (the bug we are fixing)
+  // always trips that check and triggers an infinite re-render loop —
+  // the previous version of this file was the cause of the
+  // `Maximum update depth exceeded` crash at RecoveryView mount.
+  //
+  // The contract enforced below: `snapshot` is replaced ONLY when one
+  // of its fields actually changes (`setState` does the equality guard).
+  // `getSnapshot` returns the cached reference verbatim, so React sees
+  // identity-stable output across re-renders that don't transition the
+  // gate and skips the re-render. The arrow-field binding on the gate
+  // object further guarantees the getSnapshot *function* is identity
+  // stable too — passing a fresh `() => snapshot` inline would not
+  // cause a loop by itself, but the spec asks for it and it lets the
+  // App.tsx call site drop its wrapping arrow.
+  let snapshot: RecoveryState = { ready: false, error: null };
   const listeners = new Set<() => void>();
   let disposed = false;
   let active: ActiveCeremony | null = null;
 
-  const snapshot = (): RecoveryState => ({ ready, error });
-
   const setState = (next: { ready: boolean; error: RecoveryError | null }): void => {
     if (disposed) return;
-    if (ready === next.ready && error === next.error) return;
-    ready = next.ready;
-    error = next.error;
-    const view = snapshot();
+    // Replace-on-change: equal in both fields → no-op (preserves the
+    // current snapshot reference AND suppresses the listener fan-out).
+    // This is the second half of the snapshot-stability contract —
+    // without it, an idempotent transition (e.g. retry() while the
+    // gate is already in `error`) would emit a state-change event
+    // and force consumers to re-render on no information.
+    if (snapshot.ready === next.ready && snapshot.error === next.error) return;
+    snapshot = { ready: next.ready, error: next.error };
     if (onTransition !== undefined) {
       try {
-        onTransition(view);
+        onTransition(snapshot);
       } catch (err) {
         // Tests should not throw, but a buggy hook must not
         // disrupt the React-side subscribers. Logged-and-swallowed
@@ -342,9 +374,18 @@ export function initiateRecovery(
 
   // ---- public surface ------------------------------------------------------
 
+  // `getSnapshot` and `subscribe` are arrow fields (not shorthand
+  // methods) so the references are stable per gate instance. React's
+  // `useSyncExternalStore` doesn't crash on a fresh function ref each
+  // render, but it does re-validate and re-subscribe on every identity
+  // change — keeping these as bound arrow fields makes that cost zero
+  // AND satisfies `@typescript-eslint/unbound-method` without the
+  // consumer having to wrap each call site in another arrow. The
+  // App.tsx RecoveryView can now write `useSyncExternalStore(gate
+  // .subscribe, gate.getSnapshot)` directly.
   return {
-    getSnapshot: snapshot,
-    subscribe(listener) {
+    getSnapshot: () => snapshot,
+    subscribe: (listener) => {
       listeners.add(listener);
       return () => {
         listeners.delete(listener);

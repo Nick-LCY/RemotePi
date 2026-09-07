@@ -11,7 +11,7 @@
 //     helper returns `useSyncExternalStore(subscribe, () => selector(client))`,
 //     so each component only re-renders when its slice changes identity.
 
-import { useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import { createContext } from 'react';
 import type { BlockedOnEntryPayload, SessionPhase } from '@remotepi/shared';
 
@@ -52,10 +52,25 @@ export function useWsClient(): WsClient {
  * the slice's identity changes (useSyncExternalStore handles the equality
  * check). For primitives like `ConnState` the identity check is trivial; for
  * arrays/objects WsClient emits a new reference on every mutation.
+ *
+ * Subscribe / getSnapshot stability: `client.subscribe` is an arrow class
+ * field on `WsClient` (stable per instance). `getSnapshot` here is wrapped
+ * in `useCallback` so its identity is also stable across renders — the
+ * selector is captured fresh each render via the inline arrow, but that
+ * is harmless because the selector body only reads from its `client`
+ * argument (no stale-closure concerns; the `client` instance is itself
+ * stable). React's `useSyncExternalStore` doesn't *crash* on a fresh
+ * getSnapshot ref each render, but it does re-validate and re-subscribe,
+ * so memoising is a free win. The WsClient selectors return store field
+ * references directly (e.g. `c.sessionPhase`), so the snapshot identity
+ * check is stable as long as the underlying field hasn't been reassigned
+ * — see WsClient.setSessionPhase / setBlockedOn / setQueue for the
+ * replace-on-change guards that keep no-op updates from re-rendering.
  */
 export function useWsState<T>(selector: (client: WsClient) => T): T {
   const client = useWsClient();
-  return useSyncExternalStore(client.subscribe, () => selector(client));
+  const getSnapshot = useCallback(() => selector(client), [client]);
+  return useSyncExternalStore(client.subscribe, getSnapshot);
 }
 
 // ---- Convenience hooks -----------------------------------------------------
