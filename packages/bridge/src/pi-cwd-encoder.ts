@@ -1,9 +1,11 @@
 // Bridge helper: encode cwd for pi's session directory layout.
 //
 // pi v0.85.1 stores session files at:
-//   <PI_CODING_AGENT_DIR>/sessions/--<cwd encoding>--/<timestamp>_<uuid>.jsonl
-// where `<cwd encoding>` is derived from the cwd string. PRD §2.5 pins the
-// encoding as `encodeURIComponent(cwd).replace(/%/g, '')`:
+//   <agentDir>/sessions/--<cwd encoding>--/<timestamp>_<uuid>.jsonl
+// where `<agentDir>` is the directory pi treats as its `$PI_CODING_AGENT_DIR`
+// (or, when unset, its compiled-in default of `~/.pi/agent`). `<cwd encoding>`
+// is derived from the cwd string. PRD §2.5 pins the encoding as
+// `encodeURIComponent(cwd).replace(/%/g, '')`:
 //
 //   - `encodeURIComponent` percent-encodes everything that isn't URL-safe
 //     (e.g. space → `%20`, `:` → `%3A`).
@@ -20,13 +22,74 @@
 // cannot recover the latest session. The encoder here is a deterministic
 // pure function so the diff step is one `mkdir` + one `spawn` away.
 //
-// The path-building helper (`sessionSubdir`) and the latest-session
-// scanner (`findLatestSession`) live alongside the encoder because they
-// all consume the same `--<encoded>--` token and the test suite wants to
+// The path-building helper (`sessionSubdir`), the agent-dir resolver
+// (`resolvePiAgentDir`), and the latest-session scanner
+// (`findLatestSession`) live alongside the encoder because they all
+// consume the same `--<encoded>--` token and the test suite wants to
 // exercise them as a single shape.
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+
+/** Resolve the directory pi treats as its agent root.
+ *
+ *  Mirrors pi's own `config.js getAgentDir()` semantics:
+ *    1. If `process.env.PI_CODING_AGENT_DIR` is set, expand a leading
+ *       `~` (or `~/...`) to the corresponding home directory and use
+ *       the result verbatim. pi does the same expansion; honouring it
+ *       here means the bridge scan + pi's session writes always point
+ *       at the same directory regardless of whether the env var was
+ *       set as `~/work/agent` or `/abs/work/agent`.
+ *    2. Otherwise, fall back to `<homedir()>/.pi/agent` — pi's
+ *       compiled-in default.
+ *
+ *  The bridge does NOT inject `PI_CODING_AGENT_DIR` into spawn env
+ *  (decision 2026-09-05: "bridge 去隔离, 复用宿主机 pi 环境"). If the
+ *  operator wants the bridge to use a non-default location, they set
+ *  the env var in the bridge's own process environment — `pi` will
+ *  see it through the inherited env and `resolvePiAgentDir` will see
+ *  it here. The two paths agree because both consult `process.env`
+ *  with the same priority.
+ *
+ *  Tilde expansion is intentionally minimal: only a leading `~/...`
+ *  (or bare `~`) is rewritten, via `os.homedir()`. A leading `~user`
+ *  form is not supported — pi itself does not expand arbitrary
+ *  `~user` either, and the bridge never sets the env var in a way
+ *  that would surface that case. Backslash separators are
+ *  intentionally NOT handled — the bridge targets POSIX paths
+ *  only, and `path.join` would normalise any `\\` we forwarded
+ *  anyway, hiding the difference in the returned string.
+ *
+ *  Known limitations — this resolver mirrors only the OFFICIAL `pi`
+ *  distribution's default layout (`PI_CODING_AGENT_DIR` env var +
+ *  `~/.pi/agent` fallback + `<agentDir>/auth.json` + sessions under
+ *  `<agentDir>/sessions/--<encoded>--/`). Two upstream knobs are
+ *  NOT modelled here:
+ *    1. pi's package-level config can rename the config dir from
+ *       `.pi` to something else (e.g. `.tau`). The fallback path
+ *       here is hard-coded to `.pi/agent`; on a renamed install the
+ *       bridge will scan the wrong directory.
+ *    2. A pi fork / repackaged distribution may rename the env var
+ *       itself (e.g. `TAU_CODING_AGENT_DIR`). The bridge only reads
+ *       `PI_CODING_AGENT_DIR`.
+ *  Operators running a renamed config or a fork must point the
+ *  bridge at the right directory by exporting
+ *  `PI_CODING_AGENT_DIR=<their-agent-dir>` in the bridge's own
+ *  process environment before launch — both `resolvePiAgentDir`
+ *  (here) and `pi` itself (via the inherited env) will then agree
+ *  on the same path. The bridge does not auto-detect these cases.
+ */
+export function resolvePiAgentDir(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env['PI_CODING_AGENT_DIR'];
+  if (raw !== undefined && raw.length > 0) {
+    if (raw === '~' || raw.startsWith('~/')) {
+      return path.join(os.homedir(), raw.slice(1));
+    }
+    return raw;
+  }
+  return path.normalize(path.join(os.homedir(), '.pi', 'agent'));
+}
 
 /** Encode a cwd string into pi's `<cwd encoding>` token (PRD §2.5).
  *
@@ -42,14 +105,19 @@ export function encodeCwdForPi(cwd: string): string {
   return encodeURIComponent(cwd).replace(/%/g, '');
 }
 
-/** Build the per-cwd session subdirectory inside the bridge's
- *  isolation root: `<isolationDir>/sessions/--<encoded>--/`.
+/** Build the per-cwd session subdirectory inside pi's agent root:
+ *  `<agentDir>/sessions/--<encoded>--/`.
  *
  *  The leading + trailing `--` are part of pi's convention (see
  *  roadmap §4.6) — they make the directory name unambiguous when
- *  scanned alphabetically and easy to recognise in `ls` output. */
-export function sessionSubdir(isolationDir: string, cwd: string): string {
-  return path.join(isolationDir, 'sessions', `--${encodeCwdForPi(cwd)}--`);
+ *  scanned alphabetically and easy to recognise in `ls` output.
+ *
+ *  Parameter name was previously `isolationDir`; semantics are
+ *  identical — it's just the directory the bridge + pi agree to
+ *  share. Tests still pass a tmp dir here, the production caller
+ *  passes `resolvePiAgentDir()`. */
+export function sessionSubdir(agentDir: string, cwd: string): string {
+  return path.join(agentDir, 'sessions', `--${encodeCwdForPi(cwd)}--`);
 }
 
 /** Strip the `.jsonl` extension + extract the timestamp prefix from a
@@ -161,9 +229,13 @@ export function sessionArgv(subdir: string): string[] {
 
 /** Convenience for the auth.json check at startup. Kept here (next to
  *  the other fs-based helpers) so the bridge has one fs touch-point
- *  for the pi-agent directory tree. Returns true iff the file exists
+ *  for pi's agent directory tree. Returns true iff the file exists
  *  and is a regular file (or symlink to one) — a directory or broken
- *  symlink at this path is treated as missing. */
+ *  symlink at this path is treated as missing.
+ *
+ *  Caller is expected to pass `<agentDir>/auth.json`; the helper
+ *  itself is path-agnostic (it just stats whatever it's handed) so
+ *  tests can drive it against arbitrary fixtures. */
 export function authJsonExists(authJsonPath: string): boolean {
   if (!existsSync(authJsonPath)) return false;
   try {

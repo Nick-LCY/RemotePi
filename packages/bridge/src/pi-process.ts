@@ -53,6 +53,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import {
@@ -69,7 +70,11 @@ import {
   buildExtensionUIRequestEnvelope,
 } from './extension-ui.js';
 import { logger } from './logger.js';
-import { authJsonExists, sessionArgv, sessionSubdir } from './pi-cwd-encoder.js';
+import {
+  authJsonExists,
+  sessionArgv,
+  sessionSubdir,
+} from './pi-cwd-encoder.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -172,13 +177,19 @@ type DeferredCommand =
   | { type: 'abort'; id: string };
 
 export interface PiProcessOptions {
-  /** Bridge-owned pi agent dir; the value passed to PI_CODING_AGENT_DIR
-   *  env var. Also where auth.json is expected (PRD §2.3 + decision 4). */
-  isolationDir: string;
+  /** Pi's agent directory (where sessions / auth.json live). The
+   *  bridge does NOT inject `PI_CODING_AGENT_DIR` into spawn env —
+   *  pi sees the operator's own environment through
+   *  `{...process.env}` passthrough, so the same path is used
+   *  whether the operator set the var explicitly or pi falls back
+   *  to its `~/.pi/agent` default. The bridge also scans this
+   *  directory for the latest session to feed `--session <path>` on
+   *  restart, so its location must match what pi itself uses (see
+   *  `resolvePiAgentDir` in `pi-cwd-encoder.ts` for the exact
+   *  resolution semantics). */
+  agentDir: string;
   /** Working directory for the session (passed as cwd to spawn). */
   workDir: string;
-  /** Path to `<isolationDir>/auth.json`; existence checked at startup. */
-  authJsonPath: string;
 
   /** Override the spawn factory (test seam). Defaults to `node:child_process.spawn`. */
   spawn?: SpawnFn;
@@ -189,7 +200,11 @@ export interface PiProcessOptions {
   idleTimeoutMs?: number;
   /** Override SIGKILL grace delay (test seam). */
   sigkillDelayMs?: number;
-  /** Override the env override passed to spawn (test seam — defaults to process.env). */
+  /** Override the env override passed to spawn (test seam — defaults to process.env).
+   *  Test seam: override baseEnv to seal against host env state (see test 10.3a).
+   *  When asserting "spawn env does NOT carry X", pass a baseEnv built from
+   *  `process.env` minus that key (e.g. `const { X: _, ...rest } = process.env`)
+   *  so the test is hermetic regardless of the operator's shell. */
   baseEnv?: NodeJS.ProcessEnv;
 
   /** Outbound envelope sink. The manager constructs ready-to-send
@@ -231,7 +246,7 @@ type StdoutFrame =
 
 export class PiProcessManager {
   // ---- configuration (immutable after construction) ----
-  private readonly isolationDir: string;
+  private readonly agentDir: string;
   private readonly workDir: string;
   private readonly authJsonPath: string;
   private readonly spawnFn: SpawnFn;
@@ -327,9 +342,13 @@ export class PiProcessManager {
   private stopped = false;
 
   constructor(options: PiProcessOptions) {
-    this.isolationDir = options.isolationDir;
+    this.agentDir = options.agentDir;
     this.workDir = options.workDir;
-    this.authJsonPath = options.authJsonPath;
+    // auth.json lives directly under the agent dir. Derived here so
+    // the caller only has to know the one `agentDir` knob; the
+    // bridge does not own a separate config file (per decision
+    // 2026-09-05: bridge no longer maintains an isolated pi profile).
+    this.authJsonPath = path.join(this.agentDir, 'auth.json');
     this.spawnFn = options.spawn ?? defaultSpawn;
     this.setTimer = options.setTimeout ?? setTimeout;
     this.clearTimer = options.clearTimeout ?? clearTimeout;
@@ -437,10 +456,11 @@ export class PiProcessManager {
   // Lifecycle — start, stop, spawn, internal exit handling
   // ----------------------------------------------------------------
 
-  /** Idempotent. Logs auth.json status (warn if missing — per PRD
-   *  §2.3 the bridge does NOT auto-login). Doesn't spawn pi; pi is
-   *  spawned lazily on the first spawn-trigger command (ADR-0003 +
-   *  PRD §2.3: "延迟到首任务触发, 不预热"). */
+  /** Idempotent. Logs the resolved agent directory + a non-blocking
+   *  hint if auth.json is missing (per PRD §2.3 the bridge does NOT
+   *  auto-login). Doesn't spawn pi; pi is spawned lazily on the first
+   *  spawn-trigger command (ADR-0003 + PRD §2.3: "延迟到首任务触发,
+   *  不预热"). */
   start(): void {
     if (this.started) return;
     this.started = true;
@@ -455,18 +475,38 @@ export class PiProcessManager {
       // call with a [bridge] prefix keeps the format consistent
       // with everything else the bridge prints while restricting
       // the stream change to this single site.
-      // PRD §2.3 + 已敲定决策: bridge does NOT auto-login; it just
-      // nudges the operator to authenticate via the TUI's `/login`
-      // slash command (or copy an existing ~/.pi/agent/auth.json
-      // into the isolation dir). Note: there is no top-level CLI
-      // command for authentication — login only happens
-      // interactively in the pi TUI at
-      // $PI_CODING_AGENT_DIR/auth.json (0600).
+      //
+      // Decision 2026-09-05: bridge no longer maintains an isolated
+      // pi profile — sessions + auth are shared with the host's
+      // ~/.pi/agent. The hint therefore points at the host's
+      // pi TUI (`pi` in any terminal) rather than asking the
+      // operator to run a one-off `PI_CODING_AGENT_DIR=...` pi
+      // instance. If the operator has a custom PI_CODING_AGENT_DIR
+      // set in their env, `resolvePiAgentDir` will reflect that
+      // here too — the print line is diagnostic, not prescriptive.
+      //
+      // W3 review follow-up: surface the env-var fallback so operators
+      // who deliberately prefer NOT to persist an auth.json (e.g.
+      // CI runners, ephemeral containers, air-gapped setups that
+      // inject secrets via env) still have a working escape hatch.
+      // pi's credential priority is auth.json > provider *_API_KEY
+      // env > --api-key; setting e.g. `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
+      // (whatever the provider calls it) in the bridge's process
+      // environment is sufficient for pi to skip the auth.json check.
+      // The provider name varies, so the hint names the convention
+      // rather than enumerating keys.
       console.error(
-        `[bridge] auth.json not found at ${this.authJsonPath}. Run: PI_CODING_AGENT_DIR=${this.isolationDir} pi  (then type /login inside the TUI), or copy an existing ~/.pi/agent/auth.json into ${this.isolationDir}.`,
+        `[bridge] auth.json not found at ${this.authJsonPath}. Authenticate via the pi TUI (run \`pi\` and type /login) so it writes ${this.authJsonPath}, or set the provider's *_API_KEY env var (pi auth priority: auth.json > env > --api-key).`,
       );
     }
-    logger.info(`PI_CODING_AGENT_DIR=${this.isolationDir}`);
+    // Diagnostic banner so operators can confirm the bridge and pi
+    // agree on the same agent directory. The line is grep-able + the
+    // value comes from `resolvePiAgentDir()` (env first, default
+    // ~/.pi/agent) so a mismatch with what the operator expects
+    // (e.g. PI_CODING_AGENT_DIR set to a different path) shows up
+    // immediately on startup instead of as a confusing
+    // session-not-found error on first prompt.
+    logger.info(`pi agent dir: ${this.agentDir}`);
     logger.info(`work_dir=${this.workDir}`);
     // Phase starts at `exited`; no spawn yet. The first
     // spawn-trigger command will call spawnNow().
@@ -512,17 +552,25 @@ export class PiProcessManager {
    *   2. Exit-handler crash-restart path when `!selfKillFlag && code !== 0`.
    *
    *  Increments `spawnCount` on every call so tests can verify
-   *  §2.7 semantics ("spawn 计数 +1" per triggered spawn). */
+   *  §2.7 semantics ("spawn 计数 +1" per triggered spawn).
+   *
+   *  Env: we pass `{...this.baseEnv}` verbatim — NO
+   *  `PI_CODING_AGENT_DIR` injection. Per decision 2026-09-05
+   *  the bridge no longer maintains an isolated pi profile; pi
+   *  sees the operator's own environment through passthrough, so
+   *  the agent dir the bridge scans (via `resolvePiAgentDir`)
+   *  and the agent dir pi itself uses are guaranteed to agree
+   *  (both consult the same `process.env.PI_CODING_AGENT_DIR`
+   *  with the same priority). An operator who wants a non-default
+   *  location sets the env var in the bridge's own process env —
+   *  no bridge-side configuration knob required. */
   private spawnNow(): void {
     if (this.stopped) return;
     this.spawnCount++;
-    const subdir = sessionSubdir(this.isolationDir, this.workDir);
+    const subdir = sessionSubdir(this.agentDir, this.workDir);
     const sessionFlags = sessionArgv(subdir); // ['--session', path] or []
     const args = ['--mode', 'rpc', ...sessionFlags];
-    const env: Record<string, string | undefined> = {
-      ...this.baseEnv,
-      PI_CODING_AGENT_DIR: this.isolationDir,
-    };
+    const env: Record<string, string | undefined> = { ...this.baseEnv };
     logger.info(
       `spawning pi (count=${this.spawnCount}): pi ${args.join(' ')} (cwd=${this.workDir})`,
     );

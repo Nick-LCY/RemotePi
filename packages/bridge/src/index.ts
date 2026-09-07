@@ -22,7 +22,6 @@
 // `loadBridgeConfig`; failures surface as a single friendly stderr line
 // + `process.exitCode = 1`, never a stack trace.
 import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 import { BridgeClient, type WebSocketLike } from './client.js';
 import {
   loadBridgeConfig,
@@ -32,6 +31,7 @@ import {
   type BridgeConfig,
 } from './config.js';
 import { logger } from './logger.js';
+import { resolvePiAgentDir } from './pi-cwd-encoder.js';
 import { PiProcessManager } from './pi-process.js';
 import { shareUrl } from './token.js';
 
@@ -249,19 +249,20 @@ export function start(options: StartOptions = {}): {
   // silently drop frames if the socket isn't open yet, but the
   // bridge is single-tenant and the worker buffer absorbs any blip).
   //
-  // Isolation directory lives next to the config file so a single
-  // `rm -rf ~/.config/remotepi` purges both bridge config + pi auth
-  // (PRD §2.3 — "与配置同根, 便于清退"). The directory is NOT created
-  // eagerly — the pi TUI's `/login` slash command writes auth.json
-  // into it during setup, and `mkdir -p` happens implicitly when pi
-  // creates its session subdir.
-  const isolationDir = path.join(path.dirname(configPath), 'pi-agent');
+  // Agent dir: bridge uses the operator's own pi profile (no
+  // isolated copy next to the config file — that approach was
+  // retired on 2026-09-05). `resolvePiAgentDir` honours
+  // `PI_CODING_AGENT_DIR` if set, otherwise falls back to
+  // `~/.pi/agent` — the same path the host's `pi` TUI writes
+  // sessions + auth.json to. Result: web sessions and the
+  // operator's terminal sessions land in the same directory, so
+  // web can pick up whichever was most recent on restart.
+  const agentDir = resolvePiAgentDir();
   const manager =
     options.piProcessManager ??
     new PiProcessManager({
-      isolationDir,
+      agentDir,
       workDir: config.work_dir,
-      authJsonPath: path.join(isolationDir, 'auth.json'),
       // Manager → WSS: every outbound envelope (session_state,
       // result, command_result, snapshot, event) flows through the
       // client's existing sendEnvelope path. Closed-over reference,

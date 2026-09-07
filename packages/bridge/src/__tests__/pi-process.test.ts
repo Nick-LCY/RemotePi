@@ -109,11 +109,14 @@ function makeManager(overrides: Partial<PiProcessOptions> = {}): {
     return child;
   };
   // Real-ish defaults; tests can override per-case via `overrides`.
+  // We pass a fresh tmp dir as the agent dir (the bridge derives
+  // `<agentDir>/auth.json` itself), so the fixture is self-contained
+  // and the absence of `~/.pi/agent/auth.json` on the test host is
+  // never observed (sealed against host filesystem state).
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-process-'));
   const manager = new PiProcessManager({
-    isolationDir: path.join(tmp, 'pi-agent'),
+    agentDir: tmp,
     workDir: '/home/test/proj',
-    authJsonPath: path.join(tmp, 'pi-agent', 'auth.json'),
     spawn,
     onOutboundEnvelope: outbound,
     onStderr: stderr,
@@ -1026,15 +1029,14 @@ describe('get_state answers from memory across all 5 phases (PRD §2.7)', () => 
 
 describe('Spawn argv: --session flag (PRD §2.5)', () => {
   it('7.1 spawn includes --session <path> when a latest session file is found', () => {
-    // Set up a real on-disk session subdir with one file.
-    const isoDir = path.join(
-      mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-')),
-      'pi-agent',
-    );
-    trackTmpDir(path.dirname(isoDir));
+    // Set up a real on-disk session subdir with one file. The
+    // "agent dir" here is a tmp path so the test is fully
+    // self-contained — no coupling to the host's ~/.pi/agent.
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-'));
+    trackTmpDir(agentDir);
     const cwd = '/home/test/proj';
     // encodeCwdForPi('/home/test/proj') = '2Fhome2Ftest2Fproj'
-    const sessionDir = path.join(isoDir, 'sessions', '--2Fhome2Ftest2Fproj--');
+    const sessionDir = path.join(agentDir, 'sessions', '--2Fhome2Ftest2Fproj--');
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('node:fs') as typeof import('node:fs');
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -1047,9 +1049,8 @@ describe('Spawn argv: --session flag (PRD §2.5)', () => {
       return new FakeChild();
     };
     const manager = new PiProcessManager({
-      isolationDir: isoDir,
+      agentDir,
       workDir: cwd,
-      authJsonPath: path.join(isoDir, 'auth.json'),
       spawn,
       onOutboundEnvelope: () => undefined,
     });
@@ -1068,11 +1069,8 @@ describe('Spawn argv: --session flag (PRD §2.5)', () => {
   });
 
   it('7.2 spawn omits --session when the session subdir is empty', () => {
-    const isoDir = path.join(
-      mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-')),
-      'pi-agent',
-    );
-    trackTmpDir(path.dirname(isoDir));
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-'));
+    trackTmpDir(agentDir);
     const cwd = '/home/test/proj';
 
     const spawnArgs: Array<{ cmd: string; args: readonly string[] }> = [];
@@ -1081,9 +1079,8 @@ describe('Spawn argv: --session flag (PRD §2.5)', () => {
       return new FakeChild();
     };
     const manager = new PiProcessManager({
-      isolationDir: isoDir,
+      agentDir,
       workDir: cwd,
-      authJsonPath: path.join(isoDir, 'auth.json'),
       spawn,
       onOutboundEnvelope: () => undefined,
     });
@@ -1575,9 +1572,13 @@ describe('Stdio buffering (roadmap §4.2 ⚠)', () => {
       const { manager } = makeManager();
       manager.start();
       manager.start();
-      // The PI_CODING_AGENT_DIR line is emitted exactly once.
+      // The "pi agent dir: <path>" diagnostic line is emitted
+      // exactly once across the two start() calls — guards the
+      // "start is idempotent" contract (mirrors the previous
+      // PI_CODING_AGENT_DIR= line check, retargeted at the new
+      // banner since the bridge no longer injects the env var).
       const piAgentLogCount = infoSpy.mock.calls.filter((args) =>
-        String(args[0]).includes('PI_CODING_AGENT_DIR='),
+        String(args[0]).includes('pi agent dir:'),
       ).length;
       expect(piAgentLogCount).toBe(1);
     } finally {
@@ -1596,6 +1597,12 @@ describe('Stdio buffering (roadmap §4.2 ⚠)', () => {
     // (b) `logger.warn` was NOT called for this hint — guarding
     // against a regression where someone "helpfully" routes the
     // hint through the shared logger again.
+    //
+    // 2026-09-05 follow-up: the hint no longer tells the
+    // operator to set PI_CODING_AGENT_DIR — bridge shares the
+    // host's pi profile. The marker `auth.json not found` is
+    // preserved so this test (and the operator grep recipe) still
+    // works.
     const errorSpy = vi
       .spyOn(console, 'error')
       .mockImplementation(() => undefined);
@@ -1619,7 +1626,18 @@ describe('Stdio buffering (roadmap §4.2 ⚠)', () => {
     }
   });
 
-  it('10.3 includes PI_CODING_AGENT_DIR in spawn env', () => {
+  it('10.3 spawn env does NOT inject PI_CODING_AGENT_DIR (bridge shares host pi profile)', () => {
+    // Decision 2026-09-05: the bridge no longer injects
+    // PI_CODING_AGENT_DIR into spawn env. pi sees the operator's
+    // own environment through `{...this.baseEnv}` passthrough, so
+    // the agent dir the bridge scans (via `resolvePiAgentDir`) and
+    // the dir pi itself uses stay in lockstep. We assert:
+    //   (a) when `baseEnv` does NOT carry PI_CODING_AGENT_DIR, the
+    //       spawned env also doesn't (the bridge doesn't add it).
+    //   (b) when `baseEnv` DOES carry PI_CODING_AGENT_DIR, the
+    //       spawned env carries the same value verbatim (passthrough
+    //       — the operator's override is respected, no double-set,
+    //       no override-clobbering).
     const capturedEnvs: Array<Record<string, string | undefined>> = [];
     const spawn = (
       _cmd: string,
@@ -1629,17 +1647,52 @@ describe('Stdio buffering (roadmap §4.2 ⚠)', () => {
       capturedEnvs.push(opts.env);
       return new FakeChild();
     };
-    const { manager } = makeManager({ spawn });
-    manager.start();
-    manager.handleEnvelope({
+
+    // (a) baseEnv without PI_CODING_AGENT_DIR → spawn env has no
+    // PI_CODING_AGENT_DIR key at all.
+    //
+    // W1 review follow-up: we must NOT rely on host env state here.
+    // The bridge defaults `baseEnv` to `process.env`, so on a host
+    // that has `PI_CODING_AGENT_DIR` exported (a common case — anyone
+    // who's followed pi's quickstart in a long-lived shell) the
+    // assertion would falsely fail because the env key WAS in
+    // `process.env`, and `{...this.baseEnv}` would carry it into the
+    // spawn env. To seal the test against host env we explicitly
+    // inject a baseEnv that strips the key — same shape as
+    // `makeManager`'s default, just minus the one entry that matters
+    // for this assertion. (b) below covers the "operator has it set"
+    // case where the override IS expected to round-trip.
+    const { PI_CODING_AGENT_DIR: _omit, ...rest } = process.env;
+    void _omit;
+    const noOverride = makeManager({ spawn, baseEnv: { ...rest } });
+    noOverride.manager.start();
+    noOverride.manager.handleEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'pi',
       type: 'prompt',
-      id: 'p1',
+      id: 'p-noop',
       payload: { content: 'go' },
     });
     expect(capturedEnvs).toHaveLength(1);
-    expect(capturedEnvs[0]?.['PI_CODING_AGENT_DIR']).toMatch(/pi-agent$/);
+    expect('PI_CODING_AGENT_DIR' in (capturedEnvs[0] ?? {})).toBe(false);
+
+    // (b) baseEnv with PI_CODING_AGENT_DIR already set → spawn
+    // env carries the same value verbatim.
+    capturedEnvs.length = 0;
+    const withOverride = makeManager({
+      spawn,
+      baseEnv: { ...process.env, PI_CODING_AGENT_DIR: '/custom/agent/from/base' },
+    });
+    withOverride.manager.start();
+    withOverride.manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p-op',
+      payload: { content: 'go' },
+    });
+    expect(capturedEnvs).toHaveLength(1);
+    expect(capturedEnvs[0]?.['PI_CODING_AGENT_DIR']).toBe('/custom/agent/from/base');
   });
 
   it('10.4 PHASES export mirrors the shared SESSION_PHASES literal', () => {
@@ -1952,14 +2005,13 @@ describe('Broadcast principle (PRD §2 / §6.2 — get_messages NEVER; writes DO
 describe('§6.2 exited semantics — get_messages triggers spawn with --session', () => {
   it('12.1 get_messages in exited phase triggers a spawn AND the spawn carries --session when a latest session file exists', () => {
     // Set up the on-disk session subdir with one file. Mirror of
-    // 7.1 but the trigger is get_messages instead of prompt.
-    const isoDir = path.join(
-      mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-')),
-      'pi-agent',
-    );
-    trackTmpDir(path.dirname(isoDir));
+    // 7.1 but the trigger is get_messages instead of prompt. The
+    // agent dir is a tmp path so the test doesn't depend on the
+    // host's ~/.pi/agent state.
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-'));
+    trackTmpDir(agentDir);
     const cwd = '/home/test/proj';
-    const sessionDir = path.join(isoDir, 'sessions', '--2Fhome2Ftest2Fproj--');
+    const sessionDir = path.join(agentDir, 'sessions', '--2Fhome2Ftest2Fproj--');
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('node:fs') as typeof import('node:fs');
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -1972,9 +2024,8 @@ describe('§6.2 exited semantics — get_messages triggers spawn with --session'
       return new FakeChild();
     };
     const manager = new PiProcessManager({
-      isolationDir: isoDir,
+      agentDir,
       workDir: cwd,
-      authJsonPath: path.join(isoDir, 'auth.json'),
       spawn,
       onOutboundEnvelope: () => undefined,
     });
