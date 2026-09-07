@@ -19,12 +19,14 @@
 //      web. If web, send it the current bridge_status immediately so the UI
 //      can render without waiting for the next event.
 //   5. Subsequent messages (per control.md §中间层处理规则):
-//      - control/ping     → forward to the opposite peer.
-//      - control/pong     → forward to opposite, OR consume if the nonce
-//                            matches the DO's pending heartbeat ping.
-//      - control/bridge_status / control/error → drop (the DO is the
-//                            authoritative producer; inbound copies are
-//                            stale or forged).
+//      The DO deeply handles only handshake / bridge_status / error, and
+//      ping/pong carry special semantics (heartbeat nonce pairing). Every
+//      other envelope type — the rest of the control family (session_state,
+//      session_list, get_state, result) plus the entire pi family — is
+//      passed through verbatim via `forwardToOpposite`. The `default`
+//      branch in `routeOpenMessage` is the catch-all that enforces this
+//      "everything else forwards" contract (see also control.md
+//      §中间层处理规则: "其余一律原样转发").
 //      - v ≠ 1            → `error(unsupported_version, terminal:true)` +
 //                            close 1008.
 //      - envelope parse fail → `error(invalid_envelope, terminal:false)`,
@@ -433,13 +435,29 @@ export class Room implements DurableObject {
         this.forwardToOpposite(meta, env);
         return;
       }
+
+      // Catch-all: every other envelope type passes through verbatim.
+        // control.md §中间层处理规则 reserves deep handling to handshake /
+        // bridge_status / error (all handled above or in handleHandshake)
+        // and gives ping/pong the nonce-pairing carve-out (also above).
+        // Everything else — the remaining control family members
+        // (session_state, session_list, get_state, result) and the entire
+        // pi family — is forwarded. The envelope has already been
+        // validated by `Envelope.safeParse` upstream (see webSocketMessage
+        // step 3), so this default cannot be hit by a structurally invalid
+        // or unknown type; only by legitimate protocol types we don't need
+        // to inspect. Future protocol additions naturally land here without
+        // needing a switch update.
+      default:
+        this.forwardToOpposite(meta, env);
+        return;
     }
   }
 
-  /** Forward a ping or pong from one connection to the opposite peer set:
+  /** Forward an envelope from one connection to the opposite peer set:
   //  - web  → bridge
   //  - bridge → all webs
-  //  control.md §2 + §3 + §中间层处理规则. */
+  //  control.md §2 + §3 + §中间层处理规则 (catch-all forwarding). */
   private forwardToOpposite(
     meta: ConnMeta,
     env: Envelope,
