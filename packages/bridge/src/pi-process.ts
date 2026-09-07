@@ -435,6 +435,22 @@ export interface PiProcessOptions {
  *  JSONL shapes — see [[architecture/protocol/pi.md]] for the full
  *  surface. We only narrow on the fields we actually act on.
  *
+ *  **pi 0.85.1 wire shape** (verified against
+ *  `@earendil-works/pi-coding-agent@0.85.1`'s
+ *  `dist/modes/rpc/rpc-mode.js`, see comment on `handleStdoutFrame`):
+ *  - commands are `{type:"<command>", id?, ...payload}` on stdin;
+ *  - **responses** are `{type:"response", command, success, id?, data?, error?}`
+ *    on stdout (only the `response` discriminator wraps a payload +
+ *    correlation id in a sub-shape);
+ *  - **events** stream as their raw session-emitter objects —
+ *    e.g. `{type:"agent_settled"}`, `{type:"message_update", ...}`,
+ *    `{type:"message_end", message:{...}}`, `{type:"extension_ui_request", id, method, ...}`.
+ *    There is NO `{type:"event", event:"...", data:...}` envelope
+ *    wrapping — that shape was incorrectly assumed by the earlier
+ *    bridge code and silently dropped every event pi sent, leaving
+ *    `agent_settled` (idle timer trigger) and `extension_ui_request`
+ *    (popup router) dead. See `handleStdoutFrame` for the fix.
+ *
  *  W3 review follow-up: `response.id` is the id of the command the
  *  bridge sent to pi — pi echoes it back so the bridge can correlate
  *  the reply with the originating web envelope. We mark it optional
@@ -451,7 +467,10 @@ type StdoutFrame =
       data?: unknown;
       error?: unknown;
     }
-  | { type: 'event'; event: string; id?: string; data?: unknown }
+  // All pi event types — raw session-emitter objects. The discriminator
+  // IS the event name; there is no `event` sub-field. We accept any
+  // string type so future pi releases that add new event names are
+  // forwarded verbatim (envelope evolution rule (c)).
   | { type: string; [k: string]: unknown };
 
 export class PiProcessManager {
@@ -1013,36 +1032,117 @@ export class PiProcessManager {
     }
   }
 
-  /** Parse one JSONL line from pi stdout and dispatch. We accept a
-   *  few different frame shapes:
-   *    - `{ type: 'response', command, success, ... }` — reply to a
-   *      command we sent. The `get_state` reply drives the ready
-   *      transition (handshake completion); other replies are forwarded
-   *      to the caller as `command_result` envelopes.
-   *    - `{ type: 'event', event, data }` — lifecycle events we act on
-   *      (`agent_settled` → start idle timer; extension UI requests
-   *      are forwarded but task 05 wires up the actual handling). Other
-   *      events are forwarded as-is.
-   *    - Anything else (e.g. startup `setStatus` batch pi emits before
-   *      the handshake) — ignored per roadmap §4.1 ⚠. */
+  /** Parse one JSONL line from pi stdout and dispatch. We accept the
+   *  frame shapes pi 0.85.1 actually emits in `--mode rpc`:
+   *
+   *  **Verified wire shape** (see `dist/modes/rpc/rpc-mode.js:27-29`
+   *  in `@earendil-works/pi-coding-agent@0.85.1`):
+   *    - `{type:"response", command, success, id?, data?, error?}` —
+   *      reply to a command we sent. The `get_state` reply drives the
+   *      ready transition (handshake completion); `get_messages`
+   *      becomes a `snapshot` envelope; every other reply becomes a
+   *      `command_result` envelope (forwarded to web).
+   *    - **Events** stream as raw session-emitter objects whose
+   *      `type` IS the event name — e.g.
+   *      `{type:"agent_settled"}`,
+   *      `{type:"message_update", usage, assistantMessageEvent}`,
+   *      `{type:"message_end", message:{...}}`,
+   *      `{type:"extension_ui_request", id, method, ...}`,
+   *      `{type:"queue_update", steering, followUp}`, etc.
+   *      There is NO `{type:"event", event:"...", data:...}`
+   *      wrapping. The earlier code dropped everything that didn't
+   *      carry `type === 'response'` or `type === 'event'` (wrapped),
+   *      which meant `agent_settled` never armed the idle timer and
+   *      `extension_ui_request` never reached the popup router.
+   *
+   *  Two events get internal handling; every other pi event is
+   *  forwarded verbatim as a `pi/event` envelope so the web layer
+   *  (which dispatches by `payload.event` name) can route
+   *  `message_update` streaming, `message_end` convergence,
+   *  `queue_update`, `extension_ui_request` info-only updates, etc.
+   *  Forwarding ALL events (rather than only a curated list) is
+   *  intentional: pi keeps adding event types across releases and
+   *  the web layer's open-ended `payload.event` is the single
+   *  extension point (envelope evolution rule (c)). */
   private handleStdoutFrame(line: string): void {
-    let parsed: StdoutFrame;
+    let parsed: unknown;
     try {
-      parsed = JSON.parse(line) as StdoutFrame;
+      parsed = JSON.parse(line);
     } catch {
       logger.warn(`dropping non-JSON pi stdout line: ${line.slice(0, 200)}`);
       return;
     }
     if (parsed === null || typeof parsed !== 'object') return;
     const t = (parsed as { type?: unknown }).type;
+    if (typeof t !== 'string') return; // unknown shape — drop silently
+
     if (t === 'response') {
       this.handlePiResponse(parsed as Extract<StdoutFrame, { type: 'response' }>);
-    } else if (t === 'event') {
-      this.handlePiEvent(parsed as Extract<StdoutFrame, { type: 'event' }>);
+      return;
     }
-    // Other pi frame types (setStatus / setWidget / etc. — see PRD §6
-    // "fire-and-forget 5 类本地消化") are dropped here; task 05 will
-    // route the relevant ones through `onStderr` / local logs.
+
+    // Build the `data` payload = the entire event minus its `type`
+    // discriminator. Web layer's `extractTextDelta` / `extractMessage*`
+    // helpers in WsClient hunt the open data shape for fields like
+    // `text_delta`, `delta`, `message`, `messageId`, etc., so we keep
+    // the full payload intact.
+    const data: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
+    delete data.type;
+
+    // Internal handling: `agent_settled` arms the idle timer (the
+    // one signal that means "this turn is done, no more work queued";
+    // `agent_end` fires on auto-retry too — see ADR-0003 §3). The
+    // gate lives in `startIdleTimer` (only `running → idle` is
+    // in-spec; ready/spawning/idle/exited are logged + ignored).
+    if (t === 'agent_settled') {
+      this.startIdleTimer();
+      // Forward verbatim as a `pi/event` envelope so the web layer
+      // can render the "agent 已就绪（5 分钟后自动休眠）" hint per
+      // PRD §4.3 (InputBar subscribes via `client.on('event', …)`
+      // and matches on `payload.event === 'agent_settled'`). The
+      // forward is unconditional — out-of-spec arrivals (e.g.
+      // duplicate settle while `idle`) reach web regardless; the
+      // hint UI's own `phase !== 'idle'` guard in ChatView.tsx
+      // prevents re-showing once phase has moved on, so a stale
+      // duplicate is harmless. The wire shape matches the general
+      // event forwarder below (`type` stripped into `payload.data`,
+      // `agent_settled` carries no payload → `data: {}`).
+      this.onOutbound({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'event',
+        id: randomUUID(),
+        payload: { event: t, data },
+      });
+      return;
+    }
+
+    // Internal handling: `extension_ui_request` goes through the
+    // ExtensionUIRouter (4-class blocking or 5-class fire-and-forget,
+    // per PRD §2.4). The router's `handleEventFromPi` keeps its old
+    // `{event, data}` shape — we just pass the raw event (minus
+    // `type`) as `data` so `data.method` / `data.id` line up with
+    // pi's native shape.
+    if (t === 'extension_ui_request') {
+      this.extensionUIRouter.handleEventFromPi({
+        event: 'extension_ui_request',
+        data,
+      });
+      return;
+    }
+
+    // Every other event — `message_start`, `message_update`,
+    // `message_end`, `agent_start`, `agent_end`, `turn_start`,
+    // `turn_end`, `queue_update`, etc. — forwards verbatim as a
+    // `pi/event` envelope. The web layer dispatches by
+    // `payload.event` name (WsClient.handlePiEvent).
+    this.onOutbound({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'event',
+      id: randomUUID(),
+      payload: { event: t, data },
+    });
   }
 
   /** `response` frame from pi. The handshake reply (command ===
@@ -1186,45 +1286,12 @@ export class PiProcessManager {
     }
   }
 
-  /** `event` frame from pi. Currently we react to three event names:
-   *    - `agent_settled` → start idle timer (PRD §2.3 + ADR-0003).
-   *    - `extension_ui_request` → route to the `ExtensionUIRouter`
-   *      (4-class blocking or 5-class fire-and-forget, per PRD §2.4).
-   *    - any other event → forwarded to caller as `pi/event` envelope.
-   */
-  private handlePiEvent(frame: Extract<StdoutFrame, { type: 'event' }>): void {
-    const eventName = frame.event;
-    const data = frame.data;
-    if (eventName === 'agent_settled') {
-      // PRD §2.3 + roadmap §4.3 ⚠: use agent_settled, not agent_end
-      // (auto-retry would re-fire agent_end and the idle timer would
-      // never settle). Start the idle timer; transition to idle.
-      this.startIdleTimer();
-      return;
-    }
-    if (eventName === 'extension_ui_request') {
-      // Task 05: route to the dedicated router. The router handles
-      // the 4-class blocking flow (add to pending → broadcast → forward
-      // to web → arm timeout mirror) and the 5-class fire-and-forget
-      // digest path (logger.info + drop, no blocked_on entry, no
-      // web forward). The router also owns the wire translation for
-      // web → pi on `extension_ui_response`.
-      this.extensionUIRouter.handleEventFromPi({
-        event: eventName,
-        data,
-      });
-      return;
-    }
-    // Forward every other event verbatim — web layer routes by
-    // `event` name (envelope evolution rule (c): `event.data` is open).
-    this.onOutbound({
-      v: PROTOCOL_VERSION,
-      kind: 'pi',
-      type: 'event',
-      id: randomUUID(),
-      payload: { event: eventName, data: data ?? null },
-    });
-  }
+  /** (Removed — the old `handlePiEvent` assumed pi 0.85.1 wrapped events
+   *  as `{type:"event", event:"...", data:...}`, which it does NOT.
+   *  Events stream as raw session-emitter objects with `type` being
+   *  the event name. The dispatch is now in `handleStdoutFrame`
+   *  directly. See the comment on `StdoutFrame` for the wire-shape
+   *  evidence + the upstream source citation.) */
 
   /** Exit handler — the heart of §2.6 / exit handling. Three paths:
    *
@@ -1354,8 +1421,12 @@ export class PiProcessManager {
   // Idle timer — 5 min after agent_settled → SIGTERM → 1s → SIGKILL
   // ----------------------------------------------------------------
 
-  /** Start the idle countdown. Called from `handlePiEvent` when an
-   *  `agent_settled` event arrives. Calling this twice replaces the
+  /** Start the idle countdown. Called from `handleStdoutFrame` when
+   *  an `agent_settled` event arrives from pi (raw shape
+   *  `{type:"agent_settled"}` — see `StdoutFrame` for the wire-
+   *  shape evidence + the upstream source citation). Calling this
+   *  twice replaces the previous timer (only one idle timer should
+   *  be active at a time — PRD §2.3 says "计时窗口内收到新任务则重置").
    *  previous timer (only one idle timer should be active at a time —
    *  PRD §2.3 says "计时窗口内收到新任务则重置").
    *

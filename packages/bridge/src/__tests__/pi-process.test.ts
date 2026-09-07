@@ -394,7 +394,7 @@ describe('PiProcessManager state machine (PRD §2.3)', () => {
 
       // agent_settled event → idle transition + timer armed.
       spawnChildren[0]?.stdout.write(
-        JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+        JSON.stringify({ type: 'agent_settled' }) + '\n',
       );
       expect(manager.getPhase()).toBe<SessionPhase>('idle');
       const states = sessionStates(outbound);
@@ -420,7 +420,7 @@ describe('PiProcessManager state machine (PRD §2.3)', () => {
         JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
       );
       spawnChildren[0]?.stdout.write(
-        JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+        JSON.stringify({ type: 'agent_settled' }) + '\n',
       );
       expect(manager.getPhase()).toBe<SessionPhase>('idle');
 
@@ -768,7 +768,7 @@ describe('Autonomous kill (PRD §2.6 — three paths)', () => {
         JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
       );
       spawnChildren[0]?.stdout.write(
-        JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+        JSON.stringify({ type: 'agent_settled' }) + '\n',
       );
       // Idle timeout fires.
       vi.advanceTimersByTime(IDLE_TIMEOUT_MS);
@@ -871,7 +871,7 @@ describe('SIGTERM → 1s → SIGKILL grace sequence (PRD §2.3)', () => {
         JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
       );
       spawnChildren[0]?.stdout.write(
-        JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+        JSON.stringify({ type: 'agent_settled' }) + '\n',
       );
       expect(manager.getPhase()).toBe<SessionPhase>('idle');
 
@@ -917,7 +917,7 @@ describe('SIGTERM → 1s → SIGKILL grace sequence (PRD §2.3)', () => {
         JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
       );
       spawnChildren[0]?.stdout.write(
-        JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+        JSON.stringify({ type: 'agent_settled' }) + '\n',
       );
 
       vi.advanceTimersByTime(IDLE_TIMEOUT_MS);
@@ -957,7 +957,7 @@ describe('SIGTERM → 1s → SIGKILL grace sequence (PRD §2.3)', () => {
         JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
       );
       spawnChildren[0]?.stdout.write(
-        JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+        JSON.stringify({ type: 'agent_settled' }) + '\n',
       );
       vi.advanceTimersByTime(IDLE_TIMEOUT_MS);
       // SIGTERM was sent. The flag must be set already (otherwise the
@@ -990,7 +990,7 @@ describe('agent_settled → idle timer (PRD §2.3 / ADR-0003)', () => {
         JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
       );
       spawnChildren[0]?.stdout.write(
-        JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+        JSON.stringify({ type: 'agent_settled' }) + '\n',
       );
       expect(manager.getPhase()).toBe<SessionPhase>('idle');
 
@@ -1046,7 +1046,7 @@ describe('agent_settled → idle timer (PRD §2.3 / ADR-0003)', () => {
 
       // First settle — phase is `running`, so the timer arms.
       spawnChildren[0]?.stdout.write(
-        JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+        JSON.stringify({ type: 'agent_settled' }) + '\n',
       );
       expect(manager.getPhase()).toBe<SessionPhase>('idle');
       vi.advanceTimersByTime(500);
@@ -1055,7 +1055,7 @@ describe('agent_settled → idle timer (PRD §2.3 / ADR-0003)', () => {
       // No timer reset; the original timer still fires at t=1000
       // from the FIRST settle (NOT from this one).
       spawnChildren[0]?.stdout.write(
-        JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+        JSON.stringify({ type: 'agent_settled' }) + '\n',
       );
       expect(manager.getPhase()).toBe<SessionPhase>('idle'); // no transition
 
@@ -1092,7 +1092,7 @@ describe('agent_settled → idle timer (PRD §2.3 / ADR-0003)', () => {
       );
       // First settle → idle, timer armed at t=1000.
       spawnChildren[0]?.stdout.write(
-        JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+        JSON.stringify({ type: 'agent_settled' }) + '\n',
       );
       expect(manager.getPhase()).toBe<SessionPhase>('idle');
       // Fresh prompt wakes us up — timer cancelled, phase=running.
@@ -1110,7 +1110,7 @@ describe('agent_settled → idle timer (PRD §2.3 / ADR-0003)', () => {
       // Second settle — phase=running again, so the W6 gate passes
       // and a fresh timer is armed.
       spawnChildren[0]?.stdout.write(
-        JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+        JSON.stringify({ type: 'agent_settled' }) + '\n',
       );
       expect(manager.getPhase()).toBe<SessionPhase>('idle');
       vi.advanceTimersByTime(999);
@@ -1333,7 +1333,7 @@ describe('get_state answers from memory across all 5 phases (PRD §2.7)', () => 
           JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
         );
         spawnChildren[0]?.stdout.write(
-          JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+          JSON.stringify({ type: 'agent_settled' }) + '\n',
         );
       }
       expect(manager.getPhase()).toBe<SessionPhase>(phase);
@@ -1469,7 +1469,7 @@ describe('Outbound envelope construction', () => {
     // Forward a non-agent_settled event so we exercise the event
     // forwarder path.
     spawnChildren[0]?.stdout.write(
-      JSON.stringify({ type: 'event', event: 'message_update', data: { foo: 'bar' } }) + '\n',
+      JSON.stringify({ type: 'message_update', foo: 'bar' }) + '\n',
     );
     // Forward a non-get_state response so we exercise the
     // command_result forwarder path.
@@ -2086,8 +2086,8 @@ describe('Stdio buffering (roadmap §4.2 ⚠)', () => {
     // Build a 2-line frame where the FIRST line's data embeds a
     // literal U+2028 (LSEP). The two lines are separated by a real
     // newline only — the splitter must ignore the U+2028 inside.
-    const line1 = JSON.stringify({ type: 'event', event: 'message_update', data: { msg: 'A B' } });
-    const line2 = JSON.stringify({ type: 'event', event: 'message_update', data: { msg: 'end' } });
+    const line1 = JSON.stringify({ type: 'message_update', msg: 'A B' });
+    const line2 = JSON.stringify({ type: 'message_update', msg: 'end' });
     const combined = line1 + '\n' + line2 + '\n';
     spawnChildren[0]?.stdout.write(combined);
 
@@ -2126,7 +2126,7 @@ describe('Stdio buffering (roadmap §4.2 ⚠)', () => {
     );
     // 中 is U+4E2D → 3-byte UTF-8 (E4 B8 AD). Split it across two
     // chunks to exercise the StringDecoder carry-over.
-    const full = JSON.stringify({ type: 'event', event: 'message_update', data: { msg: '中' } });
+    const full = JSON.stringify({ type: 'message_update', msg: '中' });
     // Mid-character split: cut between E4 B8 and AD.
     const head = Buffer.from(full.slice(0, full.indexOf('中')), 'utf8');
     // The character's bytes: ...some-prefix-E4-B8|AD-some-suffix
@@ -2335,7 +2335,7 @@ describe('Broadcast principle (PRD §2 / §6.2 — get_messages NEVER; writes DO
   function readyIdle(manager: PiProcessManager, spawnChildren: FakeChild[]): void {
     readyRunning(manager, spawnChildren);
     spawnChildren[0]?.stdout.write(
-      JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+      JSON.stringify({ type: 'agent_settled' }) + '\n',
     );
   }
 
@@ -2471,14 +2471,11 @@ describe('Broadcast principle (PRD §2 / §6.2 — get_messages NEVER; writes DO
     // pi emits an extension_ui_request event → broadcast #1.
     spawnChildren[0]?.stdout.write(
       JSON.stringify({
-        type: 'event',
-        event: 'extension_ui_request',
-        data: {
-          method: 'confirm',
-          id: 'extui-bp',
-          title: 'Are you sure?',
-          message: 'Do it?',
-        },
+        type: 'extension_ui_request',
+        method: 'confirm',
+        id: 'extui-bp',
+        title: 'Are you sure?',
+        message: 'Do it?',
       }) + '\n',
     );
     expect(sessionStateCount(outbound)).toBe(before + 1);
@@ -2558,9 +2555,9 @@ describe('Broadcast principle (PRD §2 / §6.2 — get_messages NEVER; writes DO
     for (const method of ['notify', 'setStatus', 'setWidget', 'setTitle', 'set_editor_text']) {
       spawnChildren[0]?.stdout.write(
         JSON.stringify({
-          type: 'event',
-          event: 'extension_ui_request',
-          data: { method, id: `${method}-1` },
+          type: 'extension_ui_request',
+          method,
+          id: `${method}-1`,
         }) + '\n',
       );
     }
@@ -2868,14 +2865,11 @@ describe('Pi stdin wire schema fidelity (bridge → pi translation layer)', () =
     // translation branch).
     spawnChildren[0]?.stdout.write(
       JSON.stringify({
-        type: 'event',
-        event: 'extension_ui_request',
-        data: {
-          method: 'confirm',
-          id: 'extui-r1',
-          title: 'go?',
-          message: 'do it',
-        },
+        type: 'extension_ui_request',
+        method: 'confirm',
+        id: 'extui-r1',
+        title: 'go?',
+        message: 'do it',
       }) + '\n',
     );
     manager.handleEnvelope({
@@ -2925,14 +2919,11 @@ describe('Pi stdin wire schema fidelity (bridge → pi translation layer)', () =
     // Seed the pending request with method='confirm'.
     spawnChildren[0]?.stdout.write(
       JSON.stringify({
-        type: 'event',
-        event: 'extension_ui_request',
-        data: {
-          method: 'confirm',
-          id: 'extui-confirm-r',
-          title: 'proceed?',
-          message: 'yes or no',
-        },
+        type: 'extension_ui_request',
+        method: 'confirm',
+        id: 'extui-confirm-r',
+        title: 'proceed?',
+        message: 'yes or no',
       }) + '\n',
     );
     manager.handleEnvelope({
@@ -2976,14 +2967,11 @@ describe('Pi stdin wire schema fidelity (bridge → pi translation layer)', () =
     });
     spawnChildren[0]?.stdout.write(
       JSON.stringify({
-        type: 'event',
-        event: 'extension_ui_request',
-        data: {
-          method: 'select',
-          id: 'extui-select-r',
-          title: 'pick one',
-          options: ['a', 'b', 'c'],
-        },
+        type: 'extension_ui_request',
+        method: 'select',
+        id: 'extui-select-r',
+        title: 'pick one',
+        options: ['a', 'b', 'c'],
       }) + '\n',
     );
     manager.handleEnvelope({
@@ -3110,6 +3098,306 @@ describe('Pi stdin wire schema fidelity (bridge → pi translation layer)', () =
     // (complements the structural `toEqual` above by surfacing
     // the explicit drop at failure time).
     expect(getMessagesWithSinceWire).not.toHaveProperty('since');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14. pi stdout wire-shape fidelity (pi → bridge)
+// ---------------------------------------------------------------------------
+//
+// pi 0.85.1 in `--mode rpc` emits events as raw session-emitter
+// objects whose `type` IS the event name — e.g. `{type:"agent_settled"}`,
+// `{type:"message_update", usage, assistantMessageEvent}`, etc. There
+// is NO `{type:"event", event:"...", data:...}` envelope wrapping.
+//
+// Earlier bridge code assumed the wrapped shape; the dispatcher only
+// reacted to `type === 'response'` or `type === 'event'` (wrapped),
+// which meant EVERY pi event (`agent_settled`, `message_update`,
+// `message_end`, `extension_ui_request`, `queue_update`, ...) was
+// silently dropped. The most visible symptom: `agent_settled` never
+// armed the idle timer → bridge never transitioned running → idle →
+// InputBar stayed disabled forever.
+//
+// These tests pin the raw wire shape as the trigger for the internal
+// handlers AND the verbatim-forward shape for everything else.
+
+describe('pi stdout wire-shape fidelity (pi 0.85.1 raw events)', () => {
+  /** Drive to running, drop any broadcast noise before each test. */
+  function driveToRunning(manager: PiProcessManager, spawnChildren: FakeChild[]): void {
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'warmup',
+      payload: { content: 'go' },
+    });
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
+    );
+  }
+
+  /** Filter outbound envelopes to pi/event only (drop session_state etc.).
+ *  Returns the raw payload shape — callers narrow on `event` first to
+ *  avoid tripping on events whose `data` is structurally different
+ *  (extension_ui_request in particular flows through the router
+ *  rather than the raw dispatcher, so its payload shape is the
+ *  router's BlockedOnEntryPayload rather than the raw pi fields). */
+  function piEvents(outbound: MockInstance<(env: EnvelopeT) => void>): Array<{
+    event: string;
+    data: unknown;
+  }> {
+    const out: Array<{ event: string; data: unknown }> = [];
+    for (const call of outbound.mock.calls) {
+      const env = call[0];
+      if (env.kind === 'pi' && env.type === 'event' && env.payload.data !== undefined) {
+        out.push({ event: env.payload.event, data: env.payload.data });
+      }
+    }
+    return out;
+  }
+
+  it('14.1 raw `{type:"agent_settled"}` triggers running → idle + arms 5min idle timer + forwards pi/event to web', () => {
+    // Regression for the production bug: bridge silently dropped
+    // every pi event because the old dispatcher only matched a
+    // WRAPPED `{type:"event", event:"agent_settled"}` shape that pi
+    // 0.85.1 never emits. After the fix, the RAW shape drives the
+    // idle timer (verified directly — same gate as the old 4.1 test
+    // but with the real wire format) AND is forwarded to web as a
+    // `pi/event` envelope so the InputBar can render the "agent 已
+    // 就绪（5 分钟后自动休眠）" hint per PRD §4.3. The earlier
+    // "no forward" assertion was incorrect — the wire contract is
+    // `payload.event === 'agent_settled'` (WsClient routes by event
+    // name + ChatView InputBar subscribes via `on('event', …)`),
+    // so the bridge MUST propagate the event. The internal handler
+    // arms the idle timer (or gates on phase when out-of-spec); the
+    // forward runs unconditionally so even stale duplicates reach
+    // web, where the hint UI's `phase !== 'idle'` guard keeps it
+    // idempotent.
+    const { manager, spawnChildren, outbound } = makeManager();
+    driveToRunning(manager, spawnChildren);
+    expect(manager.getPhase()).toBe<SessionPhase>('running');
+    outbound.mockClear();
+
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({ type: 'agent_settled' }) + '\n',
+    );
+
+    expect(manager.getPhase()).toBe<SessionPhase>('idle');
+    // session_state broadcast fired (running → idle).
+    const states = sessionStates(outbound);
+    expect(states.phases.at(-1)).toBe('idle');
+    // pi/event envelope was forwarded verbatim — the `agent_settled`
+    // payload is empty on the pi side, so `data: {}` after `type`
+    // is stripped. InputBar matches on `payload.event` to render the
+    // PRD §4.3 hint.
+    const events = piEvents(outbound);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.event).toBe('agent_settled');
+    expect(events[0]?.data).toEqual({});
+  });
+
+  it('14.2 raw `{type:"message_update"}` forwards verbatim as a pi/event envelope', () => {
+    // message_update carries the streaming text/thinking delta. The
+    // web layer's `extractTextDelta` hunts the open `payload.data`
+    // for `text_delta` / `delta` / `text` fields (envelope evolution
+    // rule (c)) — so we MUST forward the raw shape with `type` stripped.
+    const { manager, spawnChildren, outbound } = makeManager();
+    driveToRunning(manager, spawnChildren);
+    outbound.mockClear();
+
+    const rawDelta = {
+      type: 'message_update',
+      usage: { input: 1, output: 2, totalTokens: 3 },
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'Hello' },
+    };
+    spawnChildren[0]?.stdout.write(JSON.stringify(rawDelta) + '\n');
+
+    const forwarded = piEvents(outbound);
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]?.event).toBe('message_update');
+    expect(forwarded[0]?.data).toEqual({
+      usage: { input: 1, output: 2, totalTokens: 3 },
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'Hello' },
+    });
+    // `type` MUST be stripped from data — it would otherwise leak
+    // into web's `payload.data.type` and confuse extractors.
+    expect(forwarded[0]?.data).not.toHaveProperty('type');
+    // Phase is unchanged — only `agent_settled` drives state changes.
+    expect(manager.getPhase()).toBe<SessionPhase>('running');
+  });
+
+  it('14.3 raw `{type:"message_end"}` forwards verbatim with the full message payload', () => {
+    // message_end carries the authoritative full message; web layer
+    // upserts by `messageId`. Forwarding raw is essential — the
+    // `message` field is the whole content.
+    const { manager, spawnChildren, outbound } = makeManager();
+    driveToRunning(manager, spawnChildren);
+    outbound.mockClear();
+
+    const rawEnd = {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Hi there 👋' }],
+        timestamp: 1700000000000,
+      },
+    };
+    spawnChildren[0]?.stdout.write(JSON.stringify(rawEnd) + '\n');
+
+    const forwarded = piEvents(outbound);
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]?.event).toBe('message_end');
+    // The dispatcher's contract: forward the entire event payload
+    // minus `type`. The `message` field is the authoritative message
+    // — web's `extractMessageEndMessage` (WsClient.ts) hunts
+    // `data.message` first, then falls back to data-as-message. Either
+    // way the raw shape (with `message` nested under data) works.
+    expect(forwarded[0]?.data).toEqual({
+      message: rawEnd.message,
+    });
+    expect(forwarded[0]?.data).not.toHaveProperty('type');
+  });
+
+  it('14.4 raw `{type:"extension_ui_request"}` routes to the popup router (no pi/event forward)', () => {
+    // extension_ui_request is internal-handled by ExtensionUIRouter
+    // (4-class blocking / 5-class fire-and-forget per PRD §2.4).
+    // The router independently broadcasts its own blocked_on + an
+    // info-only `pi/event` envelope; the bridge dispatcher does NOT
+    // ALSO forward the raw extension_ui_request as a pi/event (that
+    // would double-deliver to web). This test pins the no-double-
+    // forward invariant.
+    const { manager, spawnChildren, outbound } = makeManager();
+    driveToRunning(manager, spawnChildren);
+    outbound.mockClear();
+
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({
+        type: 'extension_ui_request',
+        method: 'confirm',
+        id: 'extui-raw-1',
+        title: 'Are you sure?',
+        message: 'Do it?',
+      }) + '\n',
+    );
+
+    // The router fires a session_state broadcast carrying the new
+    // blocked_on entry. We assert it exists (not asserting exact
+    // shape — that's covered by the §11 broadcast tests).
+    const states = sessionStates(outbound);
+    expect(states.payloads.at(-1)?.blocked_on).toEqual([
+      expect.objectContaining({ id: 'extui-raw-1', method: 'confirm' }),
+    ]);
+
+    // The router emits exactly ONE `pi/event{event:'extension_ui_request'}`
+    // envelope (via `buildExtensionUIRequestEnvelope`) so web can render
+    // the dialog. The bridge's raw-event dispatcher MUST NOT
+    // double-fire that — otherwise web sees the same dialog twice
+    // (or, in the worst case, the raw `{type, method, id, title, ...}`
+    // shape leaks through `data` and lands in web's chat store as a
+    // stray non-message entry). Pin the count at exactly 1 to lock the
+    // dispatcher NOT to forward this event type.
+    const extUiEvents = piEvents(outbound).filter(
+      (e) => e.event === 'extension_ui_request',
+    );
+    expect(extUiEvents).toHaveLength(1);
+  });
+
+  it('14.5 raw `{type:"queue_update"}` forwards verbatim with steering+followUp arrays', () => {
+    // queue_update is consumed by web to render QueueIndicator.
+    const { manager, spawnChildren, outbound } = makeManager();
+    driveToRunning(manager, spawnChildren);
+    outbound.mockClear();
+
+    const rawQu = {
+      type: 'queue_update',
+      steering: ['s1', 's2'],
+      followUp: ['f1'],
+    };
+    spawnChildren[0]?.stdout.write(JSON.stringify(rawQu) + '\n');
+
+    const forwarded = piEvents(outbound);
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]?.event).toBe('queue_update');
+    expect(forwarded[0]?.data).toEqual({
+      steering: ['s1', 's2'],
+      followUp: ['f1'],
+    });
+  });
+
+  it('14.6 raw `{type:"agent_start"}` / `{type:"agent_end"}` / `{type:"turn_*"}` forward verbatim', () => {
+    // Catch-all: any event type we don't internally handle is
+    // forwarded as `pi/event`. Future pi releases that add new
+    // event names flow through the same path without code changes.
+    const { manager, spawnChildren, outbound } = makeManager();
+    driveToRunning(manager, spawnChildren);
+    outbound.mockClear();
+
+    for (const ev of [
+      { type: 'agent_start' },
+      { type: 'agent_end' },
+      { type: 'turn_start' },
+      { type: 'turn_end' },
+      { type: 'message_start', message: { role: 'user', content: [] } },
+    ]) {
+      spawnChildren[0]?.stdout.write(JSON.stringify(ev) + '\n');
+    }
+
+    const events = piEvents(outbound);
+    expect(events.map((e) => e.event)).toEqual([
+      'agent_start',
+      'agent_end',
+      'turn_start',
+      'turn_end',
+      'message_start',
+    ]);
+    // `message_start` carries the message nested under `message` —
+    // dispatcher strips `type`, leaves everything else intact.
+    expect(events[4]?.data).toEqual({ message: { role: 'user', content: [] } });
+  });
+
+  it('14.7 the OLD wrapped shape `{type:"event", event:"agent_settled"}` is NOT treated as a turn-end', () => {
+    // Belt-and-suspenders: a stray frame in the old wrapped shape
+    // (e.g. a test fixture left over, or a hypothetical future pi
+    // build that double-wraps) MUST NOT silently start the idle
+    // timer. Only the RAW `{type:"agent_settled"}` shape does.
+    // The wrapped shape would now be forwarded as a generic
+    // pi/event with payload `{event:"event", data:{event:"agent_settled"}}`
+    // — harmless, just unexpected by web. Pinning this prevents
+    // accidental re-introduction of the old dispatcher bug.
+    const { manager, spawnChildren, outbound } = makeManager();
+    driveToRunning(manager, spawnChildren);
+    outbound.mockClear();
+
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({ type: 'event', event: 'agent_settled' }) + '\n',
+    );
+
+    // Phase is still running — no idle transition.
+    expect(manager.getPhase()).toBe<SessionPhase>('running');
+    // The wrapped frame was forwarded verbatim as a pi/event.
+    const events = piEvents(outbound);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.event).toBe('event');
+    expect(events[0]?.data).toEqual({ event: 'agent_settled' });
+  });
+
+  it('14.8 empty data after stripping `type` still forwards cleanly (data: undefined)', () => {
+    // `{type:"agent_settled"}` is a no-payload event — stripping
+    // `type` leaves `{}`. Verify the dispatcher doesn't choke on
+    // an empty data object and emits a valid `pi/event` envelope
+    // for these cases (it's not used for agent_settled itself in
+    // practice — the internal handler catches that — but the same
+    // path applies to future no-payload events like `agent_start`).
+    const { manager, spawnChildren, outbound } = makeManager();
+    driveToRunning(manager, spawnChildren);
+    outbound.mockClear();
+
+    spawnChildren[0]?.stdout.write(JSON.stringify({ type: 'agent_start' }) + '\n');
+
+    const events = piEvents(outbound);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.event).toBe('agent_start');
+    expect(events[0]?.data).toEqual({});
   });
 });
 

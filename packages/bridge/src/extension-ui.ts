@@ -5,7 +5,10 @@
 //
 // ## Wire flow (PRD §2.4)
 //
-//   pi → bridge (stdout `event` frame with `event: "extension_ui_request"`):
+//   pi → bridge (stdout raw event with `type: "extension_ui_request"`;
+//   verified against `@earendil-works/pi-coding-agent@0.85.1`
+//   `dist/modes/rpc/rpc-mode.js:27-29` — events are NOT wrapped as
+//   `{type:"event", event:"..."}`; the `type` field IS the event name):
 //     - 4 blocking methods (select / confirm / input / editor):
 //         1. add to `pending` Map keyed by pi-side `id`
 //         2. broadcast `session_state` (with new blocked_on)
@@ -270,8 +273,12 @@ export class ExtensionUIRouter {
   // ----------------------------------------------------------------
 
   /** Handle an `extension_ui_request` event frame from pi stdout.
-   *  Called by the manager from `handlePiEvent` when
-   *  `frame.event === 'extension_ui_request'`. */
+   *  Called by the manager from `handleStdoutFrame` when the raw pi
+   *  event `{type:"extension_ui_request", ...}` is parsed — the
+   *  manager strips `type` and passes the rest as `data` alongside
+   *  a fixed `event: 'extension_ui_request'` discriminator so this
+   *  router's gating logic (`frame.event !== 'extension_ui_request'`)
+   *  keeps working unchanged from the earlier wrapped-frame era. */
   handleEventFromPi(frame: { event: string; data: unknown }): void {
     if (frame.event !== 'extension_ui_request') return;
     const data = frame.data as ExtensionUIRequestData | null | undefined;
