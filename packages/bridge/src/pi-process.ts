@@ -270,18 +270,121 @@ export interface SessionStatePayload {
  *  We only queue spawn triggers + abort; get_state goes to memory
  *  without writing, and extension_ui_response is task-05 territory.
  *
- *  W1 review follow-up: `get_messages.since` is an optional cursor
- *  forwarded verbatim to pi — the cost is one optional field plus a
- *  JSON.stringify passthrough, so we don't add a TODO comment and
- *  leave the field disabled. PRD §非目标 defers incremental
- *  recovery to M+; the field is here so a future build can flip
- *  without a DeferredCommand migration. */
+ *  ## Web-wire vs pi-wire shape (translation layer)
+ *
+ *  `DeferredCommand` mirrors the **web wire** (what the web client
+ *  sent), NOT pi's native stdin frame. The fields below carry
+ *  `content: string` for prompt / steer / follow_up because that's
+ *  what the shared `PromptPayloadSchema` / `SteerPayloadSchema` /
+ *  `FollowUpPayloadSchema` declare. When the bridge actually writes
+ *  to pi stdin (via `writeCommand` → `translateToPiWire`), the
+ *  payload field gets renamed `content` → `message` because pi's
+ *  RPC contract uses `message` (verified against pi
+ *  `dist/modes/rpc/rpc-types.d.ts`, `RpcCommand`'s `prompt` /
+ *  `steer` / `follow_up` variants — all three require
+ *  `message: string`). Writing `content` instead caused pi to read
+ *  `command.message` as `undefined` and crash with `TypeError:
+ *  Cannot read properties of undefined (reading 'startsWith')` on
+ *  the first content-bearing command.
+ *
+ *  Same caveat applies to `get_messages.since`: the field is
+ *  retained here as a web-wire passthrough (forward-compat for M+
+ *  incremental recovery per PRD §非目标), but `translateToPiWire`
+ *  drops it — pi's `get_messages` does NOT accept `since` (that's
+ *  pi's `get_entries` command); passing an unknown field is harmless
+ *  but bloats the wire, so we strip it at the bridge boundary.
+ *
+ *  The translation step is centralized in `translateToPiWire` so
+ *  the wire-shape difference is reviewable in one place and
+ *  directly unit-testable without spinning up a manager.
+ */
 type DeferredCommand =
   | { type: 'prompt'; id: string; content: string }
   | { type: 'steer'; id: string; content: string }
   | { type: 'follow_up'; id: string; content: string }
   | { type: 'get_messages'; id: string; since?: string }
   | { type: 'abort'; id: string };
+
+/** Pi's native stdin command frame for the 7 commands bridge writes.
+ *  Verified against `@earendil-works/pi-coding-agent@0.85.1`
+ *  `dist/modes/rpc/rpc-types.d.ts` — see `RpcCommand` and
+ *  `RpcExtensionUIResponse` discriminated unions. The `prompt` /
+ *  `steer` / `follow_up` variants require `message: string` (NOT
+ *  `content`); `abort` / `get_state` / `get_messages` carry just
+ *  the optional `id` for reply correlation.
+ *
+ *  Exported so unit tests can assert on the exact wire shape
+ *  without constructing a full manager; production code receives
+ *  a concrete `PiStdinCommand` value from `translateToPiWire` (the
+ *  `extension_ui_response` variants live in `extension-ui.ts` and
+ *  already match this contract by construction). */
+export type PiStdinCommand =
+  | { type: 'prompt'; id: string; message: string }
+  | { type: 'steer'; id: string; message: string }
+  | { type: 'follow_up'; id: string; message: string }
+  | { type: 'abort'; id: string }
+  | { type: 'get_state'; id: string }
+  | { type: 'get_messages'; id: string };
+
+/** Translate a bridge-internal `DeferredCommand` (web wire shape)
+ *  into pi's native stdin frame (RPC contract shape). The function
+ *  is the single source of truth for bridge → pi wire translation
+ *  on the spawn-trigger path; if a future pi release adds or
+ *  renames fields, this is the one place to update.
+ *
+ *  Translation rules (each rule is a verified mismatch between the
+ *  shared web wire and pi's RPC contract — see `DeferredCommand`
+ *  JSDoc for the matching rationale):
+ *
+ *  - `prompt` / `steer` / `follow_up`:
+ *      bridge `{content}` → pi `{message}`. Without this rename
+ *      pi reads `command.message` as `undefined` and crashes with
+ *      `TypeError: Cannot read properties of undefined (reading
+ *      'startsWith')` on the first content-bearing command
+ *      (regression observed in M3 task 06 dev; root-caused against
+ *      `rpc-types.d.ts` `RpcCommand` prompt / steer / follow_up
+ *      variants).
+ *
+ *  - `abort`:
+ *      identity translation (no fields to rename); the bridge's
+ *      internal shape already matches pi's contract.
+ *
+ *  - `get_messages`:
+ *      bridge carries an optional `since` cursor (M3 doesn't use
+ *      it — PRD §非目标 defers to M+ — but the passthrough was
+ *      retained for forward compat); pi's `get_messages` does NOT
+ *      accept `since` (that's `get_entries`'s field), so we drop
+ *      it. The cursor survives in the `DeferredCommand` queue so
+ *      a future M+ build that switches to `get_entries` won't
+ *      need to re-touch the queue type.
+ *
+ *  - `get_state`:
+ *      only constructed by the bridge handshake writer; included
+ *      in the `PiStdinCommand` union for completeness but not
+ *      reachable through `DeferredCommand` (which holds web-
+ *      originated commands only).
+ *
+ *  Exported for direct unit-test coverage. Production code path:
+ *  `writeCommand` → `translateToPiWire` → JSON.stringify → stdin.
+ *  `extension-ui.ts` writes its own three-state shape directly
+ *  (no translation needed — see `PiExtensionUIResponse` JSDoc). */
+export function translateToPiWire(cmd: DeferredCommand): PiStdinCommand {
+  switch (cmd.type) {
+    case 'prompt':
+      return { type: 'prompt', id: cmd.id, message: cmd.content };
+    case 'steer':
+      return { type: 'steer', id: cmd.id, message: cmd.content };
+    case 'follow_up':
+      return { type: 'follow_up', id: cmd.id, message: cmd.content };
+    case 'abort':
+      return { type: 'abort', id: cmd.id };
+    case 'get_messages':
+      // Drop `since`: pi's `get_messages` doesn't accept it (that's
+      // `get_entries`); unknown fields are harmless but the bridge
+      // shouldn't forward them.
+      return { type: 'get_messages', id: cmd.id };
+  }
+}
 
 export interface PiProcessOptions {
   /** Pi's agent directory (where sessions / auth.json live). The
@@ -1600,15 +1703,25 @@ export class PiProcessManager {
   /** JSON-line encode + write to pi's stdin. If the child is dead
    *  (race between command arrival and exit) we just log and drop —
    *  §2.7 spawn triggers will re-spawn on the next command. We do
-   *  NOT queue writes for a dead child. */
+   *  NOT queue writes for a dead child.
+   *
+   *  Translation step: `DeferredCommand` carries the web-wire field
+   *  names (`content`, optional `since`), but pi's stdin expects
+   *  pi-native names (`message`, no `since`). `translateToPiWire`
+   *  performs the rename + drop before JSON.stringify — see that
+   *  function's JSDoc for the exact rules and the regression
+   *  rationale (writing `content` directly here was the M3 task
+   *  06 root cause of pi's `TypeError: Cannot read properties of
+   *  undefined (reading 'startsWith')` on first prompt). */
   private writeCommand(cmd: DeferredCommand): void {
     const child = this.child;
     if (child === null) {
       logger.warn(`dropping ${cmd.type} — no live child`);
       return;
     }
+    const piCmd = translateToPiWire(cmd);
     try {
-      child.stdin.write(JSON.stringify(cmd) + '\n');
+      child.stdin.write(JSON.stringify(piCmd) + '\n');
     } catch (err) {
       logger.warn(`stdin write failed for ${cmd.type}: ${(err as Error).message}`);
     }

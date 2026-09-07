@@ -47,23 +47,30 @@ import { EnvelopeBasePi } from './envelope-base.js';
 // Command payloads (6, web → bridge)
 // ---------------------------------------------------------------------------
 
-/** Prompt payload — normal user-typed message. Mirrors pi's `prompt`
- *  RPC. The bridge forwards `content` verbatim to pi's stdin. */
+/** Prompt payload — normal user-typed message. The bridge receives
+ *  `content` from web and translates it to pi's native `message`
+ *  field at the bridge→pi boundary (see `translateToPiWire` in
+ *  `packages/bridge/src/pi-process.ts`). The shared web wire keeps
+ *  `content` for cross-transport stability (web sends `content`,
+ *  bridge translates to `message` before writing to pi stdin). */
 export const PromptPayloadSchema = z.object({
   content: z.string(),
 });
 export type PromptPayload = z.infer<typeof PromptPayloadSchema>;
 
-/** Steer payload — mid-run insert. The bridge forwards `content` to pi's
- *  `steer` RPC, which inserts the text into the active turn. */
+/** Steer payload — mid-run insert. The bridge translates `content`
+ *  to pi's `message` field at the bridge→pi boundary (see
+ *  `translateToPiWire`). Same cross-transport rationale as
+ *  `PromptPayload`. */
 export const SteerPayloadSchema = z.object({
   content: z.string(),
 });
 export type SteerPayload = z.infer<typeof SteerPayloadSchema>;
 
-/** FollowUp payload — queued message. The bridge forwards `content` to
- *  pi's `follow_up` RPC, which enqueues the message until the current
- *  turn settles. */
+/** FollowUp payload — queued message. The bridge translates
+ *  `content` to pi's `message` field at the bridge→pi boundary
+ *  (see `translateToPiWire`). Same cross-transport rationale as
+ *  `PromptPayload`. */
 export const FollowUpPayloadSchema = z.object({
   content: z.string(),
 });
@@ -74,10 +81,13 @@ export type FollowUpPayload = z.infer<typeof FollowUpPayloadSchema>;
 export const AbortPayloadSchema = z.object({});
 export type AbortPayload = z.infer<typeof AbortPayloadSchema>;
 
-/** GetMessages payload — `since` cursor (optional). Absence means
- *  full snapshot; presence means "return messages strictly after `since`"
- *  (pi's native semantics). The bridge translates to pi's
- *  `get_messages` RPC. */
+/** GetMessages payload — `since` cursor (optional). The web wire
+ *  retains `since` for an M+ look-ahead (where it will switch to
+ *  pi's `get_entries` command, the only RPC that accepts `since`
+ *  — pi's `get_messages` does NOT carry this field); today
+ *  `translateToPiWire` drops it at the bridge→pi boundary so the
+ *  shared schema stays forward-compatible without forcing a wire
+ *  break before that switchover. Absence means full snapshot. */
 export const GetMessagesPayloadSchema = z.object({
   since: z.string().optional(),
 });

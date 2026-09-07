@@ -33,6 +33,7 @@ import {
   PiProcessManager,
   SIGKILL_DELAY_MS,
   normalizePiError,
+  translateToPiWire,
   type PiChild,
   type PiProcessOptions,
   type SessionStatePayload,
@@ -253,11 +254,31 @@ describe('PiProcessManager state machine (PRD §2.3)', () => {
     // `find` rather than indexing because the handshake line is
     // also present — pin the prompt by its id to avoid a brittle
     // positional assertion.
+    //
+    // Pi's RPC schema uses `message` for prompt/steer/follow_up,
+    // NOT `content` (the web-wire field name). The bridge's
+    // translation layer (`translateToPiWire`) renames `content` →
+    // `message` at write time; the field on stdin MUST be `message`
+    // or pi reads undefined and crashes with TypeError on the
+    // first content-bearing command. The negative assertion
+    // (`'content' not in promptWrite`) guards against a regression
+    // where someone reverts the rename — `toMatchObject` would
+    // pass with both `message` AND `content` set, which would
+    // also be wrong.
     const writes = spawnChildren[0]?.stdinLines ?? [];
     const promptWrite = writes
-      .map((l) => JSON.parse(l) as { type?: string; id?: string; content?: string })
+      .map(
+        (l) =>
+          JSON.parse(l) as {
+            type?: string;
+            id?: string;
+            content?: string;
+            message?: string;
+          },
+      )
       .find((w) => w.type === 'prompt');
-    expect(promptWrite).toMatchObject({ id: 'pi-p1', content: 'first prompt' });
+    expect(promptWrite).toMatchObject({ id: 'pi-p1', message: 'first prompt' });
+    expect(promptWrite).not.toHaveProperty('content');
 
     // S-6 follow-up: after the handshake + flush, stdin holds
     // exactly 2 lines — the bridge-initiated get_state handshake +
@@ -1751,13 +1772,26 @@ describe('reply_to pairing + snapshot envelope (W2/W3 review)', () => {
     }
   });
 
-  it('8a.8 web get_messages with since cursor: the since value is forwarded to pi (W1 review)', () => {
-    // W1 review follow-up: PRD §非目标 lists incremental recovery
-    // (since cursor) as deferred to M+, but the passthrough cost
-    // is one optional field — we accept it now so a future build
-    // can flip on `since` without re-touching the manager. The
-    // test pins the wire shape: the bridge → pi command carries
-    // the same `since` value the web envelope carried.
+  it('8a.8 web get_messages with since cursor: the since value is DROPPED at the bridge→pi boundary (translation layer)', () => {
+    // Translation-layer fix (was previously a W1 review follow-up
+    // that asserted the bridge passes `since` verbatim to pi).
+    // Verified against pi `dist/modes/rpc/rpc-types.d.ts`
+    // `RpcCommand` discriminated union: `get_messages` accepts
+    // ONLY `{ type, id? }` — `since` is `get_entries`'s field, not
+    // `get_messages`'s. Passing the unknown field through was
+    // harmless (pi ignores unknown fields) but the wire-shape
+    // mismatch was a bug source waiting to happen (a future pi
+    // build could reject unknown fields and silently break the
+    // bridge). The bridge now drops `since` at the translation
+    // boundary; the cursor survives on `DeferredCommand` so an
+    // M+ build that switches to `get_entries` won't need to
+    // re-touch the queue type (PRD §非目标 defers incremental
+    // recovery to M+).
+    //
+    // The positive assertion (`since` is NOT in the wire frame)
+    // guards against a future regression where someone re-adds
+    // the passthrough and the bridge silently bloats every
+    // get_messages frame.
     const { manager, spawnChildren } = makeManager();
     manager.start();
     manager.handleEnvelope({
@@ -1771,15 +1805,16 @@ describe('reply_to pairing + snapshot envelope (W2/W3 review)', () => {
       JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
     );
 
-    // The get_messages should land on stdin with the since field
-    // intact.
+    // The get_messages lands on stdin WITHOUT the since field —
+    // it would only re-appear if the bridge switched to pi's
+    // `get_entries` command (deferred to M+ per PRD §非目标).
     const writes = spawnChildren[0]?.stdinLines ?? [];
     const getMessagesWrite = writes
       .map((l) => JSON.parse(l) as { type?: string; since?: string; id?: string })
       .find((w) => w.type === 'get_messages');
     expect(getMessagesWrite).toBeDefined();
-    expect(getMessagesWrite?.since).toBe('2026-04-04T00:00:00Z');
     expect(getMessagesWrite?.id).toBe('gm-since');
+    expect(getMessagesWrite).not.toHaveProperty('since');
   });
 });
 
@@ -2624,6 +2659,457 @@ describe('§6.2 exited semantics — get_messages triggers spawn with --session'
     expect(manager.getSpawnCount()).toBe(0);
     expect(spawnChildren).toHaveLength(0);
     expect(manager.getPhase()).toBe<SessionPhase>('exited');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Pi stdin wire schema fidelity (bridge → pi translation layer)
+//
+// The bridge writes 7 command shapes to pi's stdin, derived from the
+// shared web wire via the `translateToPiWire` translation layer (and
+// the extension UI router's three-state shape). This section pins the
+// exact wire shape of every command bridge writes, locking down the
+// field-name and field-presence contract against future drift.
+//
+// Source of truth: `@earendil-works/pi-coding-agent@0.85.1`
+// `dist/modes/rpc/rpc-types.d.ts` (`RpcCommand` and
+// `RpcExtensionUIResponse` discriminated unions). Any change to a
+// pi version that adds/renames fields MUST be mirrored here (and in
+// `translateToPiWire` for the spawn-trigger path).
+//
+// Why this section exists (regression context):
+//   M3 task 06 root-caused a `TypeError: Cannot read properties of
+//   undefined (reading 'startsWith')` from pi's prompt handler when
+//   the bridge wrote `content` instead of pi's `message` field. The
+//   other 6 commands went un-asserted for the same translation bug;
+//   these tests catch the next one before it ships.
+//
+// Style: every test sends a web envelope → triggers a spawn-trigger
+// → completes the handshake → asserts the stdin frame's shape
+// (positive `toEqual` for the entire frame, NOT `toMatchObject`, so
+// a regression that adds an unexpected field fails loudly).
+// ---------------------------------------------------------------------------
+
+describe('Pi stdin wire schema fidelity (bridge → pi translation layer)', () => {
+  /** Helper: drive the manager to `running` and return the stdin lines.
+   *  Sends a prompt, completes the handshake, then returns the lines
+   *  recorded on stdin so per-command assertions can `.find` the frame
+   *  they're interested in. Returns `Record<string, unknown>[]` so the
+   *  per-test `.find` callbacks can safely narrow via `as` without
+   *  tripping the `no-unsafe-return` lint rule on `JSON.parse`'s
+   *  `any` return. */
+  function runCommandAndCaptureStdin(
+    manager: PiProcessManager,
+    spawnChildren: FakeChild[],
+    run: () => void,
+  ): Record<string, unknown>[] {
+    manager.start();
+    run();
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
+    );
+    return (spawnChildren[0]?.stdinLines ?? []).map((l) => JSON.parse(l) as Record<string, unknown>);
+  }
+
+  it('13.1 prompt wire frame matches pi RpcCommand (message, no content)', () => {
+    // Pi's `prompt` requires `message: string`. The bridge must
+    // rename `content` → `message` at the translation boundary;
+    // sending `content` causes pi's prompt handler to read
+    // `command.message` as undefined and crash.
+    const { manager, spawnChildren } = makeManager();
+    const writes = runCommandAndCaptureStdin(manager, spawnChildren, () => {
+      manager.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'prompt',
+        id: 'pi-prompt-1',
+        payload: { content: '你好' },
+      });
+    });
+    const promptWrite = writes.find(
+      (w) => (w as { type?: string }).type === 'prompt',
+    ) as { type: string; id: string; message: string; content?: string };
+    expect(promptWrite).toEqual({
+      type: 'prompt',
+      id: 'pi-prompt-1',
+      message: '你好',
+    });
+    // Negative assertion: the web-wire field `content` MUST NOT
+    // leak through to the pi wire frame (would cause pi to read
+    // undefined + crash). The structural `toEqual` above would
+    // also catch this, but the explicit assertion surfaces the
+    // intent at failure time.
+    expect(promptWrite).not.toHaveProperty('content');
+  });
+
+  it('13.2 steer wire frame matches pi RpcCommand (message, no content)', () => {
+    // Same translation as prompt — see 13.1.
+    const { manager, spawnChildren } = makeManager();
+    const writes = runCommandAndCaptureStdin(manager, spawnChildren, () => {
+      manager.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'steer',
+        id: 'pi-steer-1',
+        payload: { content: 'pivot now' },
+      });
+    });
+    const steerWrite = writes.find(
+      (w) => (w as { type?: string }).type === 'steer',
+    ) as { type: string; id: string; message: string };
+    expect(steerWrite).toEqual({
+      type: 'steer',
+      id: 'pi-steer-1',
+      message: 'pivot now',
+    });
+    expect(steerWrite).not.toHaveProperty('content');
+  });
+
+  it('13.3 follow_up wire frame matches pi RpcCommand (message, no content)', () => {
+    // Same translation as prompt — see 13.1.
+    const { manager, spawnChildren } = makeManager();
+    const writes = runCommandAndCaptureStdin(manager, spawnChildren, () => {
+      manager.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'follow_up',
+        id: 'pi-fu-1',
+        payload: { content: 'after that' },
+      });
+    });
+    const followUpWrite = writes.find(
+      (w) => (w as { type?: string }).type === 'follow_up',
+    ) as { type: string; id: string; message: string };
+    expect(followUpWrite).toEqual({
+      type: 'follow_up',
+      id: 'pi-fu-1',
+      message: 'after that',
+    });
+    expect(followUpWrite).not.toHaveProperty('content');
+  });
+
+  it('13.4 abort wire frame matches pi RpcCommand (id only)', () => {
+    // Pi's `abort` carries only `{ type, id? }`. The bridge's
+    // DeferredCommand shape already matches; assert the structural
+    // shape on stdin to lock the contract.
+    //
+    // Note: abort is NOT a spawn-trigger (PRD §2.7 — only prompt /
+    // steer / follow_up / get_messages trigger spawn in exited).
+    // The test bootstraps a spawn via a throwaway prompt so the
+    // manager reaches `running` (where abort actually writes);
+    // mirrors the pattern in 5.4.
+    const { manager, spawnChildren } = makeManager();
+    runCommandAndCaptureStdin(manager, spawnChildren, () => {
+      manager.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'prompt',
+        id: 'pi-bootstrap-abort',
+        payload: { content: 'bootstrap' },
+      });
+    });
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'abort',
+      id: 'pi-abort-1',
+      payload: {},
+    });
+    const abortWrite = (spawnChildren[0]?.stdinLines ?? [])
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((w) => (w as { type?: string }).type === 'abort');
+    expect(abortWrite).toEqual({ type: 'abort', id: 'pi-abort-1' });
+  });
+
+  it('13.5 get_messages wire frame matches pi RpcCommand (id only, no since)', () => {
+    // Pi's `get_messages` accepts ONLY `{ type, id? }`. The bridge
+    // drops the optional `since` cursor at the translation boundary
+    // because pi's `get_messages` doesn't carry it (that's
+    // `get_entries`'s field). Forwarding the unknown field would
+    // either be silently ignored today or break a future pi build
+    // that rejects unknown fields.
+    const { manager, spawnChildren } = makeManager();
+    const writes = runCommandAndCaptureStdin(manager, spawnChildren, () => {
+      manager.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'get_messages',
+        id: 'pi-gm-1',
+        payload: { since: 'cursor-ignored' },
+      });
+    });
+    const getMessagesWrite = writes.find(
+      (w) => (w as { type?: string }).type === 'get_messages',
+    );
+    expect(getMessagesWrite).toEqual({ type: 'get_messages', id: 'pi-gm-1' });
+  });
+
+  it('13.6 extension_ui_response (cancelled) wire frame matches pi RpcExtensionUIResponse', () => {
+    // The extension UI router already writes a pi-native shape;
+    // this test pins the exact `{type, id, cancelled: true}` form
+    // (NO `value`, NO `confirmed`) so a future refactor that adds
+    // a redundant field trips the assertion. The flow:
+    //   1. Drive manager to running via the runCommandAndCaptureStdin
+    //      helper (a throwaway prompt triggers spawn + handshake).
+    //   2. Seed a pending extension_ui_request via pi event stdout.
+    //   3. Send the cancelled response, observe the wire frame.
+    const { manager, spawnChildren } = makeManager();
+    runCommandAndCaptureStdin(manager, spawnChildren, () => {
+      manager.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'prompt',
+        id: 'pi-bootstrap',
+        payload: { content: 'bootstrap' },
+      });
+    });
+    // Seed the pending request with method='confirm' (so the
+    // router has method context to pick the cancelled/confirmed/value
+    // translation branch).
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({
+        type: 'event',
+        event: 'extension_ui_request',
+        data: {
+          method: 'confirm',
+          id: 'extui-r1',
+          title: 'go?',
+          message: 'do it',
+        },
+      }) + '\n',
+    );
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'extension_ui_response',
+      id: 'web-cancel-1',
+      payload: { request_id: 'extui-r1', cancelled: true },
+    });
+    const cancelWrite = (spawnChildren[0]?.stdinLines ?? [])
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((w) => (w as { type?: string }).type === 'extension_ui_response') as {
+        type: string;
+        id: string;
+        cancelled?: boolean;
+        confirmed?: boolean;
+        value?: string;
+      };
+    expect(cancelWrite).toEqual({
+      type: 'extension_ui_response',
+      id: 'extui-r1',
+      cancelled: true,
+    });
+    expect(cancelWrite).not.toHaveProperty('confirmed');
+    expect(cancelWrite).not.toHaveProperty('value');
+  });
+
+  it('13.7 extension_ui_response (confirmed) wire frame matches pi RpcExtensionUIResponse', () => {
+    // Pi's `extension_ui_response` for `confirm` is
+    // `{ type, id, confirmed: boolean }`. The router picks this
+    // shape based on the original request's `method`. The test
+    // pins that for a confirm request, only `confirmed` survives
+    // (no `value` field — even when web sends one).
+    const { manager, spawnChildren } = makeManager();
+    // Bootstrap a spawn via a throwaway prompt (mirrors 13.6) so
+    // the manager is in `running` before we seed the pending
+    // request and send the response.
+    runCommandAndCaptureStdin(manager, spawnChildren, () => {
+      manager.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'prompt',
+        id: 'pi-bootstrap-confirm',
+        payload: { content: 'bootstrap' },
+      });
+    });
+    // Seed the pending request with method='confirm'.
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({
+        type: 'event',
+        event: 'extension_ui_request',
+        data: {
+          method: 'confirm',
+          id: 'extui-confirm-r',
+          title: 'proceed?',
+          message: 'yes or no',
+        },
+      }) + '\n',
+    );
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'extension_ui_response',
+      id: 'web-confirm-1',
+      payload: { request_id: 'extui-confirm-r', cancelled: false, value: true },
+    });
+    const confirmWrite = (spawnChildren[0]?.stdinLines ?? [])
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((w) => (w as { type?: string }).type === 'extension_ui_response') as {
+        type: string;
+        id: string;
+        confirmed?: boolean;
+        value?: string;
+      };
+    expect(confirmWrite).toEqual({
+      type: 'extension_ui_response',
+      id: 'extui-confirm-r',
+      confirmed: true,
+    });
+    expect(confirmWrite).not.toHaveProperty('value');
+  });
+
+  it('13.8 extension_ui_response (value) wire frame matches pi RpcExtensionUIResponse', () => {
+    // Pi's `extension_ui_response` for select/input/editor is
+    // `{ type, id, value: string }`. The test pins that for a
+    // select request, only `value: string` survives (no
+    // `confirmed` field — even when web sends a boolean).
+    const { manager, spawnChildren } = makeManager();
+    // Bootstrap a spawn via a throwaway prompt (mirrors 13.6).
+    runCommandAndCaptureStdin(manager, spawnChildren, () => {
+      manager.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'prompt',
+        id: 'pi-bootstrap-select',
+        payload: { content: 'bootstrap' },
+      });
+    });
+    spawnChildren[0]?.stdout.write(
+      JSON.stringify({
+        type: 'event',
+        event: 'extension_ui_request',
+        data: {
+          method: 'select',
+          id: 'extui-select-r',
+          title: 'pick one',
+          options: ['a', 'b', 'c'],
+        },
+      }) + '\n',
+    );
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'extension_ui_response',
+      id: 'web-select-1',
+      payload: { request_id: 'extui-select-r', cancelled: false, value: 'b' },
+    });
+    const selectWrite = (spawnChildren[0]?.stdinLines ?? [])
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((w) => (w as { type?: string }).type === 'extension_ui_response') as {
+        type: string;
+        id: string;
+        value?: string;
+        confirmed?: boolean;
+      };
+    expect(selectWrite).toEqual({
+      type: 'extension_ui_response',
+      id: 'extui-select-r',
+      value: 'b',
+    });
+    expect(selectWrite).not.toHaveProperty('confirmed');
+  });
+
+  it('13.9 get_state (handshake) wire frame matches pi RpcCommand (id only)', () => {
+    // The bridge-initiated handshake get_state — written by
+    // `writeHandshakeGetState` synchronously after spawn. Pi's
+    // `get_state` accepts `{ type, id? }`; the bridge always
+    // supplies an id (for reply correlation). Assert the
+    // structural shape (no surprise fields).
+    const { manager, spawnChildren } = makeManager();
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'pi-trigger-1',
+      payload: { content: 'trigger spawn' },
+    });
+    const handshakeWrite = (spawnChildren[0]?.stdinLines ?? [])
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((w) => (w as { type?: string }).type === 'get_state') as {
+        type: string;
+        id: string;
+      };
+    expect(typeof handshakeWrite.id).toBe('string');
+    expect(handshakeWrite.id.length).toBeGreaterThan(0);
+    expect(handshakeWrite).toEqual({
+      type: 'get_state',
+      id: handshakeWrite.id,
+    });
+  });
+
+  it('13.10 translateToPiWire direct: every DeferredCommand variant maps to its pi-native shape', () => {
+    // Direct unit-test coverage for the translator function
+    // (exported from pi-process.ts). This locks the function in
+    // isolation — a regression in writeCommand or anywhere else
+    // along the bridge→pi path can be localized to one of two
+    // places: the translator (this test) or the integration with
+    // writeCommand (the 13.1-13.9 tests).
+    //
+    // Negative-assertion policy mirrors 13.1-13.5: each `toEqual`
+    // is followed by an explicit `not.toHaveProperty` for the
+    // renamed / dropped field so the intent surfaces at failure
+    // time even though the structural `toEqual` would also catch
+    // the regression.
+    const promptWire = translateToPiWire({ type: 'prompt', id: 'p1', content: 'm' });
+    expect(promptWire).toEqual({
+      type: 'prompt',
+      id: 'p1',
+      message: 'm',
+    });
+    // Mirror 13.1: web-wire `content` MUST NOT leak through —
+    // translator renames `content` → `message`.
+    expect(promptWire).not.toHaveProperty('content');
+
+    const steerWire = translateToPiWire({ type: 'steer', id: 's1', content: 'm' });
+    expect(steerWire).toEqual({
+      type: 'steer',
+      id: 's1',
+      message: 'm',
+    });
+    // Mirror 13.2: web-wire `content` MUST NOT leak through.
+    expect(steerWire).not.toHaveProperty('content');
+
+    const followUpWire = translateToPiWire({
+      type: 'follow_up',
+      id: 'f1',
+      content: 'm',
+    });
+    expect(followUpWire).toEqual({
+      type: 'follow_up',
+      id: 'f1',
+      message: 'm',
+    });
+    // Mirror 13.3: web-wire `content` MUST NOT leak through.
+    expect(followUpWire).not.toHaveProperty('content');
+
+    // Mirror 13.4: abort is id-only; no negative-property check
+    // added because 13.4 doesn't have one (input shape already
+    // matches output shape, nothing to rename or drop).
+    expect(translateToPiWire({ type: 'abort', id: 'a1' })).toEqual({
+      type: 'abort',
+      id: 'a1',
+    });
+
+    // Mirror 13.5: get_messages is id-only without `since`; same
+    // rationale as abort above.
+    expect(translateToPiWire({ type: 'get_messages', id: 'g1' })).toEqual({
+      type: 'get_messages',
+      id: 'g1',
+    });
+
+    // `since` MUST be dropped — pi's get_messages doesn't carry it
+    // (that's `get_entries`'s field).
+    const getMessagesWithSinceWire = translateToPiWire({
+      type: 'get_messages',
+      id: 'g2',
+      since: 'cursor',
+    });
+    expect(getMessagesWithSinceWire).toEqual({ type: 'get_messages', id: 'g2' });
+    // Negative assertion: web-wire `since` MUST NOT leak through
+    // (complements the structural `toEqual` above by surfacing
+    // the explicit drop at failure time).
+    expect(getMessagesWithSinceWire).not.toHaveProperty('since');
   });
 });
 
