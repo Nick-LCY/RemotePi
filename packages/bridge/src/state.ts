@@ -49,12 +49,19 @@
 //
 // Every `saveStateFile` call writes to a `.tmp` sibling first, then
 // `rename`s over the destination. The two operations are
-// `fs.writeFileSync` + `fs.renameSync`; on POSIX `rename` is atomic
+// `fs.writeFileSync` + `fs.renameSync`; this relies on POSIX rename
+// replacement semantics (Linux), and on POSIX `rename` being atomic
 // for files on the same filesystem (the tmp + destination always
-// share a parent directory, so this holds by construction). This
-// prevents a crash mid-write from leaving the file in a half-written
-// state — the next read either sees the previous good copy or the
-// complete new copy, never a torn frame.
+// share a parent directory, so this holds by construction).
+//
+// Concurrency boundary: atomicity is a single-writer, single-process
+// guarantee. The bridge assumes one bridge process writes a given
+// XDG state file; the fixed `.tmp` sibling is not protected against
+// two bridge processes sharing the same XDG root. Inter-process
+// locking is deliberately outside this task's scope. This prevents
+// a crash mid-write from leaving the file in a half-written state —
+// the next read either sees the previous good copy or the complete
+// new copy, never a torn frame.
 //
 // ## WorkDirStore rollback semantics
 //
@@ -239,7 +246,14 @@ export function loadStateFile(statePath: string): string[] {
  *  The payload is built from the provided work_dirs + a literal
  *  `schema_version: STATE_SCHEMA_VERSION` field. The JSON is
  *  pretty-printed with 2-space indentation so an operator who opens
- *  the file in an editor can read it without jq. */
+ *  the file in an editor can read it without jq.
+ *
+ *  Atomicity is a single-writer, single-process guarantee: the bridge
+ *  assumes one bridge process writes this state file. The fixed `.tmp`
+ *  sibling is not protected against two bridge processes sharing an XDG
+ *  root; inter-process locking is outside this task's scope.
+ *
+ *  This relies on POSIX rename replacement semantics (Linux). */
 export function saveStateFile(statePath: string, workDirs: readonly string[]): void {
   const payload: StateFile = {
     schema_version: STATE_SCHEMA_VERSION,
@@ -259,15 +273,11 @@ export function saveStateFile(statePath: string, workDirs: readonly string[]): v
   // into a freshly-created parent directory and then renamed
   // across that same directory is always atomic.
   mkdirSync(path.dirname(statePath), { recursive: true });
-  writeFileSync(tmpPath, json, 'utf8');
-  // Best-effort tmp cleanup on rename failure: if `renameSync` throws
-  // (e.g. read-only filesystem, missing parent), we want to delete
-  // the orphan tmp file rather than leaving it lying around for the
-  // next save to silently overwrite. We re-throw the original
-  // rename error after cleanup so the caller still sees the real
-  // failure; a leaked tmp file is recoverable on the next save,
-  // but a masked rename error would hide the actual problem.
+  // Keep both phases inside one cleanup guard. A write can create a
+  // partial tmp file and then throw (ENOSPC, quota, or a short write),
+  // so protecting only rename would leak that file.
   try {
+    writeFileSync(tmpPath, json, 'utf8');
     renameSync(tmpPath, statePath);
   } catch (err) {
     if (existsSync(tmpPath)) {
@@ -339,12 +349,12 @@ export function validateWorkDir(workDir: string): void {
  *          migration happened.
  *       4. Return `[work_dir]`.
  *   - If `state.json` is missing AND `bridgeConfig.work_dir` is
- *     absent / empty (the schema permits empty strings, see M3
- *     `BridgeConfigSchema`) → return `[]` and write a fresh
- *     `state.json` containing `[]`. The empty state is the
- *     "post-migration, user-hasn't-added-anything-yet" baseline;
- *     writing it to disk means subsequent starts don't have to
- *     re-evaluate the "should I migrate?" question.
+ *     absent / empty (defensive input handling; M3's schema uses
+ *     `min(1)` and therefore cannot produce an empty string) → return
+ *     `[]` and write a fresh `state.json` containing `[]`. The empty
+ *     state is the "post-migration, user-hasn't-added-anything-yet"
+ *     baseline; writing it to disk means subsequent starts don't have
+ *     to re-evaluate the "should I migrate?" question.
  *
  *  `bridge.json` is NEVER written. PRD §2.1: "不回写 bridge.json
  *  （用户手编配置不被运行时污染）". The migration is a one-way
@@ -357,20 +367,26 @@ export function migrateFromBridgeConfig(
   log: Logger = logger,
 ): string[] {
   // Fast path: state.json already exists → no migration, just load.
-  // The check is "does the file exist at all" — we do NOT call
-  // `loadStateFile` first because that would re-parse + re-validate
-  // for a path we may not even need to follow. The "is it valid?"
-  // check happens in `loadStateFile` immediately after.
+  // The file is parsed and shape-validated, then every persisted path
+  // is checked with the M3 three-piece directory validation before
+  // start() is allowed to continue.
   if (existsSync(statePath)) {
-    return loadStateFile(statePath);
+    const workDirs = loadStateFile(statePath);
+    // A persisted state file may have been hand-edited or may point
+    // at a directory that disappeared since the previous run. Apply
+    // the same M3 three-piece check before starting the bridge.
+    for (const workDir of workDirs) {
+      validateWorkDir(workDir);
+    }
+    return workDirs;
   }
 
   // Migration path: state.json missing, bridge.json has a work_dir.
-  // Empty-string work_dir is the M3 schema-valid "no work_dir
-  // configured" case — treat it the same as absent and start with
-  // an empty list (no migration log line because there's nothing
-  // to migrate).
   const workDir = bridgeConfig.work_dir;
+  // Empty strings cannot pass M3's `BridgeConfigSchema.work_dir`
+  // `min(1)` check. This is defensive input handling for callers that
+  // construct a BridgeConfig-like value programmatically (or for a
+  // future schema relaxation), not an M3 schema-valid case.
   if (workDir === undefined || workDir === '') {
     // No migration to do, but write an empty state file so the
     // "state.json exists?" check on subsequent starts returns

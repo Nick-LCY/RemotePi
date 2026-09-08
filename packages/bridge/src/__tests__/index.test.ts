@@ -44,9 +44,7 @@ class NoopSocket implements WebSocketLike {
 /** Real fs helper: write a config JSON file into a fresh tmpdir and
  *  return both the dir (for cleanup) and the file path. Used by every
  *  test that needs a working config — no fs mocking required. */
-function writeConfig(
-  body: Record<string, unknown>,
-): { dir: string; path: string } {
+function writeConfig(body: Record<string, unknown>): { dir: string; path: string } {
   const dir = mkdtempSync(path.join(tmpdir(), 'remotepi-bridge-test-'));
   const p = path.join(dir, 'bridge.json');
   writeFileSync(p, JSON.stringify(body));
@@ -116,6 +114,13 @@ afterEach(() => {
     process.env['XDG_CONFIG_HOME'] = originalXdgConfigHome;
   }
 });
+
+/** Create and register a fresh directory for work_dir/state fixtures. */
+function makeTmpdir(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'remotepi-bridge-fixture-'));
+  createdDirs.push(dir);
+  return dir;
+}
 
 /** Redirect `XDG_CONFIG_HOME` to a fresh empty tmpdir so that
  *  `resolveDefaultConfigPath()` deterministically resolves to a
@@ -261,13 +266,7 @@ describe('start (config-driven entry)', () => {
     // Mixing in junk flags must not change the resolved config.
     const result = start({
       createSocket,
-      argv: [
-        '--systemd-foo=bar',
-        '--whatever',
-        '--config',
-        configPath,
-        '-D',
-      ],
+      argv: ['--systemd-foo=bar', '--whatever', '--config', configPath, '-D'],
     });
     expect(result.workerUrl).toBe('wss://unknown-flag.test/bridge');
     expect(result.token).toBe(token);
@@ -296,9 +295,7 @@ describe('start (config-driven entry)', () => {
         argv: ['--config', '-D'],
       }),
     ).toThrow(/bridge: parse_failed/);
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/^bridge: parse_failed:/),
-    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/^bridge: parse_failed:/));
   });
 
   it('start() stops scanning for --config at the -- argument terminator', () => {
@@ -318,9 +315,7 @@ describe('start (config-driven entry)', () => {
         argv: ['--', '--config', '/tmp/somewhere.json'],
       }),
     ).toThrow(/bridge: parse_failed/);
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/^bridge: parse_failed:/),
-    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/^bridge: parse_failed:/));
   });
 
   it('start() throws when the config file is missing', () => {
@@ -338,9 +333,7 @@ describe('start (config-driven entry)', () => {
     ).toThrow(/bridge: parse_failed/);
     // The friendly message must have been logged (matches the format
     // the auto-run entry uses).
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/^bridge: parse_failed:/),
-    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/^bridge: parse_failed:/));
   });
 
   it('start() throws when the config is missing worker_url', () => {
@@ -351,12 +344,8 @@ describe('start (config-driven entry)', () => {
       work_dir: '/tmp',
       token: 'z'.repeat(32),
     });
-    expect(() =>
-      start({ createSocket, argv: [], configPath }),
-    ).toThrow(/bridge: missing_field/);
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/^bridge: missing_field:/),
-    );
+    expect(() => start({ createSocket, argv: [], configPath })).toThrow(/bridge: missing_field/);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/^bridge: missing_field:/));
   });
 
   it('M2-era --worker-url flag has no effect (config file wins)', () => {
@@ -512,9 +501,7 @@ describe('crash handlers (installed at module load)', () => {
     // by Node. We pass a real Error so we can assert the stack landed
     // in the log, and we use `Promise.reject(reason)` only as the
     // second arg (matching Node's signature) — the handler ignores it.
-    const exitSpy = vi
-      .spyOn(process, 'exit')
-      .mockImplementation(() => undefined as never);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
 
     const reason = new Error('async boom from a stray promise');
     process.emit('unhandledRejection', reason, Promise.reject(reason));
@@ -523,11 +510,10 @@ describe('crash handlers (installed at module load)', () => {
     // and the underlying message — the `stringContaining` form lets us
     // assert "reason made it into the line" without depending on the
     // exact stack-string format (which V8 may vary).
-    const errorCalls = errorSpy.mock.calls.map((args) =>
-      args.map((a) => String(a)).join(' '),
-    );
+    const errorCalls = errorSpy.mock.calls.map((args) => args.map((a) => String(a)).join(' '));
     const matched = errorCalls.some(
-      (line) => line.includes('unhandledRejection') && line.includes('async boom from a stray promise'),
+      (line) =>
+        line.includes('unhandledRejection') && line.includes('async boom from a stray promise'),
     );
     expect(matched).toBe(true);
 
@@ -559,9 +545,7 @@ describe('crash handlers (installed at module load)', () => {
       configPath,
     });
 
-    const exitSpy = vi
-      .spyOn(process, 'exit')
-      .mockImplementation(() => undefined as never);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
     const stopSpy = vi.spyOn(result.client, 'stop');
 
     // Drive the handler synthetically. Real Node `uncaughtException`
@@ -573,9 +557,7 @@ describe('crash handlers (installed at module load)', () => {
     // 1. The error was logged with the stack (or at least the message,
     //    if V8's stack format varies — we accept either, but the
     //    `uncaughtException` tag MUST be present).
-    const errorCalls = errorSpy.mock.calls.map((args) =>
-      args.map((a) => String(a)).join(' '),
-    );
+    const errorCalls = errorSpy.mock.calls.map((args) => args.map((a) => String(a)).join(' '));
     expect(
       errorCalls.some(
         (line) =>
@@ -610,9 +592,7 @@ describe('crash handlers (installed at module load)', () => {
     // Edge case: a process that imports the module for the handlers
     // (or somehow loses its activeClient) must still exit cleanly.
     // The handler tolerates `activeClient === null` without throwing.
-    const exitSpy = vi
-      .spyOn(process, 'exit')
-      .mockImplementation(() => undefined as never);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
 
     process.emit('uncaughtException', new Error('boom before start()'));
 
@@ -635,39 +615,25 @@ describe('crash handlers (installed at module load)', () => {
 describe('start (state.json wiring — M4 task 04)', () => {
   it('exposes a WorkDirStore on the return value with the loaded work_dirs', () => {
     const createSocket = (): WebSocketLike => new NoopSocket();
+    const savedWorkDir = makeTmpdir();
     const configPath = makeConfig({
       worker_url: 'wss://state-wiring.test/bridge',
       web_base_url: 'https://state-wiring.test',
-      work_dir: '/tmp',
+      work_dir: makeTmpdir(),
       token: 'a'.repeat(32),
     });
-    const statePath = path.join(createdDirs[createdDirs.length - 1] ?? '/tmp', 'isolated-state.json');
-    // Provide an explicit statePath so the test doesn't depend
-    // on the developer's real ~/.config/remotepi/state.json.
-    // We just need a path that doesn't exist yet — the
-    // "first run" path returns [].
+    const statePath = path.join(makeTmpdir(), 'isolated-state.json');
+    // A pre-existing state file is the restart/fast path. Use a real
+    // directory so the M3 three-piece validation is exercised.
+    writeFileSync(statePath, JSON.stringify({ schema_version: 1, work_dirs: [savedWorkDir] }));
     const result = start({
       createSocket,
       argv: [],
       configPath,
       statePath,
     });
-    // No M3 migration happens (state.json was missing AND
-    // work_dir is /tmp — but it IS a valid dir, so migration
-    // would actually fire. Override the statePath so it points
-    // at an empty tmpdir to skip the migration branch.).
-    // Actually — the test above already triggered migration
-    // because work_dir is valid. We assert either [] or
-    // [work_dir] is acceptable; the key contract is "the
-    // store exists and has the same list as state.json on
-    // disk". Re-do this test with a more controlled statePath.
-    expect(result.workDirStore).toBeDefined();
+    expect(result.workDirStore.list()).toEqual([savedWorkDir]);
     expect(result.statePath).toBe(statePath);
-    // Sanity: the list matches what the on-disk file says.
-    const onDisk = JSON.parse(readFileSync(statePath, 'utf8')) as {
-      work_dirs: string[];
-    };
-    expect(result.workDirStore.list()).toEqual(onDisk.work_dirs);
     result.client.stop();
   });
 
@@ -685,7 +651,10 @@ describe('start (state.json wiring — M4 task 04)', () => {
       token: 'm'.repeat(32),
     });
     // State path is fresh — no pre-existing file.
-    const statePath = path.join(mkdtempSync(path.join(tmpdir(), 'remotepi-migrate-')), 'state.json');
+    const statePath = path.join(
+      mkdtempSync(path.join(tmpdir(), 'remotepi-migrate-')),
+      'state.json',
+    );
     createdDirs.push(path.dirname(statePath));
 
     const result = start({
@@ -705,14 +674,10 @@ describe('start (state.json wiring — M4 task 04)', () => {
     // The store reflects the same list.
     expect(result.workDirStore.list()).toEqual([workDir]);
     // The migration log line was emitted.
-    const infoCalls = infoSpy.mock.calls.map((args) =>
-      args.map((a) => String(a)).join(' '),
-    );
+    const infoCalls = infoSpy.mock.calls.map((args) => args.map((a) => String(a)).join(' '));
     expect(
       infoCalls.some(
-        (line) =>
-          line.includes('migrated work_dir from bridge.json') &&
-          line.includes(workDir),
+        (line) => line.includes('migrated work_dir from bridge.json') && line.includes(workDir),
       ),
     ).toBe(true);
     // bridge.json was NOT touched (mtime + content unchanged).
@@ -747,12 +712,89 @@ describe('start (state.json wiring — M4 task 04)', () => {
         statePath,
       }),
     ).toThrow(/bridge: state: invalid_state/);
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/^bridge: state: invalid_state:/),
-    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/^bridge: state: invalid_state:/));
   });
 
-  it('start() honours an explicit statePath (test seam) and never touches the developer machine\'s state.json', () => {
+  it('rejects start() when existing state.json contains a missing work directory', () => {
+    const createSocket = (): WebSocketLike => new NoopSocket();
+    const configPath = makeConfig({
+      worker_url: 'wss://missing-state-path.test/bridge',
+      web_base_url: 'https://missing-state-path.test',
+      work_dir: makeTmpdir(),
+      token: 'q'.repeat(32),
+    });
+    const stateDir = makeTmpdir();
+    const statePath = path.join(stateDir, 'state.json');
+    const missing = path.join(stateDir, 'gone');
+    writeFileSync(statePath, JSON.stringify({ schema_version: 1, work_dirs: [missing] }));
+
+    expect(() => start({ createSocket, argv: [], configPath, statePath })).toThrow(
+      /bridge: state: invalid_state.*not accessible/,
+    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/^bridge: state: invalid_state:/));
+  });
+
+  it('rejects start() when existing state.json contains a regular file path', () => {
+    const createSocket = (): WebSocketLike => new NoopSocket();
+    const configPath = makeConfig({
+      worker_url: 'wss://file-state-path.test/bridge',
+      web_base_url: 'https://file-state-path.test',
+      work_dir: makeTmpdir(),
+      token: 'r'.repeat(32),
+    });
+    const stateDir = makeTmpdir();
+    const statePath = path.join(stateDir, 'state.json');
+    const filePath = path.join(stateDir, 'not-a-directory');
+    writeFileSync(filePath, 'not a directory');
+    writeFileSync(statePath, JSON.stringify({ schema_version: 1, work_dirs: [filePath] }));
+
+    expect(() => start({ createSocket, argv: [], configPath, statePath })).toThrow(
+      /bridge: state: invalid_state.*not a directory/,
+    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/^bridge: state: invalid_state:/));
+  });
+
+  it('restarts from state.json and does not migrate a changed bridge.json work_dir', () => {
+    const createSocket = (): WebSocketLike => new NoopSocket();
+    const workDirA = makeTmpdir();
+    const workDirB = makeTmpdir();
+    const configA = makeConfig({
+      worker_url: 'wss://restart-a.test/bridge',
+      web_base_url: 'https://restart-a.test',
+      work_dir: workDirA,
+      token: 'u'.repeat(32),
+    });
+    const configB = makeConfig({
+      worker_url: 'wss://restart-b.test/bridge',
+      web_base_url: 'https://restart-b.test',
+      work_dir: workDirB,
+      token: 'v'.repeat(32),
+    });
+    const statePath = path.join(makeTmpdir(), 'state.json');
+
+    // First start is the M3 onboarding path: A is migrated into state.
+    const first = start({ createSocket, argv: [], configPath: configA, statePath });
+    expect(first.workDirStore.list()).toEqual([workDirA]);
+    first.client.stop();
+    const migrationCountAfterFirst = infoSpy.mock.calls.filter((args) =>
+      String(args[0]).includes('migrated work_dir from bridge.json'),
+    ).length;
+    expect(migrationCountAfterFirst).toBe(1);
+
+    // Second start sees an existing state file. B must not overwrite A,
+    // and the lifecycle must still reach a normal started return value.
+    const second = start({ createSocket, argv: [], configPath: configB, statePath });
+    expect(second.workDirStore.list()).toEqual([workDirA]);
+    expect(
+      infoSpy.mock.calls.filter((args) =>
+        String(args[0]).includes('migrated work_dir from bridge.json'),
+      ).length,
+    ).toBe(1);
+    expect(second.client).toBeInstanceOf(BridgeClient);
+    second.client.stop();
+  });
+
+  it("start() honours an explicit statePath (test seam) and never touches the developer machine's state.json", () => {
     // Hermetic test: with XDG redirected to a fresh empty
     // tmpdir AND an explicit statePath, the bridge must
     // never read or write the developer's real
@@ -782,11 +824,7 @@ describe('start (state.json wiring — M4 task 04)', () => {
     // The XDG-resolved default path does NOT have a state.json
     // under it (we redirected XDG to a fresh tmpdir, and the
     // bridge wrote to the explicit statePath instead).
-    const xdgDefault = path.join(
-      process.env['XDG_CONFIG_HOME']!,
-      'remotepi',
-      'state.json',
-    );
+    const xdgDefault = path.join(process.env['XDG_CONFIG_HOME']!, 'remotepi', 'state.json');
     expect(existsSync(xdgDefault)).toBe(false);
     result.client.stop();
   });

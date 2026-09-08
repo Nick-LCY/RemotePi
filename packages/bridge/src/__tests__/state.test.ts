@@ -37,14 +37,7 @@
 // (the same pattern `index.test.ts` uses) so we never pollute the
 // developer's real `~/.config/remotepi/` even on a flaky test.
 
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -76,6 +69,10 @@ const ORIGINAL_HOME = process.env['HOME'];
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  // Every state test gets a fresh XDG root, not merely a restored
+  // environment variable. This prevents either the default loader or
+  // a migration helper from touching the developer's real state.json.
+  process.env['XDG_CONFIG_HOME'] = makeTmpdir();
 });
 
 afterEach(() => {
@@ -112,9 +109,7 @@ afterEach(() => {
 });
 
 /** Create a fresh empty tmpdir and register it for cleanup. The
- *  `XDG_CONFIG_HOME` is NOT flipped here — tests that need to flip
- *  it call `isolateXdgConfigHome()` separately so the intent is
- *  explicit at the call site. */
+ *  caller may use it as the hermetic XDG root. */
 function makeTmpdir(): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'remotepi-state-test-'));
   createdDirs.push(dir);
@@ -171,18 +166,14 @@ describe('resolveDefaultStatePath', () => {
     delete process.env['XDG_CONFIG_HOME'];
     process.env['HOME'] = '/home/test-user';
     const resolved = resolveDefaultStatePath();
-    expect(resolved).toBe(
-      path.join('/home/test-user', '.config', 'remotepi', 'state.json'),
-    );
+    expect(resolved).toBe(path.join('/home/test-user', '.config', 'remotepi', 'state.json'));
   });
 
   it('2b. treats an empty XDG_CONFIG_HOME as unset (falls back to HOME)', () => {
     process.env['XDG_CONFIG_HOME'] = '';
     process.env['HOME'] = '/home/test-user';
     const resolved = resolveDefaultStatePath();
-    expect(resolved).toBe(
-      path.join('/home/test-user', '.config', 'remotepi', 'state.json'),
-    );
+    expect(resolved).toBe(path.join('/home/test-user', '.config', 'remotepi', 'state.json'));
   });
 });
 
@@ -371,9 +362,7 @@ describe('loadStateFile', () => {
         caught = err;
       }
       expect(caught).toBeInstanceOf(MockedStateError);
-      expect((caught as InstanceType<typeof MockedStateError>).code).toBe(
-        'parse_failed',
-      );
+      expect((caught as InstanceType<typeof MockedStateError>).code).toBe('parse_failed');
     } finally {
       vi.doUnmock('node:fs');
       vi.resetModules();
@@ -467,7 +456,67 @@ describe('saveStateFile (atomic rename)', () => {
     }
   });
 
-  it('11c. creates the parent directory on first save (fresh-install path)', () => {
+  it('11c. cleans up a partial .tmp file when writeFileSync creates it then throws', async () => {
+    // A short/partial write can leave the tmp file behind before the
+    // exception is raised. Cleanup must cover this phase too, while
+    // preserving the original write error.
+    const dir = makeTmpdir();
+    const p = path.join(dir, 'state.json');
+    vi.doMock('node:fs', async () => {
+      const real = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...real,
+        writeFileSync: (...args: Parameters<typeof real.writeFileSync>) => {
+          real.writeFileSync(...args);
+          const err = new Error('partial write (mocked)') as Error & {
+            code?: string;
+          };
+          err.code = 'ENOSPC';
+          throw err;
+        },
+      };
+    });
+    try {
+      vi.resetModules();
+      const { saveStateFile: mockedSave } = await import('../state.js');
+      expect(() => mockedSave(p, ['/home/me/a'])).toThrow('partial write (mocked)');
+      expect(existsSync(`${p}.tmp`)).toBe(false);
+      expect(existsSync(p)).toBe(false);
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+    }
+  });
+
+  it('11d. records the atomic write sequence as write then rename', async () => {
+    const dir = makeTmpdir();
+    const p = path.join(dir, 'state.json');
+    const calls: string[] = [];
+    vi.doMock('node:fs', async () => {
+      const real = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...real,
+        writeFileSync: (...args: Parameters<typeof real.writeFileSync>) => {
+          calls.push('write');
+          return real.writeFileSync(...args);
+        },
+        renameSync: (...args: Parameters<typeof real.renameSync>) => {
+          calls.push('rename');
+          return real.renameSync(...args);
+        },
+      };
+    });
+    try {
+      vi.resetModules();
+      const { saveStateFile: mockedSave } = await import('../state.js');
+      mockedSave(p, ['/home/me/a']);
+      expect(calls).toEqual(['write', 'rename']);
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+    }
+  });
+  it('11e. creates the parent directory on first save (fresh-install path)', () => {
     // The first run on a developer machine that has never had
     // `~/.config/remotepi/` must still work — `saveStateFile`
     // creates the full intermediate directory tree as part
@@ -627,12 +676,8 @@ describe('WorkDirStore', () => {
         caught = err;
       }
       expect(caught).toBeInstanceOf(MockedStateError);
-      expect((caught as InstanceType<typeof MockedStateError>).code).toBe(
-        'invalid_state',
-      );
-      expect((caught as InstanceType<typeof MockedStateError>).message).toMatch(
-        /not readable/,
-      );
+      expect((caught as InstanceType<typeof MockedStateError>).code).toBe('invalid_state');
+      expect((caught as InstanceType<typeof MockedStateError>).message).toMatch(/not readable/);
       expect(store.list()).toEqual([]);
     } finally {
       vi.doUnmock('node:fs');
@@ -640,23 +685,37 @@ describe('WorkDirStore', () => {
     }
   });
 
-  it('16. add() is idempotent when the path is already in the list (no save)', () => {
+  it('16. add() is idempotent when the path is already in the list (zero save calls)', async () => {
     const p = path.join(makeTmpdir(), 'state.json');
-    const store = WorkDirStore.empty(p);
     const dir = makeTmpdir();
-    store.add(dir);
-    const beforeMtime = existsSync(p) ? readFileSync(p, 'utf8') : null;
-    // Wait a tick to make sure mtime granularity can't accidentally
-    // match (some filesystems have 1s mtime resolution).
-    const sleep = (ms: number): Promise<void> =>
-      new Promise((resolve) => setTimeout(resolve, ms));
-    return sleep(20).then(() => {
-      // Same path → no-op. The on-disk file is NOT rewritten.
+    const writes: string[] = [];
+    vi.doMock('node:fs', async () => {
+      const real = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...real,
+        writeFileSync: (...args: Parameters<typeof real.writeFileSync>) => {
+          writes.push('write');
+          return real.writeFileSync(...args);
+        },
+        renameSync: (...args: Parameters<typeof real.renameSync>) => {
+          writes.push('rename');
+          return real.renameSync(...args);
+        },
+      };
+    });
+    try {
+      vi.resetModules();
+      const { WorkDirStore: MockedWorkDirStore } = await import('../state.js');
+      const store = MockedWorkDirStore.empty(p);
+      store.add(dir);
+      writes.splice(0);
       store.add(dir);
       expect(store.list()).toEqual([dir]);
-      const afterMtime = readFileSync(p, 'utf8');
-      expect(afterMtime).toBe(beforeMtime);
-    });
+      expect(writes).toEqual([]);
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+    }
   });
 
   it('17. add() rolls back the in-memory push when the save throws', async () => {
@@ -726,25 +785,38 @@ describe('WorkDirStore', () => {
     expect(store.list()).toEqual([dir1, dir3]);
   });
 
-  it('19. remove() is a no-op when the path is not in the list', () => {
-    // The WorkDirStore constructor does NOT write the file —
-    // it just sets up the in-memory list. To verify "no
-    // on-disk write happens when remove() finds nothing", we
-    // first add an entry to create the file, capture the
-    // mtime, then attempt to remove a path that was never
-    // added. The file content must be unchanged (the
-    // idempotency check fires before the save).
+  it('19. remove() is a no-op when the path is not in the list (zero save calls)', async () => {
     const p = path.join(makeTmpdir(), 'state.json');
     const dir1 = makeTmpdir();
     const ghost = path.join(makeTmpdir(), 'never-added');
-    const store = WorkDirStore.empty(p);
-    store.add(dir1);
-    const beforeContent = readFileSync(p, 'utf8');
-    store.remove(ghost);
-    expect(store.list()).toEqual([dir1]);
-    // No on-disk write either.
-    const afterContent = readFileSync(p, 'utf8');
-    expect(afterContent).toBe(beforeContent);
+    const writes: string[] = [];
+    vi.doMock('node:fs', async () => {
+      const real = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...real,
+        writeFileSync: (...args: Parameters<typeof real.writeFileSync>) => {
+          writes.push('write');
+          return real.writeFileSync(...args);
+        },
+        renameSync: (...args: Parameters<typeof real.renameSync>) => {
+          writes.push('rename');
+          return real.renameSync(...args);
+        },
+      };
+    });
+    try {
+      vi.resetModules();
+      const { WorkDirStore: MockedWorkDirStore } = await import('../state.js');
+      const store = MockedWorkDirStore.empty(p);
+      store.add(dir1);
+      writes.splice(0);
+      store.remove(ghost);
+      expect(store.list()).toEqual([dir1]);
+      expect(writes).toEqual([]);
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+    }
   });
 
   it('20. remove() rolls back the in-memory filter on save failure', async () => {
@@ -829,14 +901,10 @@ describe('migrateFromBridgeConfig (M3 → M4 migration)', () => {
     expect(parsed.work_dirs).toEqual([workDir]);
     // The migration log line was emitted with the migrated
     // path so operators can confirm the right bridge fired.
-    const infoCalls = infoSpy.mock.calls.map((args) =>
-      args.map((a) => String(a)).join(' '),
-    );
+    const infoCalls = infoSpy.mock.calls.map((args) => args.map((a) => String(a)).join(' '));
     expect(
       infoCalls.some(
-        (line) =>
-          line.includes('migrated work_dir from bridge.json') &&
-          line.includes(workDir),
+        (line) => line.includes('migrated work_dir from bridge.json') && line.includes(workDir),
       ),
     ).toBe(true);
     // Sanity: the config path is unused by the migration
@@ -846,10 +914,13 @@ describe('migrateFromBridgeConfig (M3 → M4 migration)', () => {
   });
 
   it('23. does NOT migrate when state.json already exists (idempotent on re-run)', () => {
-    // state.json exists with ["/a", "/b"]; bridge.json has a
-    // different work_dir. Migration must skip + return the
-    // state.json contents — the bridge.json work_dir is
-    // irrelevant once state.json is in play.
+    // state.json exists with two real directories; bridge.json has a
+    // different work_dir. Migration must skip + return the state.json
+    // contents — the bridge.json work_dir is irrelevant once state.json
+    // is in play. The real directories also exercise the startup fast
+    // path's M3 three-piece validation.
+    const savedA = makeTmpdir();
+    const savedB = makeTmpdir();
     const bridgeWorkDir = makeTmpdir();
     const bridgeConfig: BridgeConfig = {
       worker_url: 'wss://x',
@@ -858,25 +929,27 @@ describe('migrateFromBridgeConfig (M3 → M4 migration)', () => {
     };
     const statePath = writeStateFile({
       schema_version: STATE_SCHEMA_VERSION,
-      work_dirs: ['/already/saved/a', '/already/saved/b'],
+      work_dirs: [savedA, savedB],
     });
     const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
     const result = migrateFromBridgeConfig(bridgeConfig, statePath);
-    expect(result).toEqual(['/already/saved/a', '/already/saved/b']);
+    expect(result).toEqual([savedA, savedB]);
     // No migration log line.
     expect(infoSpy).not.toHaveBeenCalled();
     // The on-disk state.json is unchanged.
     const parsed = StateFileSchema.parse(JSON.parse(readFileSync(statePath, 'utf8')));
-    expect(parsed.work_dirs).toEqual(['/already/saved/a', '/already/saved/b']);
+    expect(parsed.work_dirs).toEqual([savedA, savedB]);
   });
 
-  it('24. writes an empty state.json without a migration log when bridge.json work_dir is empty', () => {
-    // bridge.json has an empty work_dir (the M3 schema-valid
-    // "no work_dir configured" case). Migration is a no-op for
-    // values, but we still write a fresh state.json with `[]`
-    // so the "state.json exists?" check on subsequent starts
-    // returns true. No migration log line because there was
-    // nothing to migrate.
+  it('24. defensively writes an empty state.json when bridge.json work_dir is empty', () => {
+    // M3's BridgeConfigSchema.work_dir uses min(1), so an empty
+    // string cannot arrive from schema-valid bridge.json. This test
+    // documents defensive handling for a programmatic config-like
+    // value instead of claiming empty is an M3-valid case. The
+    // value is a no-op, but we still write a fresh state.json with
+    // `[]` so subsequent starts take the state-first path. No
+    // migration log line is emitted because there was nothing to
+    // migrate.
     const bridgeConfig: BridgeConfig = {
       worker_url: 'wss://x',
       web_base_url: 'https://x',
@@ -906,20 +979,19 @@ describe('migrateFromBridgeConfig (M3 → M4 migration)', () => {
       work_dir: ghost,
     };
     const statePath = path.join(makeTmpdir(), 'state.json');
-    expect(() => migrateFromBridgeConfig(bridgeConfig, statePath)).toThrow(
-      StateError,
-    );
+    expect(() => migrateFromBridgeConfig(bridgeConfig, statePath)).toThrow(StateError);
     // state.json must NOT have been created (the failure
     // happened before the save).
     expect(existsSync(statePath)).toBe(false);
   });
 
   it('26. does not log when state.json is missing and bridge.json work_dir is missing the field', () => {
-    // The M3 schema requires work_dir to be a non-empty
-    // string, so this case is a defensive guard. We do NOT
-    // log "migrated" because there was nothing to migrate.
-    // We DO write an empty state.json so the "state.json
-    // exists?" check on subsequent starts returns true.
+    // Defensive input handling: M3's schema rejects an empty
+    // `work_dir`, so this test bypasses schema parsing at the
+    // migration seam to verify the fallback remains safe. We do NOT
+    // log "migrated" because there was nothing to migrate. We DO
+    // write an empty state.json so subsequent starts take the
+    // state-first path.
     const bridgeConfig = {
       worker_url: 'wss://x',
       web_base_url: 'https://x',
@@ -954,8 +1026,7 @@ describe('migrateFromBridgeConfig (M3 → M4 migration)', () => {
     });
     const beforeContent = readFileSync(configPath, 'utf8');
     const beforeMtime = statSync(configPath).mtimeMs;
-    const sleep = (ms: number): Promise<void> =>
-      new Promise((resolve) => setTimeout(resolve, ms));
+    const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
     return sleep(30).then(() => {
       const bridgeConfig: BridgeConfig = {
         worker_url: 'wss://x',
@@ -1051,9 +1122,7 @@ describe('XDG isolation (hermetic default path resolution)', () => {
     // happened to have there.
     isolateXdgConfigHome();
     const resolved = resolveDefaultStatePath();
-    expect(resolved).toBe(
-      path.join(process.env['XDG_CONFIG_HOME']!, 'remotepi', 'state.json'),
-    );
+    expect(resolved).toBe(path.join(process.env['XDG_CONFIG_HOME']!, 'remotepi', 'state.json'));
     const result = loadStateFile(resolved);
     expect(result).toEqual([]);
   });
@@ -1082,4 +1151,3 @@ describe('state path / store contract for downstream consumers (task 06 prep)', 
 // (no other import is intentionally used only for side-effects
 // in this file — every fs primitive is exercised in the tests
 // above.)
-
