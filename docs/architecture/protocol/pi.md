@@ -1,6 +1,8 @@
 # pi 家族：对话内容
 
 > 状态：定稿（2026-09-05），协议版本 v1。字段与语义变更须走 [[architecture/protocol/envelope.md]] 的版本化流程。
+>
+> **M4 修订注记（2026-09-08）**：envelope (a) 为 `prompt.payload` 增可选 `work_dir` 字段（仅 `session:'new'` 携带，裁定 A 方案 A），零新增 type；多会话扩展节从「预留」升级为「正式落地」。详见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]]。
 
 ## 定位
 
@@ -8,7 +10,7 @@
 
 `type` 命名镜像 pi 的命令名（v0.84.4），payload 字段尽量对齐 pi 原生形态——**实现时以 `rpc-types.d.ts` 为准核实字段名与形状**；本文档先记字段语义，不写死原生细节（凡标注「实现时核实」处须落地前与包内类型核对）。
 
-共 9 个 type：命令 6 个（prompt / steer / follow_up / abort / get_messages / extension_ui_response）+ 回执 / 事件 3 个（command_result / snapshot / event），详见下文。
+共 9 个 type：命令 6 个（prompt / steer / follow_up / abort / get_messages / extension_ui_response）+ 回执 / 事件 3 个（command_result / snapshot / event），详见下文。**M4 零新增 type**（每会话独立进程推论，详见 [多会话扩展正式落地](#多会话扩展正式落地)）。
 
 ---
 
@@ -40,7 +42,14 @@
 { "v": 1, "kind": "pi", "type": "prompt", "id": "c1", "payload": { "content": "…" } }
 ```
 
-- **payload**：`content`：string，用户输入文本。
+```json
+// M4：session 为 'new' 的 prompt 可额外携带 work_dir，触发新会话创建。
+{ "v": 1, "kind": "pi", "type": "prompt", "id": "c1", "session": "new", "payload": { "content": "…", "work_dir": "/abs/path" } }
+```
+
+- **payload**：
+  - `content`：string，用户输入文本。
+  - `work_dir`（M4 新增，可选）：string，绝对路径。**仅 `session:'new'` 的 prompt 携带**（裁定 A 方案 A：新会话的第一条消息是唯一入口）；其他 session 状态下的 prompt 不带、bridge 忽略；schema 仅标注 optional（不强制与 `session` 关联），web 端发命令时遵守。详见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.2 与 envelope.md [演进规则 (a)](#演进规则v1-存续期内允许)。
 
 ### steer
 
@@ -207,10 +216,45 @@ pi 事件原样装填。
 - **`message_end` 里的完整消息是权威内容**，可随时覆盖重画，丢弃之前的 `message_update` 暂显态。
 - **`agent_settled` 表示一轮结束**，网页须：恢复输入框可用、开始空闲计时（bridge 会在空闲 5 分钟后回收 pi 进程，经 [[architecture/protocol/control.md#5-session_state|session_state]] 播报）。
 
-## 多会话扩展（预留）
+## 多会话扩展正式落地
 
-多会话阶段将：
+> M4 起多会话不再「预留」——以下决策落地：本节明确每会话独立 pi 进程、envelope `session` 字段启用规则、sessionKey 计算、pending 键控（钉子 2）、`pi/prompt.payload.work_dir` 仅 `session:'new'` 携带（裁定 A 方案 A）。详见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.2–5。
 
-- 在 `pi` 家族新增 type（如 `new_session` / `switch_session` / `list_directories` 等）及其 `command_result` 回执。
-- envelope `session` 字段**必填**以区分会话。
-- `control` 家族 v1 内除已破锁的 `get_state` 外不再新增 type（破锁依据见 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]；会话列表 session_list 已在其内）；会话的新建 / 切换 / 目录浏览等操作在 `pi` 家族内表达。
+### 每会话独立 pi 进程
+
+M3 的 `PiProcessManager` 5 相位状态机逐会话实例化（每 manager 独立 idle 计时 + 崩溃隔离）。推论：
+
+- **新会话** = bridge spawn 新 manager（不带 `--session`，让 pi 自己开新 jsonl 文件），触发点是 web 在 `ChoicePage` 点"新建会话" → web 发 `pi/prompt`（`session: 'new'` + `payload.work_dir`）→ bridge 收到后按 pending 键控（见下）路由；首次 prompt 写入触发 spawn，spawning → ready 后 bridge 在下一个 `session_state` 广播里携带 session 字段（实际 stem，如 `2026-09-08T10-30-00_a3f9b2c1-4d5e-...` 的 stem）。
+- **切会话** = web 改 URL hash，bridge 不感知；web 后续命令携带新 `session` 字段，bridge 路由到对应 manager。
+- 这两条语义都被 web URL hash + bridge router 完整表达，**无需**在 pi RPC 协议里新增 `new_session` / `switch_session` / `list_directories` type——新增会让协议多两个 bridge → pi 的翻译命令（bridge 不知道 pi 何时创建 session 文件，需要先 round-trip 查 session 文件名再喂 `--session`，徒增复杂度），故**不引入**。`pi` 家族 M4 零新增 type（沿 envelope 演进规则 (b) "可向 pi 家族新增 type" 的逆向：M4 不需要新增）。
+
+### envelope `session` 字段启用规则（多会话下操作惯例必填，schema 仍 optional 不破锁）
+
+schema 维持 envelope.md 锁版承诺（`session` 字段 optional）。多会话下的操作惯例（违反时不强制 wire 错，仅靠实施期对端协商补全）：
+
+- **web → bridge**：所有 pi 家族命令 + `control/get_state` / `control/session_list` 必须带 `session` 字段（缺省视为"作用于 bridge 默认 session"——M3 兼容路径，但 M4 ChoicePage 强制带）。
+- **bridge → web**：所有 `session_state` / `command_result` / `snapshot` / `event` 必须带 `session` 字段（M3 兼容路径下可省略，但 M4 推荐始终带，便于 web 按 session 过滤）。
+- **session_state 列表广播**：bridge 在每个 manager 的 phase 迁移时各广播一次（各自带 session 字段），web 收 N 个 session_state 各 update 自己的桶。
+
+### sessionKey 计算规则
+
+`sessionKey` = pi session 文件名 stem（如 `2026-09-08T10-30-00_a3f9b2c1-4d5e-...`）。
+
+- 复用 M3 `encodeCwdForPi(cwd)` + `sessionSubdir(agentDir, cwd)` + `findLatestSession(subdir)`（详见 `packages/bridge/src/pi-cwd-encoder.ts`）。
+- 已知会话：web 命令带 `session: <stem>` → bridge 在 map 里查找 → 命中复用，未命中则按 session 路径 spawn 新 manager（cwd = 该 session 所属 work_dir，`--session` = 该 stem 的 jsonl 路径）。
+
+### pending 键控（钉子 2）
+
+bridge 收到 `session:'new'` + `payload.work_dir`：
+
+- **pending 键**：map 内部键 `'new:' + work_dir`；先查 `managers.has('new:' + work_dir)` —— 命中则复用 pending manager（短时多次 new 请求合并为同一个）；未命中则 spawn 新 manager（cwd = work_dir，**不带** `--session`，让 pi 自己开新 jsonl 文件）。
+- **map 键迁移**：manager 启动后，spawning 相位启动 SPAWN_TIMEOUT_MS 兜底；收到首个 `entry_appended` 或 ready 后第一次 `message_start` → 从 stdout / `--session-dir` 派生 stem → bridge 自行将 map 键迁移到真实 stem（`managers.delete('new:' + work_dir); managers.set(stem, manager)`） → 广播 `session_state{session: <stem>}`（web 收到后回填 hash `&session=<stem>`）。
+- **边界**：`session:'new'` 但 payload 缺 `work_dir` → 拒，回 `result.ok = false` + `error.code: 'invalid_envelope'`（M4 操作惯例下必带，缺省视为协议错）。
+
+> **实测验证点（PRD 落盘前必做）**：(a) bridge 是否能在 pi 完成首次 jsonl 写入前读出文件名？答：不能——pi 是 lazy 创建文件的（首次 `agent_start` / 首次 stdout entry 写入后才落盘）。M4 必须接受这一窗口——spawning → ready 期间 web 命令的 `session: 'new'` 占位（map 内 pending 键 `'new:' + work_dir`），bridge 在收到首个 `entry_appended` 事件时（或 ready 后第一次 `message_start`）从 stdout / `--session-dir` 派生 stem 并广播 `session_state{session: <stem>}`。**凡未实测的落盘细节不可信**——任务 06 实施期跑真 pi 探针（沿用 tasks/m3/10 假 LLM 套件）确认事件时序与 stem 派生点。
+
+### `pi/prompt.payload.work_dir` 仅 `session:'new'` 携带
+
+裁定 A 方案 A：新会话的第一条消息是唯一入口。web 在 `ChoicePage` level=2 点"新建会话" → 写 hash `&session=new` → 进 ChatView → 首次 prompt 携带 `session: 'new'` + `payload.work_dir` → bridge 按 pending 键控（见上）路由。其他 session 状态下的 prompt 命令**不带** `payload.work_dir`，bridge 忽略（schema 仍允许携带，但实施期 web 端不发送；bridge 端不做强制校验，避免 wire 误杀）。
+
+> **反向**：M3 单 session 阶段 `session: <stem>` 的 prompt 不携带 `work_dir`（无需——bridge 已知 session 所属 work_dir）；新增 `work_dir` 字段对 M3 wire 无影响（schema optional，缺省 = M3 行为）。

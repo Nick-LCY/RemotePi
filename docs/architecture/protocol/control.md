@@ -1,12 +1,18 @@
 # control 家族：连接与会话生命周期
 
 > 状态：定稿（2026-09-05），协议版本 v1。字段与语义变更须走 [[architecture/protocol/envelope.md]] 的版本化流程。
+>
+> **M4 修订注记（2026-09-08）**：control 家族从 9 增至 13 type（新增 `list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove`，破锁依据见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]]，沿用 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]] 范式）；`session_list.payload` / `session_state.payload` / `session_list` 回执字段同步修订。
 
 ## 家族定位
 
 `control` 家族承载**连接建立、保活、在位状态与会话管理**，是控制面而非对话面。中间层只深度理解其中 3 个 type——`handshake`（鉴权）、`bridge_status`（自己生成）、`error`（自己生成）——其余一律原样转发。详见 [中间层处理规则](#中间层处理规则)。
 
-共 9 个 type：`handshake` / `ping` / `pong` / `bridge_status` / `session_state` / `session_list` / `get_state` / `result` / `error`。M3 起 `get_state` 加入（破锁 control 家族 v1 内不再新增 type 的承诺，理由见 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]）。
+共 **13 个 type**：`handshake` / `ping` / `pong` / `bridge_status` / `session_state` / `session_list` / `get_state` / `result` / `error` / **`list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove`**（最后 4 个为 M4 新增）。
+
+破锁历史：
+- M3：`get_state` 加入（8 → 9，破锁 control 家族 v1 内不再新增 type 的承诺，理由见 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]）。
+- M4：4 个 work-dir 相关 type 加入（9 → 13，沿用 ADR-0006 范式，理由见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]]）。
 
 ---
 
@@ -110,18 +116,20 @@ bridge 在不在线（由中间层生成）。
     "phase": "idle",
     "blocked_on": [
       { "method": "confirm", "id": "…", "title": "…", "message": "…", "timeout": 30000 }
-    ]
+    ],
+    "work_dir": "/abs/path/cwd"
   }
 }
 ```
 
 - **方向**：bridge → 所有网页（广播）。
-- **会话字段**：一条消息对应一个 pi 进程；envelope `session` 字段区分；单进程阶段可省略。
+- **会话字段**：一条消息对应一个 pi 进程；envelope `session` 字段区分；单进程阶段可省略。M4 多会话下**必填**（操作惯例，schema 仍 optional 不破锁），详见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.3。
 - **payload**：
   - `phase`：`"spawning"`（启动中）/ `"ready"`（可用）/ `"running"`（干活中）/ `"idle"`（空闲）/ `"exited"`（已退出）。
   - `blocked_on`（M3 新增，可选）：未决阻塞弹窗数组；缺省视为空数组。每项是 [[architecture/protocol/pi.md#extension_ui_request|4 类 `extension_ui_request` 阻塞方法]]之一（`select` / `confirm` / `input` / `editor`），形状与 pi 原生 `extension_ui_request` 对应阻塞方法同形（`method` / `id` / `title` / 方法专属字段 / 可选 `timeout`，editor 无 `timeout`）；fire-and-forget 5 类（`notify` / `setStatus` / `setWidget` / `setTitle` / `set_editor_text`）不入此数组，详见 [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]]。
+  - `work_dir`（M4 新增，可选）：该 pi 进程的工作目录；每条广播携带对应 work_dir，便于 web 在 `ChoicePage` 列表直接渲染（不查 `session_list`）。缺省视为"未知 work_dir"（M3 单会话阶段不回填）。schema 锁版不变，仅新增可选字段。
 - **规则**：一轮对话结束（pi 报 `agent_settled`）→ `idle`；空闲满 5 分钟 bridge 杀掉 pi 进程 → `exited`。`blocked_on` 在弹窗出现 / 提交 / 超时时同步增删。
-- **设计理由**：状态属于 pi 进程而不属于 bridge（一个 bridge 可能同时管理多个 pi 进程），故按会话一条。`blocked_on` 与 session_state 同帧广播是为了让 web 端弹窗组件仅由状态帧驱动渲染（无乐观 UI），详见 ADR-0004。
+- **设计理由**：状态属于 pi 进程而不属于 bridge（一个 bridge 可能同时管理多个 pi 进程），故按会话一条。`blocked_on` 与 session_state 同帧广播是为了让 web 端弹窗组件仅由状态帧驱动渲染（无乐观 UI），详见 ADR-0004。`work_dir` 与 session_state 同帧广播是为了让 web 端 `ChoicePage` 列表行直接显示 work_dir 而无需额外查 `session_list`。
 
 ---
 
@@ -130,12 +138,12 @@ bridge 在不在线（由中间层生成）。
 拉取对话列表。
 
 ```json
-{ "v": 1, "kind": "control", "type": "session_list", "id": "r1", "payload": {} }
+{ "v": 1, "kind": "control", "type": "session_list", "id": "r1", "payload": { "work_dir": "/abs/path/cwd" } }
 ```
 
 - **方向**：web → bridge（中间层转发）。
-- **payload**：当前为空对象 `{}`；将来支持多工作目录时再加过滤字段。
-- **回执**：走 `result`（见 [§7](#7-result)）。
+- **payload**：`work_dir?: string`（M4 新增，可选）——按 work_dir 过滤会话清单（裁定 A：M4 操作惯例必带，schema 仍 optional 不破锁；缺省全量扫描仅作 M3 兼容语义保留，M4 web UI 不走此路径）。envelope `session` 字段在多会话下**必填**（操作惯例），M4 ChoicePage level=2 入口走 `session: <work_dir>` + `payload.work_dir: <work_dir>` 双携带模式。
+- **回执**：走 `result`（见 [§7](#7-result)）；M4 回执 `data.sessions[]` 新增 `status` 字段（5 枚举 + `unknown`）。
 
 ---
 
@@ -176,6 +184,121 @@ bridge 在不在线（由中间层生成）。
 
 ---
 
+## 6.6 list_directories
+
+按路径列出子目录（仅目录、不含文件；M4 `ChoicePage` "浏览添加"对话框使用）。
+
+```jsonc
+// web → bridge
+{ "v": 1, "kind": "control", "type": "list_directories", "id": "d1", "payload": { "path": "/home/sankabox" } }
+// path 可省略 —— 缺省列 $HOME
+
+// bridge → web（result 回执）
+{
+  "v": 1,
+  "kind": "control",
+  "type": "result",
+  "id": "d2",
+  "reply_to": "d1",
+  "payload": {
+    "ok": true,
+    "data": {
+      "entries": [
+        { "name": "code", "path": "/home/sankabox/code" },
+        { "name": "Documents", "path": "/home/sankabox/Documents" }
+      ]
+    }
+  }
+}
+```
+
+- **方向**：web → bridge（中间层转发），bridge → web 走 `result`（与 `session_list` / `get_state` 同形态）。
+- **payload**：`path?: string`——可选；缺省 = `$HOME`（`os.homedir()`）；提供时由 bridge 走 `path.resolve(path)` 规范化。
+- **回执**：`result.data = { entries: { name: string, path: string }[] }`——**只列子目录**（`dirent.isDirectory()` 过滤），不含文件。
+- **回执失败**：`result.ok = false` + `error.code` 复用 [§8](#8-error) 已锁版的 6 个 code 集合（不新增）——ENOENT / EACCES / ENOTDIR 各分支独立（沿用 M3 §2.1 配置校验的同类做法），实施期选最贴切的 code。
+- **范围限制**：业务共识 2 "起点 home，不设范围限制"——任何合法路径都可列；单用户自用，无 traversal 安全顾虑。
+- **破锁依据**：M4 新增（9 → 13），沿用 ADR-0006 范式，理由见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.1。
+
+---
+
+## 6.7 work_dir_list
+
+拉取用户保存的工作目录清单。
+
+```jsonc
+// web → bridge
+{ "v": 1, "kind": "control", "type": "work_dir_list", "id": "w1", "payload": {} }
+
+// bridge → web（result 回执）
+{
+  "v": 1,
+  "kind": "control",
+  "type": "result",
+  "id": "w2",
+  "reply_to": "w1",
+  "payload": {
+    "ok": true,
+    "data": { "work_dirs": ["/home/sankabox/code", "/home/sankabox/Documents"] }
+  }
+}
+```
+
+- **方向**：web → bridge（中间层转发），bridge → web 走 `result`。
+- **payload**：当前为空对象 `{}`；将来加过滤字段时按 envelope 演进规则 (a) 新增可选字段。
+- **回执**：`result.data = { work_dirs: string[] }`——bridge 内存中保存的工作目录清单（与 bridge `state.json` 同步）。
+- **回执失败**：`result.ok = false` + `error.code` 复用 §8 已锁版的 6 个 code 集合（不新增）。
+- **破锁依据**：M4 新增（9 → 13），理由见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]]。
+
+---
+
+## 6.8 work_dir_add
+
+向用户保存的工作目录清单添加一项。
+
+```jsonc
+// web → bridge
+{ "v": 1, "kind": "control", "type": "work_dir_add", "id": "w3", "payload": { "path": "/home/sankabox/code" } }
+
+// bridge → web（result 回执）
+{
+  "v": 1, "kind": "control", "type": "result", "id": "w4", "reply_to": "w3",
+  "payload": { "ok": true }
+}
+```
+
+- **方向**：web → bridge（中间层转发），bridge → web 走 `result`。
+- **payload**：`path: string`——必填，绝对路径。
+- **回执**：成功回 `result.ok = true`（`data` 可省略；web 端通过再发 `work_dir_list` 刷新）。重复添加 = 幂等（已存在则 no-op，回 `ok: true`）。
+- **回执失败**：`result.ok = false` + `error.code` 复用 §8 已锁版的 6 个 code 集合（不新增）——非法路径 / 不是目录 / 不可读 三件套校验失败时回 `internal` 或 `invalid_envelope`（实施期选最贴切的 code）；state.json 写失败回滚内存后回 `internal`。
+- **bridge 行为**：参数校验（存在 + 是目录 + 可读，与 M3 §2.1 同三件套）→ 内存 push → 同步写 state.json（atomic rename）→ 回执。
+- **破锁依据**：M4 新增（9 → 13），理由见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]]。
+
+---
+
+## 6.9 work_dir_remove
+
+从用户保存的工作目录清单移除一项。
+
+```jsonc
+// web → bridge
+{ "v": 1, "kind": "control", "type": "work_dir_remove", "id": "w5", "payload": { "path": "/home/sankabox/code" } }
+
+// bridge → web（result 回执）
+{
+  "v": 1, "kind": "control", "type": "result", "id": "w6", "reply_to": "w5",
+  "payload": { "ok": true }
+}
+```
+
+- **方向**：web → bridge（中间层转发），bridge → web 走 `result`。
+- **payload**：`path: string`——必填，绝对路径。
+- **回执**：成功回 `result.ok = true`（`data` 可省略）。
+- **回执失败**：`result.ok = false` + `error.code` 复用 §8 已锁版的 6 个 code 集合（不新增）。
+- **bridge 行为**：内存 filter → 同步写 state.json → 回执。**钉子 3**（PRD）：**不**清理 agent dir 的会话文件；**不** kill 不打断活 manager（cwd = 该 work_dir），跑完 idle 自然回收（裁定 C 下 ready 5min 也计入）；目录从清单移除后 web `ChoicePage level=2` 不再列该 work_dir 下的会话（即 level2 不可达），但已在 ChatView 看的会话不受影响。
+- **破锁依据**：M4 新增（9 → 13），理由见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]]。
+
+---
+
 ## 7. result
 
 control 请求的通用回执。
@@ -197,7 +320,7 @@ control 请求的通用回执。
   - `ok`：boolean。
   - `data`：成功时携带（结构随请求 type 而变）。
   - `error`：失败时携带 `{ code, message }`。
-- **`session_list` 回执**：`data.sessions` 为数组，每项字段：
+- **`session_list` 回执**（M3 + M4）：`data.sessions` 为数组，每项字段：
 
   | 字段 | 类型 | 说明 |
   |------|------|------|
@@ -208,8 +331,12 @@ control 请求的通用回执。
   | `modified` | ISO8601 | 最后活跃时间 |
   | `message_count` | number | 消息数 |
   | `first_message` | string \| null | 首条消息摘要，可空 |
-  | `running` | boolean | 该会话的 pi 进程是否存活（含空闲）；正在干活与否看 `session_state` |
+  | `running` | boolean | M3 已定义——该会话的 pi 进程是否存活（含空闲）；保留语义。正在干活与否看 `session_state` |
+  | `status` | `"exited"` \| `"idle"` \| `"running"` \| `"spawning"` \| `"unknown"` | **M4 新增**——当前 `PiProcessManager.phase` 简化映射；`unknown` = 未在 bridge 内存中（无活跃 manager，可能从未被该 bridge 看过）；会话被外部 pi 占用时也返回 `unknown`（**不做检测**，对齐业务共识 3 / 正式关闭 [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] §验证与后续段挂账）。详见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.2 |
 - **`get_state` 回执**（M3 新增）：`data = { phase, blocked_on? }`；`phase` 取值见 [§5](#5-session_state) 5 相位枚举；`blocked_on` 与 `session_state.payload.blocked_on` 同形状（可选数组，元素为 4 类 `extension_ui_request` 阻塞方法之一）。
+- **`work_dir_list` 回执**（M4 新增）：`data = { work_dirs: string[] }`——bridge 内存中保存的工作目录清单（与 bridge `state.json` 同步）。
+- **`list_directories` 回执**（M4 新增）：`data = { entries: { name: string, path: string }[] }`——指定路径下的子目录列表（不含文件；起点 home，不设范围限制）。
+- **`work_dir_add` / `work_dir_remove` 回执**（M4 新增）：成功回 `result.ok = true`（`data` 可省略；web 端通过再发 `work_dir_list` 刷新）；失败回 `result.ok = false` + `error.code`（复用 [§8](#8-error) 已锁版的 6 个 code 集合，不新增）。
 
 ---
 
@@ -238,10 +365,12 @@ control 请求的通用回执。
   |------|----------|----------|
   | `auth_failed` | token 不符 / handshake 超时 / role 与入口不符 | true |
   | `duplicate_bridge` | 同 token 已有 bridge 在线 | true |
-  | `invalid_envelope` | 消息结构解析失败 | false |
+  | `invalid_envelope` | 消息结构解析失败 / `session:'new'` 缺 `payload.work_dir`（M4 钉子 2 边界） | false |
   | `unsupported_version` | `v` 不是 `1` | true |
   | `unsupported_type` | type 不识别且无法转发处理时 | false |
-  | `internal` | 中间层内部异常 | false |
+  | `internal` | 中间层内部异常 / bridge state.json 写失败回滚 / `list_directories` 路径校验失败 等 | false |
+
+> M4 不新增 code（[[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.8）：4 个新 type 失败时复用 `invalid_envelope` / `internal` / `unsupported_type`（按实施期最贴切选）。
 
 ---
 
@@ -266,4 +395,6 @@ control 请求的通用回执。
 2. **bridge_status** —— 自己生成，触发条件见 §4。
 3. **error** —— 自己生成，触发条件见 §8。
 
-其余消息一律原样转发：`ping` / `pong` / `session_list` / `get_state` / `result` / `session_state` 以及整个 [[architecture/protocol/pi.md|pi 家族]]。其中 `get_state` 由 web 发到 bridge，bridge 用本地内存作答（phase / blocked_on 的当前值），中间层不参与；result 是其回执。
+其余消息一律原样转发：`ping` / `pong` / `session_list` / `get_state` / `result` / `session_state` / **`list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove`（M4 新增）** 以及整个 [[architecture/protocol/pi.md|pi 家族]]。
+
+其中 `get_state` 由 web 发到 bridge，bridge 用本地内存作答（phase / blocked_on 的当前值），中间层不参与；`result` 是其回执。M4 的 `list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove` 同形态——web 发到 bridge，bridge 处理后回 `result`，中间层不参与处理内容；worker DO `routeOpenMessage` 的 `default` 兜底分支自动转发（与 `get_state` 同路径，零业务代码改动；M3 教训 `1c86aca` 同类补漏落地，详见 worker/src/room.ts §`routeOpenMessage` 注释）。
