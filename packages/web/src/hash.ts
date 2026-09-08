@@ -244,20 +244,13 @@ export function encodeHash(auth: AuthToHash): string {
  * （上述钉子 6 文本明文规定），仅是开发者可见的信号。*/
 export function decideView(auth: AuthFromHash): View {
   if (auth.token === null) return 'tokenPrompt';
-  // M4 task 08 — M3-compat deviation: `#<token>` (no work_dir, no
-  // session) routes to `recovery` rather than the strict M4 钉子 6
-  // `choiceLevel1`. The deviation preserves the M3 single-bucket
-  // token-only URL path that the E2E 3 scenarios depend on; without
-  // it, those tests land on ChoicePage level=1 instead of ChatView
-  // and never reach the bridge. The M3_LEGACY manager path on the
-  // bridge (task 06 C2 obligation) handles the session-less
-  // inbound and the WsClient's M3_LEGACY bucket collects it; the
-  // web's ChatView (currentSessionKey === null) reads from that
-  // bucket. The钉子 6 text in PRD §4.2 is the M4 normal-flow
-  // contract; this branch is the documented M3-compat carve-out
-  // that task 10's E2E migration will retire. See the task 08
-  // report for the M3_LEGACY retirement evaluation.
-  if (auth.workDir === null && auth.session === null) return 'recovery';
+  // Review 修复轮 R1 — 翻转 M3-compat 偏离回严格钉子 6：
+  //   `#<token>`（仅 token）路由 `choiceLevel1`，与 PRD §4.2 /
+  //   tasks/m4/07 §钉子 6 严格决策表一致。task 10 的 e2e 三场景
+  //   同步迁移到 M4 流（不再依赖该 M3-compat 偏离）——见
+  //   docs/tasks/m4/08-web-multi-session-store.md#任务-06-c2-移交义务最小侵入
+  //   的 `M3_LEGACY_KEY` 退役评估。
+  if (auth.workDir === null && auth.session === null) return 'choiceLevel1';
   if (auth.session !== null) {
     // W3 退化形态告警：session 不为空但 work_dir 为空。
     if (auth.workDir === null) {

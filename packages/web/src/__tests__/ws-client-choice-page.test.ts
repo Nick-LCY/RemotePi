@@ -200,7 +200,15 @@ describe('WsClient M4 outbound — wire shape (tasks/m4/07)', () => {
     expect(newFrames[0]!.payload).toEqual({ path: '/Users/foo bar/' });
   });
 
-  it('1.6 sendSessionList(work_dir) → payload.work_dir set (裁定 A 操作惯例)', () => {
+  it('1.6 sendSessionList(work_dir) → payload.work_dir set (裁定 A 操作惯例) + envelope.session 钉桩', () => {
+    // R5 review 修复轮 W2 闭环：任务 07 移交段（task 08 §任务-07-w2-移交）
+    // 要求 `sendSessionList` 出站补 `envelope.session` 字段；本
+    // 用例在原 1.6（payload.work_dir 钉桩）之上追加 session
+    // 断言——`envelope.session === currentSessionKey`。
+    //
+    //   1) 默认 currentSessionKey === null → session 字段省略
+    //      （M3-compat fallback；M3_LEGACY manager 自答路径）。
+    //   2) setCurrentSessionKey('X') → envelope.session === 'X'。
     const { ws, sentFrames } = makeConnectedWs();
     const before = sentFrames().length;
     ws.sendSessionList('/home/me');
@@ -208,6 +216,16 @@ describe('WsClient M4 outbound — wire shape (tasks/m4/07)', () => {
     expect(newFrames[0]!.kind).toBe('control');
     expect(newFrames[0]!.type).toBe('session_list');
     expect(newFrames[0]!.payload).toEqual({ work_dir: '/home/me' });
+    // M3-compat 默认：currentSessionKey === null → session 省略。
+    expect(newFrames[0]!.session).toBeUndefined();
+
+    // 设 currentSessionKey → session 必带。
+    ws.setCurrentSessionKey('sess-A');
+    const beforeA = sentFrames().length;
+    ws.sendSessionList('/home/me');
+    const newFramesA = sentFrames().slice(beforeA);
+    expect(newFramesA[0]!.session).toBe('sess-A');
+    expect(newFramesA[0]!.payload).toEqual({ work_dir: '/home/me' });
   });
 
   it('1.7 every M4 command returns a unique outbound id', () => {

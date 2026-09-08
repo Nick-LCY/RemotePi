@@ -75,7 +75,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncExternalStore } from 'react';
 
-import { selectSessionHash } from './hash.js';
+import { watchStemRefilled } from './ws/stem-refilled.js';
 import type { SessionPhase } from '@remotepi/shared';
 
 import { ChatView } from './components/ChatView.js';
@@ -159,59 +159,17 @@ export function App() {
   }, [client, auth.token]);
 
   // M4 task 08 — stem refilled watcher (钉子 5 / ChoicePage hook 点).
-  // When a session_state broadcast carries a real session stem (i.e.
-  // not the literal 'new' and not 'm3-legacy') while the URL hash's
-  // `session` is still 'new', the bridge has completed the pending
-  // → real-stem migration (钉子 2 — see
-  // `docs/tasks/m4/06-bridge-session-layer.md` §1.5). The web refills
-  // the hash so the URL reflects the real stem, and fires a
-  // session_list re-query so ChoicePage level=2's mirror catches up
-  // (钉子 5 — stem 回填后重查). The re-query is fired even though
-  // the user is in ChatView at the moment: ChoicePage level=2's
-  // mount would also fire a fresh query, but firing now means a
-  // back-then-forward navigation sees the new session immediately
-  // without waiting for the mount effect.
-  //
-  // The watcher is registered on the WsClient's 'session_state' type
-  // listener; the handler fires on EVERY session_state broadcast
-  // but only acts when the URL is in the 'new' state and the
-  // inbound session is a real stem.
+  // review 修复轮 W8——抽出到 packages/web/src/ws/stem-refilled.ts
+  // 以便单元测试（见 stem-refilled.test.ts W8.1-W8.4）。语义不变：
+  // bridge session_state 携带真实 stem（且当前 URL session 仍 'new'）
+  // → 回填 hash + sendSessionList work_dir 重查。
   useEffect(() => {
-    if (auth.session !== 'new') return;
-    if (auth.workDir === null || auth.token === null) return;
-    const unsub = client.on('session_state', (envelope) => {
-      if (envelope.kind !== 'control' || envelope.type !== 'session_state') return;
-      const newSession = envelope.session;
-      // The literal 'new' is the bridge's pending marker (钉子 2
-      // internal key `new:<work_dir>`); it's also a legitimate
-      // outbound `envelope.session` value while a pending manager
-      // is alive. Skip it. The M3_LEGACY key is the M3-compat
-      // bucket; we never refill the URL to point at it. A real
-      // session stem is anything else (a `<timestamp>_<uuid>`
-      // shaped string, but we don't validate the shape — the
-      // bridge's broadcast is authoritative).
-      if (
-        newSession === undefined ||
-        newSession === 'new' ||
-        newSession === M3_LEGACY_KEY
-      ) {
-        return;
-      }
-      // Refill the hash. We use `selectSessionHash` to compose the
-      // three-field URL the same way the rest of the app does
-      // (token + work_dir + session) — this preserves any other
-      // hash state the user might have added (none today, but
-      // future-proof). The `window.location.hash` setter triggers
-      // the `hashchange` listener above which re-derives `auth` +
-      // the WsClient store mirrors. We then fire a session_list
-      // re-query for the current work_dir so ChoicePage level=2
-      // (when the user later navigates back) sees the new session.
-      window.location.hash = selectSessionHash(auth.token!, auth.workDir!, newSession);
-      if (auth.workDir !== null) {
-        client.sendSessionList(auth.workDir);
-      }
+    if (auth.token === null || auth.workDir === null) return;
+    return watchStemRefilled(client, {
+      currentSession: auth.session,
+      workDir: auth.workDir,
+      token: auth.token,
     });
-    return unsub;
   }, [client, auth.session, auth.workDir, auth.token]);
 
   const view = decideView(auth);
@@ -303,6 +261,13 @@ export function App() {
  *  pending gate's reply-resolvers and timers are naturally
  *  torn down by the gate's own `cancelActive` on `retry()` /
  *  on the success path — see `recovery.ts` for the lifecycle.
+ *
+ *  R3 review 修复轮——仪式携带 `envelope.session` 出站：每个 session
+ *  的 gate 在出站 `pi/get_messages` + `control/get_state` 信封上
+ *  携带 session 字段（M4 normal flow）。M3 token-only 链接路径
+ *  下 `session === 'm3-legacy'`，仪式保持 session-less（M3-compat
+ *  fallback）；M4 normal flow `session === <stem>` 或 `'new'`，
+ *  bridge 按 session 路由到对应 manager 或 pending 键。
  */
 function RecoveryShell({
   token,
@@ -354,7 +319,12 @@ function gateForSession(
 ): RecoveryGate {
   let gate = map.get(session);
   if (gate === undefined) {
-    gate = initiateRecovery(client);
+    // R3 review 修复轮——仪式带 session 出站：App.tsx 传入当前
+    // sessionKey（来自 URL hash 的 session 分量）；M3-compat
+    // 路径（currentSessionKey=null）下 M3_LEGACY 路径走
+    // session-less，bridge auto-spawn 接住。R6 e2e 迁移后所有
+    // 路径走带 session 形态。
+    gate = initiateRecovery(client, { sessionKey: session });
     map.set(session, gate);
   }
   return gate;

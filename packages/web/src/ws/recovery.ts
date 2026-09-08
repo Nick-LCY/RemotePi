@@ -176,6 +176,21 @@ export interface InitiateRecoveryOptions {
    *  order without juggling the subscribe dance. The hook receives
    *  the post-transition `RecoveryState` snapshot. */
   onTransition?: (state: RecoveryState) => void;
+  /** M4 task 08 review 修复轮 R3——仪式在出站信封上携带
+   *  `envelope.session` 字段（来自当前 URL hash 的 session
+   *  分量）。语义：
+   *  - `undefined` / `null`：仪式保持 M3 形态（session-less
+   *    envelope），bridge 的 M3_LEGACY manager 接 auto-spawn 路径。
+   *    task 08 review 决定保留 M3-compat fallback 以服务 e2e / 旧
+   *    链接——R6 e2e 迁移后此 fallback 仅服务调试场景。
+   *  - 字符串：仪式在 `pi/get_messages` 与 `control/get_state` 两
+   *    个信封上携带 `envelope.session`，bridge 按 session 路由到
+   *    对应 manager（M4 normal flow）。
+   *
+   *  App.tsx 的 RecoveryShell 调用点从 `currentSessionKey` 镜像
+   *  传入。`currentSessionKey === null`（M3 token-only URL）
+   *  时传 `null`，仪式保持 session-less。*/
+  sessionKey?: string | null;
 }
 
 export function initiateRecovery(
@@ -186,6 +201,7 @@ export function initiateRecovery(
   const phaseProgressTimeoutMs = options.phaseProgressTimeoutMs ?? PHASE_PROGRESS_TIMEOUT_MS;
   const makeId = options.makeId ?? defaultMakeId;
   const onTransition = options.onTransition;
+  const sessionKey = options.sessionKey ?? null;
 
   // ---- state ---------------------------------------------------------------
   // Cached snapshot — replace-on-change semantics. `useSyncExternalStore`
@@ -363,11 +379,23 @@ export function initiateRecovery(
     // precisely to avoid this drop — the `getSnapshot` /
     // `subscribe` shape above supports that without coupling
     // the ceremony to connection state.
+    //
+    // R3 review 修复轮——`envelope.session` 字段携带。语义：
+    //   - `sessionKey !== null`：M4 normal flow，bridge 按 session
+    //     路由（manager 命中或 pending-key auto-spawn）。
+    //   - `sessionKey === null`：M3-compat fallback，bridge 走
+    //     `M3_LEGACY_KEY` auto-spawn（M3 token-only 链接的路径）。
+    // `session === 'new'`（pending 占位）允许携带——bridge 用
+    // `new:<work_dir>` 内部键路由 + 派生后 stem 回填。R6 e2e
+    // 迁移后仪式在 M4 流下携带真实 session 或 `'new'`，M3
+    // fallback 仅在调试 / 旧链接场景生效。
+    const sessionField = sessionKey !== null ? { session: sessionKey } : {};
     wsClient.send({
       v: PROTOCOL_VERSION,
       kind: 'pi',
       type: 'get_messages',
       id: messagesId,
+      ...sessionField,
       payload: {},
     });
     wsClient.send({
@@ -375,6 +403,7 @@ export function initiateRecovery(
       kind: 'control',
       type: 'get_state',
       id: stateId,
+      ...sessionField,
       payload: {},
     });
   };

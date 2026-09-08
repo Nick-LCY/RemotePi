@@ -56,6 +56,7 @@
 // React glue lives in `WsClientContext.tsx`; this file is framework-free so
 // the protocol logic stays unit-testable in isolation.
 
+import { SESSION_NEW } from '../hash.js';
 import {
   Envelope,
   PROTOCOL_VERSION,
@@ -1024,18 +1025,53 @@ export class WsClient {
       }
       case 'session_state': {
         // M3 PRD §4.1 / M4 §4.3: session_state is the authoritative
-        // source for phase + blocked_on + work_dir per session. We
-        // route by `envelope.session` to the corresponding bucket;
-        // session-less inbound (M3-compat / E2E) lands in the
-        // M3_LEGACY bucket. `blocked_on` absence = empty array
-        // (envelope evolution rule (a)). `work_dir` absence leaves
-        // the bucket's existing value untouched (the bridge may
-        // omit it for managers where work_dir is undefined — e.g.
-        // the M3_LEGACY auto-spawn path). The `enqueuedAt` timestamp
-        // is stamped at receive-time for the dialog countdown math
-        // (PRD §4.5 — switch-back to a background dialog computes
-        // `timeout - (Date.now() - enqueuedAt)`). */
+        // source for phase + blocked_on + work_dir per session.
+        //
+        // M4 routing 锚（review 修复轮保留 R2 的锚）：
+        //   `envelope.session` 永远由 bridge `makeOutboundWrapper`
+        //   注入（session-layer.ts：仅 session_state 信封注入
+        //   session 字段，event / snapshot 透传无 session），所以
+        //   这里的 `envelope.session ?? M3_LEGACY_KEY` 几乎只会
+        //   在 M3_LEGACY manager 的自答路径下取 M3_LEGACY。
+        //
+        // Review 修复轮 R4——stem 回填桶迁移：
+        //   场景：用户新会话流（hash `&session=new`）→ 发首条 prompt
+        //   （session:'new' + payload.work_dir）→ bridge pending 期间
+        //   流式 delta 事件 session-less → 落 `new` 桶（R2 fallback
+        //   链 envelope.session ?? currentSessionKey => 'new'）。
+        //   bridge 派生 stem 后 broadcast session_state{session:
+        //   <stem>} → web App.tsx 回填 hash + currentSessionKey 变
+        //   <stem> → 后续事件落 stem 桶。**若不迁移**，'new' 桶里
+        //   的早期消息（用户 prompt + 部分 delta）全部"丢失"——
+        //   ChatView 切到读 stem 桶，'new' 桶的累积状态不再被渲染。
+        //
+        //   修法：WsClient 在处理 session_state 入站时，若
+        //     a) `envelope.session === <realStem>`（非 'new' /
+        //        非 M3_LEGACY / 非 undefined）；
+        //     b) `'new'` 桶存在（user 早期消息累积）；
+        //     c) `envelope.payload.work_dir === new 桶的 workDir`
+        //        ——防误迁移（不同 work_dir 的 'new' 桶不应被本
+        //        session_state 抢走）；
+        //     d) `currentSessionKey === 'new'` 或
+        //        `currentSessionKey === <stem>`（仪式启动时若
+        //        已回填；否则 currentSessionKey 仍 'new'，等
+        //        App.tsx 触发回填后下次事件即落 stem 桶）
+        //   → 整体迁移 `new` 桶为 `<stem>` 桶（rename，保留
+        //     messages / streamingDraft / queue / blockedOn /
+        //     sessionPhase / recovery / sessionList 全部 8 字段）
+        //     + 删除 'new' 键。
+        //
+        //   该迁移必须发生在写入之前（写入针对 stem 桶，迁移前
+        //   new 桶尚有累积内容；写完后再迁移则 stem 桶被孤立为
+        //   空，`new` 桶内容仍残留——这正是要修的 bug）。
         const sessionKey = envelope.session ?? M3_LEGACY_KEY;
+        if (
+          envelope.session !== undefined &&
+          envelope.session !== 'new' &&
+          envelope.session !== M3_LEGACY_KEY
+        ) {
+          this.migratePendingBucket(envelope.session, envelope.payload.work_dir);
+        }
         const bucket = this.bucketFor(sessionKey);
         const now = Date.now();
         const incoming = envelope.payload.blocked_on ?? [];
@@ -1097,13 +1133,19 @@ export class WsClient {
         //      `dispatchReplyResolvers` 触发，回调自行解析
         //      `envelope.payload.ok` / `error` / `data`。
         // get_state reply — per-session phase + blocked_on mirror
-        // (M3 §4.1). M4 routing: route by `envelope.session` to
-        // the matching bucket; session-less → M3_LEGACY bucket.
-        // Same as session_state above (just no work_dir on
-        // get_state reply).
+        // (M3 §4.1). M4 routing：fallback 链 envelope.session ??
+        // currentSessionKey ?? M3_LEGACY_KEY（R2 翻转）。Session-less
+        // inbound 落当前活动 session 桶（M4 单端模型），无活动
+        // session 时才落 M3_LEGACY（M3-compat fallback）。
+        // get_state reply — fallback 链 (R2): envelope.session ??
+        // currentSessionKey ?? M3_LEGACY_KEY。Bridge 在 outbound
+        // 自答时透传 inbound 的 session 字段；M4 ceremony 由
+        // App.tsx 注入 session 字段（R3 落地）——bridge 回执必带
+        // session，但兜底链路仍按 R2 路径走（仪式层未升级前的
+        // 旧 ceremony 形态 + 兜底防护）。
         const state = tryDecodeGetStateData(envelope);
         if (state !== null) {
-          const sessionKey = envelope.session ?? M3_LEGACY_KEY;
+          const sessionKey = envelope.session ?? this._currentSessionKey ?? M3_LEGACY_KEY;
           const bucket = this.bucketFor(sessionKey);
           this.setBucketSessionPhase(bucket, state.phase);
           this.setBucketBlockedOn(bucket, state.blocked_on ?? [], Date.now());
@@ -1116,18 +1158,20 @@ export class WsClient {
           // W4 守卫：仅当回执 reply_to 匹配最近一次
           // sendSessionList 生成的 id 时才更新镜像；陈旧回执
           // 静默丢弃。组件层另有 inFlightListRef 同款防护。
-          // W2 路由：更新目标桶 = envelope.session 的桶
-          // （或 M3_LEGACY 当 envelope.session 缺省）。当前
-          // sendSessionList 已自动填 session，但保守的兜底
-          // 处理仍然在 M4 task 08 边界内：跨 session 的迟到
-          // 回执（极端竞态）绝不污染其他 session 桶。
+          // W2 路由：更新目标桶 = envelope.session 的桶（M4 流
+          // 下 sendSessionList 自动填 session）。review 修复轮 R2
+          // 把兜底扩展为 `envelope.session ?? currentSessionKey ??
+          // M3_LEGACY_KEY`——桥端可能不 echo session（自答路径
+          // 透传 inbound；M3 token-only 路径 inbound session-less），
+          // 此时落当前 session 视图的桶（M4 单端活动会话模型）；
+          // currentSessionKey 仍 null 时才落 M3_LEGACY（M3-compat）。
           const replyTo = envelope.reply_to;
           if (
             replyTo !== undefined &&
             replyTo.length > 0 &&
             replyTo === this._lastSessionListId
           ) {
-            const sessionKey = envelope.session ?? M3_LEGACY_KEY;
+            const sessionKey = envelope.session ?? this._currentSessionKey ?? M3_LEGACY_KEY;
             const bucket = this.bucketFor(sessionKey);
             this.setBucketSessionList(bucket, sessions.sessions);
           }
@@ -1146,16 +1190,23 @@ export class WsClient {
       case 'snapshot': {
         // get_messages reply — replace the message list wholesale. Per
         // PRD §4.3, `snapshot.messages` is the authoritative history.
-        // M4 routing: write to the bucket at `envelope.session` (or
-        // M3_LEGACY for session-less). The bridge injects the
-        // session field on `snapshot` (verify against the bridge
-        // outbound wrapper — see session-layer.ts `makeOutboundWrapper`
-        // which injects on session_state only; events/snapshot pass
-        // through verbatim). When the bridge forwards a snapshot
-        // without a session field, it lands in M3_LEGACY which is
-        // the M3-compat fallback. M4 normal flow always sees a
-        // session field on snapshot.
-        const sessionKey = envelope.session ?? M3_LEGACY_KEY;
+        //
+        // M4 routing (review 修复轮 R2 fallback 链):
+        //   - `envelope.session` echo (bridge may carry it) →
+        //     路由到对应 session 桶；
+        //   - session-less (bridge **does NOT** inject session on
+        //     snapshot — `makeOutboundWrapper` only injects on
+        //     `session_state`, see packages/bridge/src/session-layer.ts)
+        //     → 落到 `currentSessionKey` 桶（M4 单端活动会话模型：用户
+        //     在看 session X，session-less snapshot 必然来自 X 的 manager）；
+        //   - `currentSessionKey` 仍 null（用户停留在 ChoicePage / 未进入
+        //     任何 session） → 落 `M3_LEGACY_KEY` 桶（M3-compat fallback，
+        //     task 06 C2 移交义务：web 不得主动发 session-less envelope，
+        //     该路径仅服务于 bridge M3_LEGACY manager 自身行为）。
+        // 桥端不"注入 session on snapshot"——这是事实，不是桥注入
+        // 假象（task 07 实施期 JSDoc 的"bridge injects session on
+        // snapshot"表述错误，review R2 翻转）。
+        const sessionKey = envelope.session ?? this._currentSessionKey ?? M3_LEGACY_KEY;
         const bucket = this.bucketFor(sessionKey);
         this.setBucketMessages(bucket, envelope.payload.messages);
         // A snapshot often arrives at the end of a turn — clear any
@@ -1171,15 +1222,21 @@ export class WsClient {
         break;
       }
       case 'event': {
-        // M4 routing: route by `envelope.session` to the bucket.
-        // Events without a session field land in M3_LEGACY (bridge
-        // does NOT inject session on event envelopes per
-        // `makeOutboundWrapper`). M4 normal flow: the events are
-        // for whichever manager is currently emitting — that's the
-        // bucket keyed by the manager's session (the manager
-        // started from a session_state{session:<stem>}, so the
-        // web already has a bucket for it).
-        const sessionKey = envelope.session ?? M3_LEGACY_KEY;
+        // M4 routing (review 修复轮 R2 fallback 链):
+        //   - `envelope.session` echo（极少 — pi 0.85.1 不在 event 上
+        //     带 session 字段） → 路由到对应 session 桶；
+        //   - session-less（bridge `makeOutboundWrapper` 仅在
+        //     `session_state` 注入 session，事件透传无 session 字段）
+        //     → 落到 `currentSessionKey` 桶（M4 单端活动会话模型：用户
+        //     在看 session X，活动事件来自 X 的 manager）；
+        //   - `currentSessionKey` 仍 null（用户在 ChoicePage / 未进入
+        //     任何 session） → 落 `M3_LEGACY_KEY` 桶（M3-compat fallback）。
+        // 表现：用户新会话流（pending `new` 桶 → 派生后 stem 回填）下，
+        // bridge pending 期间发的流式 delta 事件 session-less → 落 `new`
+        // 桶；stem 派生后 broadcast session_state{session:<stem>} → web
+        // 回填 hash + currentSessionKey 变 stem → 后续事件落 stem 桶。
+        // R4 stem 回填桶迁移负责把 `new` 桶里的早期消息搬到 stem 桶。
+        const sessionKey = envelope.session ?? this._currentSessionKey ?? M3_LEGACY_KEY;
         const bucket = this.bucketFor(sessionKey);
         this.handlePiEvent(bucket, envelope.payload.event, envelope.payload.data);
         break;
@@ -1817,6 +1874,64 @@ export class WsClient {
   private setBucketWorkDir(bucket: SessionBucket, workDir: string): void {
     if (bucket.workDir === workDir) return;
     bucket.workDir = workDir;
+    this.emitStateChange();
+  }
+
+  /** R4 review 修复轮——stem 回填桶迁移。
+   *
+   *  触发：session_state 处理器收到 `envelope.session === <realStem>`
+   *  （非 'new' / 非 M3_LEGACY / 非 undefined），且：
+   *  - `_sessions['new']` 存在（user 早期消息累积）；
+   *  - 广播携带 `work_dir` 与 `new` 桶的 `workDir` 一致（防误迁移：
+   *    不同 work_dir 的 'new' 桶不应被本 session_state 抢走——用户的
+   *    pending 流只对应本 work_dir）；
+   *  - `_currentSessionKey === 'new'`（用户还在 pending 流；
+   *    `=== stem` 也允许——App.tsx 回填 effect 已写过 hash 但本事件
+   *    在 hashchange 之前到达）。
+   *
+   *  行为：rename `_sessions['new']` 为 `_sessions[<stem>]`，保留
+   *  所有 8 字段（messages / streamingDraft / _draftHasDelta / queue
+   *  / sessionPhase / blockedOn / workDir / recovery / sessionList）；
+   *  删除 'new' 键。emitStateChange 触发 React 重渲染——ChatView
+   *  切到读 stem 桶时拿到完整历史。
+   *
+   *  失败路径：
+   *  - 'new' 桶不存在（用户直接进现存会话，无早期累积）→ no-op；
+   *  - workDir 不匹配 → no-op（防御性：bridge session_state 的
+   *    work_dir 必与 manager 配置一致；不一致 = bridge bug，不静默
+   *    吞，按 no-op 走 console.warn 提示）；
+   *  - currentSessionKey 既非 'new' 也非 stem → no-op（用户已离开
+   *    pending 流——例如中途切到其他会话；'new' 桶内容不应被劫持）。
+   *
+   *  副作用：
+   *  - emitStateChange 触发 useSyncExternalStore 重渲染——bucket
+   *    引用变化迫使 ChatView 重新选择桶对象；
+   *  - 删除 'new' 键后，bucketFor('new') 重新创建空桶（lazy
+   *    semantics）——用户再次切回 'new' 占位 URL 时是干净的桶，
+   *    与"新会话 = 全新历史"语义一致。*/
+  private migratePendingBucket(stem: string, broadcastWorkDir: string | undefined): void {
+    const pending = this._sessions[SESSION_NEW];
+    if (pending === undefined) return;
+    if (this._currentSessionKey !== SESSION_NEW && this._currentSessionKey !== stem) {
+      // 用户已离开 pending 流；'new' 桶可能是其他并发流的累积
+      // (理论上 M4 单端活动模型不会出现并发 pending，但保守
+      // 守卫防误迁移)。
+      return;
+    }
+    if (
+      broadcastWorkDir !== undefined &&
+      pending.workDir !== null &&
+      pending.workDir !== broadcastWorkDir
+    ) {
+      // work_dir 不一致——'new' 桶不属于本 session_state 描述的
+      // session。No-op（不 console.warn 是因为 R2 兜底链路下
+      // 工作目录判断可能受 store 镜像更新时机影响，留 false-negative
+      // 容差）。
+      return;
+    }
+    // Rename: `new` 桶的所有累积状态搬到 `<stem>` 桶。
+    this._sessions[stem] = pending;
+    delete this._sessions[SESSION_NEW];
     this.emitStateChange();
   }
 
