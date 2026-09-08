@@ -33,6 +33,12 @@ import {
 import { logger } from './logger.js';
 import { resolvePiAgentDir } from './pi-cwd-encoder.js';
 import { PiProcessManager } from './pi-process.js';
+import {
+  resolveDefaultStatePath,
+  StateError,
+  WorkDirStore,
+  migrateFromBridgeConfig,
+} from './state.js';
 import { shareUrl } from './token.js';
 
 /** Tracks the auto-run client's lifecycle so `uncaughtException` can close
@@ -130,6 +136,11 @@ export interface StartOptions {
   /** Override the config file path (CLI flag / test seam / programmatic
    *  caller). When omitted, `resolveDefaultConfigPath()` is consulted. */
   configPath?: string;
+  /** Override the state.json path (test seam). When omitted,
+   *  `resolveDefaultStatePath()` is consulted. NOT exposed as a CLI
+   *  flag (PRD §2.2: "state.json 路径不暴露 CLI / env 参数") — only
+   *  programmatic callers and tests use this seam. */
+  statePath?: string;
   /** Override the logger (test seam). */
   logger?: typeof logger;
   /** Override the WebSocket factory (test seam). */
@@ -159,6 +170,16 @@ function describeConfigError(err: ConfigError): string {
   return `bridge: ${err.code}: ${err.message}`;
 }
 
+/** Friendly single-line stderr message for a `StateError`. Same shape
+ *  as `describeConfigError` — surfaced to operators as a one-liner
+ *  without the underlying Zod / fs stack. The `code` is the same
+ *  `parse_failed` / `invalid_state` discriminator the loader emits,
+ *  so log aggregators can switch on it the same way they switch on
+ *  the ConfigError codes. */
+function describeStateError(err: StateError): string {
+  return `bridge: state: ${err.code}: ${err.message}`;
+}
+
 /** Generate a token, print it + the share URL, and start the client.
  *  Exposed so tests can drive the lifecycle without spawning a child. */
 export function start(options: StartOptions = {}): {
@@ -167,6 +188,8 @@ export function start(options: StartOptions = {}): {
   client: BridgeClient;
   workerUrl: string;
   manager: PiProcessManager;
+  workDirStore: WorkDirStore;
+  statePath: string;
 } {
   const log = options.logger ?? logger;
   // Path resolution order: explicit `configPath` option → `--config`
@@ -206,6 +229,48 @@ export function start(options: StartOptions = {}): {
       : err;
   }
 
+  // M4 task 04: load + M3-migrate the runtime work_dirs state.
+  //
+  // Path resolution: explicit `statePath` option (test seam) →
+  // XDG_CONFIG_HOME env / `~/.config/remotepi/state.json` default.
+  // The same XDG env var governs both files (bridge.json + state.json)
+  // — operators who set XDG_CONFIG_HOME expect both to land under
+  // that root, not just one. We deliberately do NOT expose
+  // `statePath` as a CLI flag (PRD §2.2 — "不新增 CLI 参数"):
+  // hand-editing a state file is not a supported workflow, and a
+  // second config file with its own flag would be operator-confusing.
+  //
+  // `migrateFromBridgeConfig` does:
+  //   - state.json exists → return its work_dirs (no migration).
+  //   - state.json missing + bridge.json has work_dir → write
+  //     `[work_dir]` to state.json + log the migration line +
+  //     return `[work_dir]`.
+  //   - state.json missing + bridge.json has empty work_dir →
+  //     write `[]` to state.json (so the file exists for future
+  //     restarts) and return `[]`. No migration log line because
+  //     there was nothing to migrate.
+  const statePath = options.statePath ?? resolveDefaultStatePath();
+  let initialWorkDirs: string[];
+  try {
+    initialWorkDirs = migrateFromBridgeConfig(config, statePath, log);
+  } catch (err) {
+    if (err instanceof StateError) {
+      log.error(describeStateError(err));
+    } else {
+      const e = toError(err);
+      log.error(`bridge: unexpected state error: ${e.stack ?? e.message}`);
+    }
+    throw err instanceof StateError
+      ? new Error(describeStateError(err), { cause: err })
+      : err;
+  }
+  // The in-memory WorkDirStore owns the work_dirs list for the
+  // lifetime of the bridge process. `add` / `remove` (tasks 05/06
+  // wiring) go through it; the on-disk file is the atomic write
+  // + rollback seam that keeps the in-memory and on-disk states
+  // consistent across crash + restart.
+  const workDirStore = new WorkDirStore(initialWorkDirs, statePath);
+
   // Resolve token: explicit `token` option (test seam) wins over
   // config file's `token`; otherwise delegate to `readTokenOrGenerate`
   // (which honours a non-empty config token or generates a fresh
@@ -224,12 +289,17 @@ export function start(options: StartOptions = {}): {
   // script. The `worker URL:` line makes the actually-resolved
   // endpoint visible — without it, an operator staring at the
   // banner would have to inspect the config file to know which
-  // environment they're connected to.
+  // environment they're connected to. The `state:` line (M4 task
+  // 04) makes the resolved state.json path visible so the
+  // operator can grep for atomic-write failures / migration lines
+  // against the same path the runtime actually wrote to.
   log.info(`config: ${configPath}`);
+  log.info(`state: ${statePath}`);
   log.info(`token: ${token}`);
   log.info(`share URL: ${shareLink}`);
   log.info(`worker URL: ${workerUrl}`);
   log.info(`work_dir: ${config.work_dir}`);
+  log.info(`work_dirs: ${JSON.stringify(workDirStore.list())}`);
 
   const client = new BridgeClient(workerUrl, token, {
     createSocket: options.createSocket,
@@ -280,7 +350,15 @@ export function start(options: StartOptions = {}): {
   // sitting at phase=`exited` with no child is the intended steady
   // state.
 
-  return { token, shareUrl: shareLink, client, workerUrl, manager };
+  return {
+    token,
+    shareUrl: shareLink,
+    client,
+    workerUrl,
+    manager,
+    workDirStore,
+    statePath,
+  };
 }
 
 // ----- CLI entry guard -----

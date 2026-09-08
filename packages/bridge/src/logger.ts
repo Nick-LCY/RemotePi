@@ -49,3 +49,16 @@ export const logger = {
     console.error(format('error', args));
   },
 };
+
+/** Structural type for the bridge logger — accepts a function that
+ *  emits an `info` line. Used by modules that need to log a
+ *  one-shot lifecycle event (e.g. the M3→M4 work_dir migration
+ *  notice in `state.ts`) and want to be testable without going
+ *  through `console.log` directly. Mirrors the runtime shape of
+ *  the `logger` const above; the `warn` and `error` levels are
+ *  intentionally not part of the contract because the modules
+ *  that accept a `Logger` only need `info` (and a future
+ *  extension can broaden the type without breaking callers). */
+export interface Logger {
+  info(...args: unknown[]): void;
+}
