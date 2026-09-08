@@ -34,12 +34,20 @@ export type ProtocolVersion = typeof PROTOCOL_VERSION;
 export const KINDS = ['control', 'pi'] as const;
 export type Kind = (typeof KINDS)[number];
 
-/** All legal control-family `type` values. M3 adds `get_state` (8 → 9) as
- *  a deliberate unlock of the v1 control-family `no new types` commitment —
- *  see [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]
- *  for the rationale. The remaining 8 (`handshake`, `ping`, `pong`,
- *  `bridge_status`, `session_state`, `session_list`, `result`, `error`)
- *  are carried over verbatim from the M2 lock. */
+/** All legal control-family `type` values.
+ *
+ *  History:
+ *  - M2 lock: 8 types (handshake, ping, pong, bridge_status, session_state,
+ *    session_list, result, error).
+ *  - M3 unlock: 8 → 9 (added `get_state`, see ADR-0006).
+ *  - M4 unlock: 9 → 13 (added `list_directories`, `work_dir_list`,
+ *    `work_dir_add`, `work_dir_remove` — see ADR-0010).
+ *
+ *  Both unlocks share the same rationale (v1 has no third-party consumers,
+ *  three components deploy in lock-step — see ADR-0006 §背景 for the full
+ *  argument; ADR-0010 cross-references and confirms the predicate still
+ *  holds for M4). The remaining 8 are carried over verbatim from the M2
+ *  lock; the failure code set (`ERROR_CODES`) is also unchanged. */
 export const CONTROL_TYPES = [
   'handshake',
   'ping',
@@ -50,6 +58,14 @@ export const CONTROL_TYPES = [
   'get_state',
   'result',
   'error',
+  // M4 unlock — work directory + directory browsing control surface
+  // (ADR-0010). Each new type is a web → bridge query / command that
+  // returns through `result` (same wire shape as `session_list` /
+  // `get_state`); none introduce new forwarding semantics.
+  'list_directories',
+  'work_dir_list',
+  'work_dir_add',
+  'work_dir_remove',
 ] as const;
 export type ControlType = (typeof CONTROL_TYPES)[number];
 

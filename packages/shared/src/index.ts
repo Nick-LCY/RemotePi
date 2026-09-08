@@ -4,18 +4,29 @@
 // nothing under `./protocol/*` is part of the supported API directly.
 // The four protocol modules each own one slice of the v1 wire surface:
 //
-//   - `./protocol/envelope.js`  — top-level `Envelope` + all enum literals
-//                                 (re-exported from `./protocol/literals.js`);
-//   - `./protocol/control.js`   — 9 control envelopes + their payload schemas
-//                                 + `ControlBranch`;
-//   - `./protocol/pi.js`        — 9 pi envelopes + their payload schemas +
-//                                 `PiBranch`;
-//   - `./protocol/block-on.js`  — `BlockedOnEntryPayloadSchema` +
-//                                 `ExtensionUIResponsePayloadSchema` +
-//                                 `BLOCK_ON_METHODS` (shared by both
-//                                 `session_state.payload.blocked_on[]`
-//                                 elements and the `extension_ui_response`
-//                                 envelope payload).
+//   - `./protocol/envelope.js`    — top-level `Envelope` + all enum literals
+//                                   (re-exported from `./protocol/literals.js`);
+//   - `./protocol/control.js`     — 13 control envelopes + their payload schemas
+//                                   + `ControlBranch` (9 → 13 unlock per
+//                                   ADR-0010);
+//   - `./protocol/pi.js`          — 9 pi envelopes + their payload schemas +
+//                                   `PiBranch` (no new types added in M4;
+//                                   envelope (a) extends `prompt.payload.work_dir`
+//                                   for `session:'new'`);
+//   - `./protocol/block-on.js`    — `BlockedOnEntryPayloadSchema` +
+//                                   `ExtensionUIResponsePayloadSchema` +
+//                                   `BLOCK_ON_METHODS` (shared by both
+//                                   `session_state.payload.blocked_on[]`
+//                                   elements and the `extension_ui_response`
+//                                   envelope payload);
+//   - `./protocol/work-dirs.js`   — M4 result schemas for `list_directories`
+//                                   and `work_dir_list` replies +
+//                                   request payload schemas for all four new
+//                                   control types (re-imported by `control.js`
+//                                   for the envelope wrappers);
+//   - `./protocol/session-list.js` — M4 `session_list.result.data.sessions[]`
+//                                   revalidation schemas (`SessionListEntrySchema`
+//                                   carries the new `status` 5-enum field).
 //
 // The split mirrors the M3 family split — each family owns its own
 // envelope schemas, and the top-level `Envelope` union lives in
@@ -27,3 +38,5 @@ export * from './protocol/envelope.js';
 export * from './protocol/control.js';
 export * from './protocol/pi.js';
 export * from './protocol/block-on.js';
+export * from './protocol/work-dirs.js';
+export * from './protocol/session-list.js';

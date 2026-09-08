@@ -52,9 +52,21 @@ import { EnvelopeBasePi } from './envelope-base.js';
  *  field at the bridge→pi boundary (see `translateToPiWire` in
  *  `packages/bridge/src/pi-process.ts`). The shared web wire keeps
  *  `content` for cross-transport stability (web sends `content`,
- *  bridge translates to `message` before writing to pi stdin). */
+ *  bridge translates to `message` before writing to pi stdin).
+ *
+ *  `work_dir` is the M4 additive optional field (ADR-0010 §演进规则
+ *  (a)). **Wire contract**: it MUST only be carried by prompts whose
+ *  envelope `session` is the literal string `'new'` — the
+ *  "create a new session under this directory" entry point. For any
+ *  other `session` value (real sessionKey stem, omitted) the bridge
+ *  ignores `work_dir` even when present. The shared schema enforces
+ *  the optional side of the contract only (presence is allowed; absence
+ *  is allowed); the "new only" rule is a bridge-side convention that
+ *  the web is responsible for honouring. See PRD §裁定 A 方案 A and
+ *  `pi.md` §多会话扩展. */
 export const PromptPayloadSchema = z.object({
   content: z.string(),
+  work_dir: z.string().optional(),
 });
 export type PromptPayload = z.infer<typeof PromptPayloadSchema>;
 

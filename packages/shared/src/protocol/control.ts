@@ -13,12 +13,19 @@
 //   - 3 new payloads (SessionState / Result / GetState) added in M3 to
 //     support web-side session-state queries and the unified `result`
 //     reply shape, plus the `session_state.blocked_on` field.
+//   - 4 new payloads (ListDirectories / WorkDirList / WorkDirAdd /
+//     WorkDirRemove) added in M4 — see ADR-0010. Request payload schemas
+//     are re-exported from `./work-dirs.js`; only the envelope wrappers
+//     live here. Result-data revalidation schemas live in
+//     `./session-list.js` (`SessionListEntrySchema`) and
+//     `./work-dirs.js` (`ListDirectoriesResultSchema` /
+//     `WorkDirListResultSchema`).
 //
-// The 9 envelope schemas (`HandshakeEnvelope` … `ErrorEnvelope`) form a
-// `discriminatedUnion('type', …)` exported as `ControlBranch` and
-// consumed by `envelope.ts` to build the top-level `Envelope`. This
-// file owns the per-schema definitions; `envelope.ts` owns the union
-// that ties `ControlBranch` / `PiBranch` / `Envelope` together.
+// The 13 envelope schemas (`HandshakeEnvelope` … `WorkDirRemoveEnvelope`)
+// form a `discriminatedUnion('type', …)` exported as `ControlBranch`
+// and consumed by `envelope.ts` to build the top-level `Envelope`. This
+// file owns the per-schema definitions; `envelope.ts` owns the union that
+// ties `ControlBranch` / `PiBranch` / `Envelope` together.
 //
 // Naming contract (M1): envelope Zod schema + derived type share the
 // same name (XxxEnvelope); payload Zod schema uses the `Schema` suffix
@@ -27,6 +34,12 @@ import { z } from 'zod';
 import { BlockedOnEntryPayloadSchema } from './block-on.js';
 import { EnvelopeBaseControl } from './envelope-base.js';
 import { BRIDGE_STATUS_REASONS, ERROR_CODES, ROLES, SESSION_PHASES } from './literals.js';
+import {
+  ListDirectoriesPayloadSchema,
+  WorkDirAddPayloadSchema,
+  WorkDirListPayloadSchema,
+  WorkDirRemovePayloadSchema,
+} from './work-dirs.js';
 
 // ---------------------------------------------------------------------------
 // M2 control payloads (carried over from envelope.ts)
@@ -81,10 +94,16 @@ export type ErrorPayload = z.infer<typeof ErrorPayloadSchema>;
 // SessionList payload (carried over from M2; session_state was renamed in M3)
 // ---------------------------------------------------------------------------
 
-/** SessionList payload — currently always the empty object. Future filter
- *  fields (e.g. `cwd` for directory scoping) will be added as optional
- *  fields under envelope evolution rule (a). */
-export const SessionListPayloadSchema = z.object({});
+/** SessionList payload — currently `{ work_dir?: string }` (M4 unlock,
+ *  see ADR-0010 §演进规则 (a)). `work_dir` is the **M4 操作惯例必带**
+ *  field that scopes the session scan to one directory; absence is
+ *  equivalent to "scan all directories" and is preserved as the M3
+ *  compatibility path. M4 web UI never sends the bare `{}` shape
+ *  (裁定 A: forced two-level choice — web must first pick a `work_dir`
+ *  before listing sessions). */
+export const SessionListPayloadSchema = z.object({
+  work_dir: z.string().optional(),
+});
 export type SessionListPayload = z.infer<typeof SessionListPayloadSchema>;
 
 // ---------------------------------------------------------------------------
@@ -92,7 +111,8 @@ export type SessionListPayload = z.infer<typeof SessionListPayloadSchema>;
 // ---------------------------------------------------------------------------
 
 /** SessionState payload — pi subprocess lifecycle phase plus optional
- *  array of currently-pending extension UI requests.
+ *  array of currently-pending extension UI requests, plus the M4
+ *  `work_dir` field (ADR-0010 §演进规则 (a)).
  *
  *  `phase` enumerates the 5 lock-versioned states (see
  *  [[architecture/protocol/control.md#5-session_state]] and
@@ -105,10 +125,17 @@ export type SessionListPayload = z.infer<typeof SessionListPayloadSchema>;
  *  a `BlockedOnEntryPayload` — see `block-on.ts` for the 4-method
  *  discriminated union. The bridge is the source of truth for this
  *  queue; the worker forwards `session_state` frames verbatim without
- *  inspecting the array. */
+ *  inspecting the array.
+ *
+ *  `work_dir` is the M4 additive optional field — when present, it is
+ *  the directory the bridge spawned the pi process under. The web's
+ *  `ChoicePage level=2` reads this from every broadcast so each row
+ *  can re-derive its `work_dir` without a separate `session_list`
+ *  query. Absence is legal (M3 single-session mode never set it). */
 export const SessionStatePayloadSchema = z.object({
   phase: z.enum(SESSION_PHASES),
   blocked_on: z.array(BlockedOnEntryPayloadSchema).optional(),
+  work_dir: z.string().optional(),
 });
 export type SessionStatePayload = z.infer<typeof SessionStatePayloadSchema>;
 
@@ -245,12 +272,74 @@ export const ErrorEnvelope = z.object({
 export type ErrorEnvelope = z.infer<typeof ErrorEnvelope>;
 
 // ---------------------------------------------------------------------------
+// M4 control payloads (new in M4 — see ADR-0010)
+//
+// The four new control types (`list_directories` / `work_dir_list` /
+// `work_dir_add` / `work_dir_remove`) are request-only from the web's
+// point of view — replies always go through the existing `result`
+// envelope (`ResultEnvelope` above) carrying a request-specific
+// `data` shape. The payload schemas live in `./work-dirs.js` and are
+// re-imported here so the envelope wrappers can spread them into the
+// discriminated union without forming a separate module.
+// ---------------------------------------------------------------------------
+
+/** `list_directories` envelope — web → bridge. Payload `{ path?: string }`;
+ *  absent `path` defaults to `$HOME` on the bridge side. Reply goes
+ *  through `result` carrying `data = ListDirectoriesResult` (see
+ *  `./work-dirs.js`). See control.md §6.5 + ADR-0010. */
+export const ListDirectoriesEnvelope = z.object({
+  ...EnvelopeBaseControl,
+  type: z.literal('list_directories'),
+  payload: ListDirectoriesPayloadSchema,
+});
+export type ListDirectoriesEnvelope = z.infer<typeof ListDirectoriesEnvelope>;
+
+/** `work_dir_list` envelope — web → bridge. Empty payload; reply goes
+ *  through `result` carrying `data = { work_dirs: string[] }` (see
+ *  `./work-dirs.js`). See control.md §6.6 + ADR-0010. */
+export const WorkDirListEnvelope = z.object({
+  ...EnvelopeBaseControl,
+  type: z.literal('work_dir_list'),
+  payload: WorkDirListPayloadSchema,
+});
+export type WorkDirListEnvelope = z.infer<typeof WorkDirListEnvelope>;
+
+/** `work_dir_add` envelope — web → bridge. Payload `{ path: string }`;
+ *  reply goes through `result` (`ok: true | false`; `data` omitted on
+ *  success — the web re-fetches via `work_dir_list`). See control.md
+ *  §6.7 + ADR-0010. */
+export const WorkDirAddEnvelope = z.object({
+  ...EnvelopeBaseControl,
+  type: z.literal('work_dir_add'),
+  payload: WorkDirAddPayloadSchema,
+});
+export type WorkDirAddEnvelope = z.infer<typeof WorkDirAddEnvelope>;
+
+/** `work_dir_remove` envelope — web → bridge. Payload `{ path: string }`;
+ *  reply goes through `result` (`ok: true | false`; same shape as
+ *  `work_dir_add`). The bridge does NOT kill any active manager rooted
+ *  in this directory — see PRD §钉子 3 (work_dir_remove 与活会话自然回收).
+ *  See control.md §6.8 + ADR-0010. */
+export const WorkDirRemoveEnvelope = z.object({
+  ...EnvelopeBaseControl,
+  type: z.literal('work_dir_remove'),
+  payload: WorkDirRemovePayloadSchema,
+});
+export type WorkDirRemoveEnvelope = z.infer<typeof WorkDirRemoveEnvelope>;
+
+// ---------------------------------------------------------------------------
 // ControlBranch — the discriminated union of all control-family envelopes
 // ---------------------------------------------------------------------------
 
 /** Control family — inner `discriminatedUnion('type', [...])`. Consumers
  *  who have narrowed a parsed envelope on `kind === 'control'` can
- *  `switch (env.type)` on this union to access per-type payload fields. */
+ *  `switch (env.type)` on this union to access per-type payload fields.
+ *
+ *  M4 unlock: the union grew from 9 to 13 members (added
+ *  `ListDirectoriesEnvelope` / `WorkDirListEnvelope` /
+ *  `WorkDirAddEnvelope` / `WorkDirRemoveEnvelope` — see ADR-0010). The
+ *  worker DO's `routeOpenMessage` switch covers every member via its
+ *  catch-all `default` forward branch — see `worker/src/room.ts`. */
 export const ControlBranch = z.discriminatedUnion('type', [
   HandshakeEnvelope,
   PingEnvelope,
@@ -261,5 +350,10 @@ export const ControlBranch = z.discriminatedUnion('type', [
   GetStateEnvelope,
   ResultEnvelope,
   ErrorEnvelope,
+  // M4 unlock — ADR-0010
+  ListDirectoriesEnvelope,
+  WorkDirListEnvelope,
+  WorkDirAddEnvelope,
+  WorkDirRemoveEnvelope,
 ]);
 export type ControlBranch = z.infer<typeof ControlBranch>;
