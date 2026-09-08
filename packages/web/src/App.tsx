@@ -224,13 +224,17 @@ function RecoveryView({ gate, token }: { gate: RecoveryGate; token: string }) {
   // guard so a fresh token → online transition starts a new
   // ceremony. M4 B 方案补充 `bridgeStatus?.online === false`
   // 守门：仪式启动瞬间若已知 bridge 离线（worker 握手后同步补发
-  // 的 `bridge_status` 显示 offline），不要发仪式；仪式由 retry
-  // 按钮 / bridge 重新上线后触发（ceremony 内部订阅 bridge_status，
-  // 上线后重新启动 retry 路径即可）。`null` 不触发——冷启动期间
-  // `bridge_status` 未补发是常态，避免误杀。 The retry button
-  // (and F5) drive subsequent attempts manually — the WsClient
-  // drops `send()` if the socket is closed and the 5s timer will
-  // catch the no-reply case.
+  // 的 `bridge_status` 显示 offline），不要发仪式；仪式仅由
+  // retry 按钮 / hash 变化（token 变化）重新发起——bridge 重新
+  // 上线后**不**自动重燃仪式（`autoStartConsumedRef` 已锁住当前
+  // token，bridgeStatus 由 false 翻 true 触发 effect 重跑时守门
+  // 仍命中 `current === token` → no-op）。PRD §6 仅要求"bridge
+  // 离线 → 秒失败"，不要求"恢复在线 → 自动重燃"——超规格承诺
+  // 显式剔除，用户须手动 retry / F5 / 换 token 才能重试。
+  // `null` 不触发——冷启动期间 `bridge_status` 未补发是常态，
+  // 避免误杀。 The retry button (and F5) drive subsequent
+  // attempts manually — the WsClient drops `send()` if the socket
+  // is closed and the 5s timer will catch the no-reply case.
   useEffect(() => {
     if (connState !== 'online') return;
     if (bridgeStatus !== null && bridgeStatus.online === false) return;

@@ -614,6 +614,75 @@ describe('recovery — M4 §6.3 B 方案 (bridgeStatus 离线秒失败)', () => 
     });
     expect(snapshot(gate).error).toBe('bridge_offline');
   });
+
+  // W4 / review fix — the WS-disconnect-during-ceremony path where
+  // the bridge_status `online:false` event NEVER reaches the client
+  // (e.g. socket died before the worker's offline broadcast could
+  // land). The ceremony must fall back to the 5s RECOVERY_TIMEOUT_MS
+  // safety net and resolve to `both_failed` — NOT mistakenly raise
+  // `bridge_offline` in the absence of an explicit offline signal.
+  // PRD §6 only mandates "bridge offline → 秒失败" when the
+  // offline signal actually arrives; silently dropping the signal
+  // is a generic network failure, indistinguishable from snapshot
+  // / state timeouts.
+
+  it('3.6 WS drops mid-ceremony, no bridge_status event ever arrives → both_failed (not bridge_offline)', () => {
+    const fake = new FakeWsClient();
+    const gate = initiateRecovery(fake as unknown as Parameters<typeof initiateRecovery>[0], {
+      timeoutMs: 5_000,
+      phaseProgressTimeoutMs: 15_000,
+    });
+    gate.retry();
+    // No `setBridgeStatus` call — fake.bridgeStatus stays `null`
+    // (cold-start false-positive guard is in effect), AND no
+    // bridge_status envelope is ever dispatched. This mirrors a
+    // WS disconnect where the worker's offline broadcast is lost
+    // on the wire: the ceremony sees no offline signal at all.
+    //
+    // No replies either — both the snapshot + state legs time out.
+    vi.advanceTimersByTime(5_000);
+
+    // Must fail as `both_failed` (5s both-timeout fallback) — NOT
+    // `bridge_offline` (no offline signal was observed, so the
+    // bridge_offline discriminator must NOT light up).
+    const state = snapshot(gate);
+    expect(state.error).toBe('both_failed');
+    expect(state.error).not.toBe('bridge_offline');
+    expect(state.ready).toBe(false);
+  });
+
+  it('3.7 bridgeStatus was last seen as online, then WS drops (no offline event) → both_failed, not bridge_offline', () => {
+    const fake = new FakeWsClient();
+    // Stamp bridgeStatus as online BEFORE the ceremony — the
+    // ceremony's initialBridgeStatus check sees online===true and
+    // does NOT pre-mark bridgeOfflineDetected. This is the
+    // "bridge was healthy, then the socket died" scenario.
+    fake.setBridgeStatus({
+      online: true,
+      changedAt: '2026-09-08T10:00:00.000Z',
+      reason: 'connected',
+      receivedAt: Date.now(),
+    });
+
+    const gate = initiateRecovery(fake as unknown as Parameters<typeof initiateRecovery>[0], {
+      timeoutMs: 5_000,
+      phaseProgressTimeoutMs: 15_000,
+    });
+    gate.retry();
+    // No further bridge_status event — simulates the socket dying
+    // before the worker's `online:false` broadcast can reach us.
+    // No replies either.
+    vi.advanceTimersByTime(5_000);
+
+    // Must resolve to `both_failed` (5s timer fallback), NOT
+    // `bridge_offline` (the offline signal was never observed —
+    // we only know the LAST seen status was online, which is not
+    // a "bridge is offline right now" guarantee).
+    const state = snapshot(gate);
+    expect(state.error).toBe('both_failed');
+    expect(state.error).not.toBe('bridge_offline');
+    expect(state.ready).toBe(false);
+  });
 });
 
 describe('recovery — M4 §6.3 StrictMode / retry 不泄漏监听器', () => {
@@ -778,18 +847,25 @@ function countListeners(fake: FakeWsClient, type: string): number {
 describe('recovery — RecoveryError union (M4 widening)', () => {
   it('6.1 type-level inclusion of bridge_offline', () => {
     // Compile-time check — the test runner just needs this to
-    // typecheck. Runtime assertion uses an exhaustiveness switch
-    // (each member of the union must be handled).
+    // typecheck. The `for` loop + `Record<RecoveryError, true>`
+    // assignment below are pure type-level probes: if
+    // `bridge_offline` were missing from the union, both
+    // constructs would fail to compile (the array literal would
+    // be rejected as a `RecoveryError[]`, and the `Record` map
+    // would be missing a required key). No runtime tautology —
+    // the only runtime assertion is the single non-trivial check
+    // on `map.bridge_offline`.
     const allErrors: RecoveryError[] = [
       'snapshot_failed',
       'state_failed',
       'both_failed',
       'bridge_offline',
     ];
-    for (const e of allErrors) {
-      // If `bridge_offline` were missing from the union, this
-      // assignment would fail to compile.
-      expect(e).toBe(e);
+    // Touch each element so the type-level probe isn't flagged
+    // as dead code by the strict TS settings — no runtime check,
+    // the loop body is intentionally trivial.
+    for (const _e of allErrors) {
+      /* type-level probe only */
     }
     // exhaustiveness probe — `Record<RecoveryError, true>` requires
     // every member of the union; an omission would fail to compile.
