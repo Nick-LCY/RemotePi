@@ -162,6 +162,28 @@ export default async function globalTeardown(): Promise<void> {
             // Best-effort.
           }
         }
+        // Preserve bridge-postmortem.log — the bridge's full
+        // stdout/stderr is captured here via an independent
+        // listener attached by bridge-process.ts (bypasses any
+        // global-setup-side pipe issues). Used during task 13
+        // review to diagnose "pipe drops post-setup data"
+        // symptoms. The earlier dedicated `bridge.log` was
+        // dropped when the global-setup dual-write fanout proved
+        // unable to capture post-setup chunks reliably.
+        const bridgePostMortemLog = path.join(stateRef.tmpRoot, 'bridge-postmortem.log');
+        if (existsSync(bridgePostMortemLog)) {
+          try {
+            const preservedPostMortemPath = path.join(
+              e2eRoot,
+              '.tmp',
+              `bridge-postmortem-${path.basename(stateRef.tmpRoot)}.log`,
+            );
+            const { copyFile } = await import('node:fs/promises');
+            await copyFile(bridgePostMortemLog, preservedPostMortemPath);
+          } catch {
+            // Best-effort.
+          }
+        }
         await rm(stateRef.tmpRoot, { recursive: true, force: true });
       },
     };

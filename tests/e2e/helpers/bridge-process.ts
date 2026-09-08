@@ -19,6 +19,7 @@
 
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 
@@ -42,6 +43,13 @@ export interface BridgeProcessOptions {
   readyTimeoutMs?: number;
   /** Log prefix tag for stdout/stderr pipes (helps with trace). */
   tag?: string;
+  /** Optional path to an independent post-mortem log file. The
+   *  helper appends EVERY stdout/stderr chunk to this file via
+   *  its own listener (independent of the parent global-setup
+   *  pipe) — used during task 13 review to diagnose
+   *  "pipe-dropped-data" symptoms. Set this to a file path and
+   *  the helper lazy-creates the file on the first chunk. */
+  postMortemLogPath?: string;
 }
 
 export interface BridgeProcess {
@@ -122,10 +130,24 @@ function spawnBridge(opts: BridgeProcessOptions): BridgeProcess {
   }
   stdoutStream.setEncoding('utf8');
   stderrStream.setEncoding('utf8');
+  // Optional post-mortem log sink — when set, EVERY stdout/stderr
+  // chunk is appended to this file (not truncated). Useful when
+  // diagnosing "bridge emitted nothing post-setup" mysteries: the
+  // main file (bridge.log written by global-setup.ts) might lose
+  // data due to pipe timing issues, but a second independent
+  // listener on the same stream is the canonical confirmation.
+  // Set via `postMortemLogPath` option (default: undefined).
+  let postMortemLogStream: ReturnType<typeof createWriteStream> | null = null;
+  if (opts.postMortemLogPath !== undefined) {
+    postMortemLogStream = createWriteStream(opts.postMortemLogPath, { flags: 'a' });
+  }
   stdoutStream.on('data', (chunk: string) => {
     stdoutTail += chunk;
     if (stdoutTail.length > 4096) {
       stdoutTail = stdoutTail.slice(-4096);
+    }
+    if (postMortemLogStream !== null) {
+      postMortemLogStream.write('[bridge stdout] ' + chunk);
     }
     if (!connected && readyMatcher.test(stdoutTail)) {
       connected = true;
@@ -140,6 +162,9 @@ function spawnBridge(opts: BridgeProcessOptions): BridgeProcess {
     stderrTail += chunk;
     if (stderrTail.length > 4096) {
       stderrTail = stderrTail.slice(-4096);
+    }
+    if (postMortemLogStream !== null) {
+      postMortemLogStream.write('[bridge stderr] ' + chunk);
     }
   });
   child.on('exit', (code, signal) => {

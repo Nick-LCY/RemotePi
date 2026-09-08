@@ -92,6 +92,20 @@ export interface FakeLlmServerOptions {
    * accidental binding to `0.0.0.0` in a future refactor.
    */
   enforceLoopback?: boolean;
+  /**
+   * When `true`, the server awaits a `setImmediate` between each SSE
+   * event within a single reply. Default: `false` — all events are
+   * flushed in one TCP write so a fast WsClient (and React's
+   * batching) sees the final state without intermediate renders.
+   *
+   * The E2E suite enables this so scenario (a)'s multi-delta
+   * streaming assertion can actually OBSERVE intermediate draft
+   * lengths (each event gets its own microtask, giving React a
+   * chance to commit between events). The integration suite leaves
+   * it off — its assertions are about end-state behavior, not
+   * observable streaming, and the latency is wasted budget.
+   */
+  flushEachEvent?: boolean;
 }
 
 export interface FakeLlmServer {
@@ -242,6 +256,154 @@ export function toolUseReply(opts: {
 // Server implementation
 // ---------------------------------------------------------------------------
 
+/** Read the request body as a UTF-8 string. Reuses the chunk-
+ *  accumulation pattern from the main /v1/messages handler so any
+ *  future tweaks (max body size, encoding) live in one place. */
+async function readBody(req: http.IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    const buf: Buffer =
+      typeof chunk === 'string'
+        ? Buffer.from(chunk)
+        : Buffer.from(chunk as ArrayBufferLike);
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** Validate a single SSE event shape: `{ event: string, data: any }`.
+ *  Returns the validated event or null. We deliberately accept any
+ *  JSON-serializable `data` — the LLM client (pi) only reads the
+ *  JSON, not its runtime shape. */
+function parseSseEvent(raw: unknown): SseEvent | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.event !== 'string' || obj.event.length === 0) return null;
+  // `data` may be any JSON value (object, array, primitive, string).
+  // We pass through verbatim — SseEvent's data is `unknown`.
+  return { event: obj.event, data: obj.data };
+}
+
+/** Validate one ScriptEntry from the admin endpoint body. Returns
+ *  the entry or null. Three valid shapes:
+ *    - `{kind:'reply',  reply: SseEvent[]}`
+ *    - `{kind:'error',  status:number, body:{type:'error', error:{type,message}}}`
+ *    - `{kind:'pause',  ms:number}`
+ *  Anything else returns null; the caller rejects the whole body. */
+function parseScriptEntry(raw: unknown): ScriptEntry | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  if (obj.kind === 'reply') {
+    if (!Array.isArray(obj.reply)) return null;
+    const reply: SseEvent[] = [];
+    for (const ev of obj.reply) {
+      const parsed = parseSseEvent(ev);
+      if (parsed === null) return null;
+      reply.push(parsed);
+    }
+    return { kind: 'reply', reply };
+  }
+  if (obj.kind === 'error') {
+    if (typeof obj.status !== 'number' || obj.status < 100 || obj.status > 599) return null;
+    const body = obj.body as Record<string, unknown> | undefined;
+    if (body === undefined) return null;
+    if (body.type !== 'error') return null;
+    const errorObj = body.error as Record<string, unknown> | undefined;
+    if (errorObj === undefined) return null;
+    if (typeof errorObj.type !== 'string' || typeof errorObj.message !== 'string') return null;
+    return {
+      kind: 'error',
+      status: obj.status,
+      body: {
+        type: 'error',
+        error: { type: errorObj.type, message: errorObj.message },
+      },
+    };
+  }
+  if (obj.kind === 'pause') {
+    if (typeof obj.ms !== 'number' || obj.ms < 0 || !Number.isFinite(obj.ms)) return null;
+    return { kind: 'pause', ms: obj.ms };
+  }
+  return null;
+}
+
+/** POST /__e2e/script — inject a scripted sequence of responses.
+ *  Body: `{ entries: ScriptEntry[] }`. Validates each entry;
+ *  rejects the whole body if any entry is malformed. On success,
+ *  REPLACES the current script queue (NOT appends — explicit
+ *  semantics so a spec that runs twice doesn't get stale entries
+ *  from the first run). Returns `{ok:true, count:N}` or a 4xx
+ *  with the failure reason.
+ *
+ *  Takes a getter+setter pair for the script ref because the
+ *  `script` closure variable lives inside `startFakeLlmServer` —
+ *  this helper is module-scope so it can be reused, but it must
+ *  not capture a stale reference (re-assignment via `script = …`
+ *  inside this function would shadow the outer variable). */
+async function handleScriptInjection(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  setScript: (next: ScriptEntry[]) => void,
+): Promise<void> {
+  const raw = await readBody(req);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'invalid JSON body' }));
+    return;
+  }
+  if (parsed === null || typeof parsed !== 'object') {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'body must be an object' }));
+    return;
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (!Array.isArray(obj.entries)) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'body.entries must be an array' }));
+    return;
+  }
+  const entries: ScriptEntry[] = [];
+  for (let i = 0; i < obj.entries.length; i += 1) {
+    const entry = parseScriptEntry(obj.entries[i]);
+    if (entry === null) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: `entry[${i}] is malformed (expected {kind:'reply'|'error'|'pause', ...})`,
+        }),
+      );
+      return;
+    }
+    entries.push(entry);
+  }
+  // REPLACE the script queue. Existing queued entries are
+  // discarded — the spec's intent is "the next N LLM calls get
+  // these responses", and accumulating across spec invocations
+  // would cause cross-spec bleed (scenario b reload sees scenario
+  // a's queued entries, etc.).
+  setScript(entries);
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, count: entries.length }));
+}
+
+/** GET /__e2e/requests — return a JSON snapshot of every request
+ *  the server has received (across all spec invocations during the
+ *  server's lifetime; not reset on script replacement). Used for
+ *  post-mortem assertion — the spec can grab the recorded requests
+ *  via fetch() rather than rely on the parent's local closure
+ *  state (which the spec doesn't have). */
+function handleRequestsDump(
+  res: http.ServerResponse,
+  recorded: AnthropicRequest[],
+): void {
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, requests: recorded }));
+}
+
 /**
  * Start a fake LLM server bound to `127.0.0.1:0`.
  *
@@ -253,6 +415,7 @@ export async function startFakeLlmServer(
   options: FakeLlmServerOptions = {},
 ): Promise<FakeLlmServer> {
   const enforceLoopback = options.enforceLoopback ?? true;
+  const flushEachEvent = options.flushEachEvent ?? false;
   const requests: AnthropicRequest[] = [];
   // The script queue is always a `ScriptEntry[]` after normalization.
   // The function form is wrapped on storage to apply the same
@@ -283,6 +446,30 @@ export async function startFakeLlmServer(
       }
 
       const url = req.url ?? '';
+      // E2E admin endpoints — loopback-only, separate path namespace
+      // so they can't collide with the /v1/messages contract. These
+      // exist so the E2E harness (which can't import the in-process
+      // `script()` / `requests` state) can inject scripted replies +
+      // read recorded requests via HTTP. The integration suite
+      // (in-process driver) doesn't need them but they're harmless
+      // when unused — every request still passes the loopback guard.
+      //
+      // Path namespacing note (`/__e2e/script` etc.): the spec MUST
+      // not start the prompt with `__e2e` because the fake server's
+      // URL is `http://127.0.0.1:<port>` and a path collision would
+      // mean a future admin endpoint accidentally consumes an LLM
+      // call. The path-namespace convention keeps the two surfaces
+      // disjoint.
+      if (req.method === 'POST' && url.startsWith('/__e2e/script')) {
+        await handleScriptInjection(req, res, (next) => {
+          script = next;
+        });
+        return;
+      }
+      if (req.method === 'GET' && url.startsWith('/__e2e/requests')) {
+        handleRequestsDump(res, requests);
+        return;
+      }
       if (req.method !== 'POST' || !url.startsWith('/v1/messages')) {
         res.writeHead(404, { 'content-type': 'application/json' });
         res.end(
@@ -417,6 +604,19 @@ export async function startFakeLlmServer(
       });
       for (const ev of pendingReply) {
         res.write(`event: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
+        // Per-event flush — opt-in via `flushEachEvent: true`.
+        // Each `setImmediate` yields one event-loop tick so the
+        // WsClient's `onmessage` handler fires once per event and
+        // React can commit intermediate states. Without this, a
+        // fast local server writes all 5 deltas to the socket in
+        // one syscall, the fetch API reads them in one chunk, and
+        // `appendStreamingDraft` is called 5x in a single sync tick
+        // — React 18's auto-batching then commits only the final
+        // state, so the test never observes an intermediate draft
+        // length.
+        if (flushEachEvent) {
+          await new Promise<void>((r) => setImmediate(r));
+        }
       }
       res.end();
     })();

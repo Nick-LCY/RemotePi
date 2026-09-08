@@ -17,7 +17,13 @@
 import { startFakeLlmServer } from '../../integration/helpers/fake-llm-server.js';
 
 async function main(): Promise<void> {
-  const server = await startFakeLlmServer();
+  // `flushEachEvent: true` enables per-event SSE flushing so the
+  // E2E suite can observe intermediate streaming-draft states
+  // (multi-delta scenario a). See FakeLlmServerOptions.flushEachEvent
+  // JSDoc for the batching trade-off. Integration tests instantiate
+  // `startFakeLlmServer()` directly without this flag — they don't
+  // care about observable streaming, only end-state behavior.
+  const server = await startFakeLlmServer({ flushEachEvent: true });
   // Print the banner as the FIRST stdout write so the parent's
   // parsing doesn't race with any future log lines.
   process.stdout.write(`FAKE_LLM_URL=${server.url}\n`);
