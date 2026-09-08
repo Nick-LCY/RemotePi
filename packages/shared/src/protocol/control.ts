@@ -21,6 +21,21 @@
 //     `./work-dirs.js` (`ListDirectoriesResultSchema` /
 //     `WorkDirListResultSchema`).
 //
+// ## M4 envelope (a) field additions (ADR-0010 §决策.2)
+//
+// Additive optional fields landed alongside the 4 new types:
+//   - `session_list.payload.work_dir?: string` — scopes the session
+//     scan to one directory (M4 操作惯例必带; schema remains optional
+//     for M3 compatibility).
+//   - `session_state.payload.work_dir?: string` — every broadcast
+//     carries its session's work_dir so the web ChoicePage (任务 07)
+//     can render work_dir per row without an extra session_list query.
+//   - `pi/prompt.payload.work_dir?: string` — only carried when
+//     envelope `session === 'new'` (裁定 A 方案 A); other pi commands
+//     ignore it. The schema is in `pi.ts`; see ADR-0010 §决策.2.
+//
+// All three are additive optional fields — no lock bump.
+//
 // The 13 envelope schemas (`HandshakeEnvelope` … `WorkDirRemoveEnvelope`)
 // form a `discriminatedUnion('type', …)` exported as `ControlBranch`
 // and consumed by `envelope.ts` to build the top-level `Envelope`. This
@@ -229,9 +244,14 @@ export const SessionStateEnvelope = z.object({
 export type SessionStateEnvelope = z.infer<typeof SessionStateEnvelope>;
 
 /** SessionList envelope — web → bridge query, reply comes back as
- *  `result` (see `ResultEnvelope`). Payload is the empty object
- *  today; future filter fields (e.g. `cwd` for directory scoping)
- *  will be added as optional fields under envelope evolution rule (a). */
+ *  `result` (see `ResultEnvelope`). Payload is `{ work_dir? }` as of
+ *  M4 (envelope evolution rule (a) — see ADR-0010 §决策.2);
+ *  `work_dir` is the **M4 操作惯例必带** field that scopes the
+ *  session scan to one directory, and the M4 ChoicePage (任务 07)
+ *  always sets it. Absence is the M3 compatibility path
+ *  ("scan all directories"); new M4 web UI never sends bare `{}`.
+ *  Future filter fields will be added as further optional fields
+ *  under envelope evolution rule (a). */
 export const SessionListEnvelope = z.object({
   ...EnvelopeBaseControl,
   type: z.literal('session_list'),

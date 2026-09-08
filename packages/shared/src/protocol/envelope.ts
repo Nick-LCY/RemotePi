@@ -3,7 +3,7 @@
 // Wire layout (see docs/architecture/protocol/envelope.md):
 //   { v: 1, kind: "control"|"pi", type, id, session?, reply_to?, payload }
 //
-// ## File contents (M3 split)
+// ## File contents (M3 split, M4 extension)
 //
 // M2 kept every control-family payload schema + envelope + the top-level
 // `Envelope` union in this one file. M3 splits it so each family owns its
@@ -20,7 +20,21 @@
 //                              Schema` (4-method discriminated union) +
 //                              `ExtensionUIResponsePayloadSchema` (web wire
 //                              shape).
-//   - `./control.ts`         — 9 control envelopes + their payload schemas
+//   - `./work-dirs.ts`       — M4 work-dir-related request payloads
+//                              (`ListDirectoriesPayloadSchema` /
+//                              `WorkDirListPayloadSchema` /
+//                              `WorkDirAddPayloadSchema` /
+//                              `WorkDirRemovePayloadSchema`) + result-data
+//                              revalidation schemas (`ListDirectoriesResult
+//                              Schema` / `WorkDirListResultSchema`) +
+//                              `PiPromptPayloadWorkDirSchema` (only the
+//                              `work_dir?` field lives here; the rest of
+//                              `pi/prompt` payload stays in `pi.ts`).
+//   - `./session-list.ts`    — M4 `SessionListEntrySchema` (per-row,
+//                              includes the new `status` 5-enum field) +
+//                              `SessionListResultSchema` (whole
+//                              `data.sessions[]` revalidation).
+//   - `./control.ts`         — 13 control envelopes + their payload schemas
 //                              + `ControlBranch` discriminated union.
 //   - `./pi.ts`              — 9 pi envelopes + their payload schemas +
 //                              `PiBranch` discriminated union.

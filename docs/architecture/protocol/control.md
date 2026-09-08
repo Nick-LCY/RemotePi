@@ -127,7 +127,7 @@ bridge 在不在线（由中间层生成）。
 - **payload**：
   - `phase`：`"spawning"`（启动中）/ `"ready"`（可用）/ `"running"`（干活中）/ `"idle"`（空闲）/ `"exited"`（已退出）。
   - `blocked_on`（M3 新增，可选）：未决阻塞弹窗数组；缺省视为空数组。每项是 [[architecture/protocol/pi.md#extension_ui_request|4 类 `extension_ui_request` 阻塞方法]]之一（`select` / `confirm` / `input` / `editor`），形状与 pi 原生 `extension_ui_request` 对应阻塞方法同形（`method` / `id` / `title` / 方法专属字段 / 可选 `timeout`，editor 无 `timeout`）；fire-and-forget 5 类（`notify` / `setStatus` / `setWidget` / `setTitle` / `set_editor_text`）不入此数组，详见 [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]]。
-  - `work_dir`（M4 新增，可选）：该 pi 进程的工作目录；每条广播携带对应 work_dir，便于 web 在 `ChoicePage` 列表直接渲染（不查 `session_list`）。缺省视为"未知 work_dir"（M3 单会话阶段不回填）。schema 锁版不变，仅新增可选字段。
+  - `work_dir`（M4 新增，可选）：该 pi 进程的工作目录；每条广播携带对应 work_dir，便于 web 在 `ChoicePage` 列表直接渲染（不查 `session_list`）。缺省视为"未知 work_dir"（M3 单会话阶段不回填）。schema 锁版不变，仅新增可选字段。`ChoicePage` 为任务 07 落地（详见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.2 / §决策.3）。
 - **规则**：一轮对话结束（pi 报 `agent_settled`）→ `idle`；空闲满 5 分钟 bridge 杀掉 pi 进程 → `exited`。`blocked_on` 在弹窗出现 / 提交 / 超时时同步增删。
 - **设计理由**：状态属于 pi 进程而不属于 bridge（一个 bridge 可能同时管理多个 pi 进程），故按会话一条。`blocked_on` 与 session_state 同帧广播是为了让 web 端弹窗组件仅由状态帧驱动渲染（无乐观 UI），详见 ADR-0004。`work_dir` 与 session_state 同帧广播是为了让 web 端 `ChoicePage` 列表行直接显示 work_dir 而无需额外查 `session_list`。
 
@@ -370,7 +370,7 @@ control 请求的通用回执。
   | `unsupported_type` | type 不识别且无法转发处理时 | false |
   | `internal` | 中间层内部异常 / bridge state.json 写失败回滚 / `list_directories` 路径校验失败 等 | false |
 
-> M4 不新增 code（[[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.8）：4 个新 type 失败时复用 `invalid_envelope` / `internal` / `unsupported_type`（按实施期最贴切选）。
+> M4 不新增 code（[[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.8）：4 个新 type 失败时复用 `invalid_envelope` / `internal`（按实施期最贴切选）；新 type 已被 `CONTROL_TYPES` 字面量覆盖、worker `routeOpenMessage` 的 `default` 分支自动转发，不会触发 `unsupported_type`——该 code 仅面向真正未知的 type。
 
 ---
 
