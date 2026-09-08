@@ -96,15 +96,37 @@ export function startFakeLlmProcess(opts: FakeLlmProcessOptions = {}): Promise<F
       if (stderrTail.length > 4096) stderrTail = stderrTail.slice(-4096);
     });
     child.stdout?.setEncoding('utf8');
+    // W4 — accumulate stdout across chunks and match per-line.
+    // The previous implementation applied the regex to a single
+    // chunk; if the OS / Node pipe split the banner across two
+    // chunks (e.g. `FAKE_LLM_URL=http://127.0` + `.0.1:34567\n`)
+    // neither chunk matched, the `url !== null` early-return then
+    // silenced subsequent chunks, and the harness hung until the
+    // 10s readyTimeoutMs fired. The accumulator below grows an
+    // `outBuffer` until we see `\n`, then scans the completed line.
+    let outBuffer = '';
     child.stdout?.on('data', (chunk: string) => {
-      // Parse the first line of stdout: it MUST be
+      if (url !== null) return;
+      outBuffer += chunk;
+      // Bound the buffer to a sane upper size to avoid runaway
+      // memory if a future log-format change stops emitting the
+      // newline entirely (we'd just hit the readyTimeout instead).
+      if (outBuffer.length > 4096) {
+        outBuffer = outBuffer.slice(-4096);
+      }
+      const newlineIdx = outBuffer.indexOf('\n');
+      if (newlineIdx < 0) return; // banner not yet complete
+      // Parse the first line: it MUST be
       // `FAKE_LLM_URL=http://127.0.0.1:<port>`. Anything else is a
       // startup error (e.g. the integration helper's port 0 bind
       // failed). Keep the parsing loose so a future log-format
       // change doesn't break this harness silently.
-      if (url !== null) return;
-      const match = /^FAKE_LLM_URL=(http:\/\/127\.0\.0\.1:\d+)\b/m.exec(chunk);
-      if (match === null) return;
+      const firstLine = outBuffer.slice(0, newlineIdx);
+      const match = /^FAKE_LLM_URL=(http:\/\/127\.0\.0\.1:\d+)\b/.exec(firstLine);
+      if (match === null) {
+        finishReady(() => rejectP(new Error(`fake-llm banner missing or malformed: ${firstLine.slice(0, 200)}`)));
+        return;
+      }
       const candidate = match[1];
       if (candidate === undefined) return;
       url = candidate;

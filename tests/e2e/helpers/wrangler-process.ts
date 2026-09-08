@@ -109,7 +109,6 @@ export function startWranglerProcess(opts: WranglerProcessOptions): Promise<Wran
 
   let ready = false;
   let exitInfo: { code: number | null; signal: NodeJS.Signals | null } | null = null;
-  let readyTimer: ReturnType<typeof setTimeout> | null = null;
   // shared mutable for the exit-error message
   let lastError: { message: string } | null = null;
 
@@ -181,10 +180,6 @@ export function startWranglerProcess(opts: WranglerProcessOptions): Promise<Wran
   };
 
   const stop = async (): Promise<void> => {
-    if (readyTimer !== null) {
-      clearTimeout(readyTimer);
-      readyTimer = null;
-    }
     if (child.exitCode !== null) return;
     if (child.pid !== undefined) {
       try {

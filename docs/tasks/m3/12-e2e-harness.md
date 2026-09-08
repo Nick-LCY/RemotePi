@@ -183,19 +183,22 @@ status: done
 
 ### 文件清单
 
-**新增**（11 文件）：
+**新增**（13 文件）：
 - `tests/e2e/playwright.config.ts`（独立 runner，敲定点 1 `.ts` 通过）
 - `tests/e2e/tsconfig.json`（独立 typecheck，`paths` 仿 integration 双通道）
 - `tests/e2e/helpers/global-setup.ts`（五段就绪链 + wrangler-first 顺序 + bundle WSS URL 审计）
 - `tests/e2e/helpers/global-teardown.ts`（反序 SIGKILL + debug.log 跨 run 保留）
 - `tests/e2e/helpers/bridge-process.ts`（spawn `npx tsx src/index.ts --config` + grep `connected to`）
 - `tests/e2e/helpers/wrangler-process.ts`（spawn `npx wrangler dev` + /healthz 200 poll）
-- `tests/e2e/helpers/fake-llm-process.ts` + `fake-llm-standalone.ts`（独立子进程，survive globalSetup 退出）
+- `tests/e2e/helpers/fake-llm-process.ts`（独立子进程父端，survive globalSetup 退出）
+- `tests/e2e/helpers/fake-llm-standalone.ts`（独立子进程入口，`FAKE_LLM_URL=` 首行 stdout banner）
 - `tests/e2e/helpers/env-builder.ts`（4 行 re-export 包装）
-- `tests/e2e/specs/{01-first-turn,02-reload-recovery,03-multi-tab-first-responder}.spec.ts`（场景 a 实现 + b/c stub + JSDoc 指回 task 13）
-- `tests/integration/helpers/build-hermetic-env.ts`（抽取真源，11 项 PROVIDER_KEY_ENV_VARS）
+- `tests/e2e/specs/01-first-turn.spec.ts`（场景 a 实现）
+- `tests/e2e/specs/02-reload-recovery.spec.ts`（场景 b stub + JSDoc 指回 task 13）
+- `tests/e2e/specs/03-multi-tab-first-responder.spec.ts`（场景 c stub + JSDoc 指回 task 13）
+- `tests/integration/helpers/build-hermetic-env.ts`（抽取真源，11 项 PROVIDER_KEY_ENV_VARS + `buildHermeticEnv`）
 
-**修改**（4 文件）：
+**修改**（5 文件）：
 - `package.json`（`test:e2e` + `typecheck:e2e` 两个脚本 + `@playwright/test` devDep）
 - `.gitignore`（3 行：`tests/e2e/.tmp/` + `tests/e2e/test-results/` + `tests/e2e/playwright-report/`）
 - `eslint.config.js`（`projectService` ignores 加 4 条：`tests/e2e/.tmp/**` / `tests/e2e/playwright-report/**` / `tests/e2e/test-results/**` / `tests/integration/.tmp/**`）

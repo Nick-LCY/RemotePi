@@ -91,6 +91,25 @@ export interface GlobalHarness {
   state: RunState;
 }
 
+/** W3 — Shape of the globalThis stash that `setupHarness()` writes
+ *  progressively and `global-teardown.ts` reads on the other side.
+ *  Every field is nullable so a partial-progress stash (e.g.
+ *  fake-server spawned but wrangler failed) still type-checks for
+ *  the teardown's best-effort kill loop. Kept in sync with the
+ *  copy in `global-teardown.ts` (both files define the same shape
+ *  rather than cross-importing because Playwright's
+ *  globalSetup/globalTeardown contract uses two separate worker
+ *  processes — sharing a TypeScript module isn't worth the
+ *  resolution ambiguity). */
+export interface HarnessHandles {
+  bridgePid: number | null;
+  wranglerPid: number | null;
+  fakeServerPid: number | null;
+  fakeServerPort: number | null;
+  runTag: string;
+  tmpRoot: string;
+}
+
 /** Pre-build web + bridge if their `dist/` is missing. We DON'T
  *  always rebuild — that's too slow for a `test:e2e` loop where the
  *  operator is iterating on a test. The expectation is that
@@ -191,102 +210,233 @@ async function assertPortFree(): Promise<void> {
 }
 
 async function setupHarness(): Promise<GlobalHarness> {
-  assertDistArtifacts();
-  await mkdir(tmpRoot, { recursive: true });
-  await cleanWranglerPersist();
-  await assertPortFree();
+  // W3 — wrap the entire setup so a mid-flight failure still leaves
+  // teardown something to clean up (PIDs are stashed progressively
+  // below, BEFORE each potentially-throwing readiness await). On
+  // any failure, S1 wires in `clearStaleTmp()` to wipe the
+  // half-baked `.tmp/` so the next run doesn't inherit a stale
+  // run-state.json that points at dead processes. The teardown ALSO
+  // runs on setup failure (Playwright contract) — these two paths
+  // are complementary, not redundant: teardown kills child PIDs;
+  // clearStaleTmp wipes stale on-disk state.
+  let harness: GlobalHarness | null = null;
+  try {
+    assertDistArtifacts();
+    await mkdir(tmpRoot, { recursive: true });
+    await cleanWranglerPersist();
+    await assertPortFree();
 
-  const fakeServer = await startFakeLlmProcess();
+    const fakeServer = await startFakeLlmProcess();
+    // W3 — stash fakeServer immediately so a later failure still
+    // lets teardown reach the fake-llm PID (otherwise the fake
+    // server lives forever because no one has its handle).
+    stashHarness({ fakeServerPid: fakeServer.child.pid, fakeServerPort: fakeServer.port });
 
-  const fixture = await makeAgentDir({
-    fakeLlmBaseUrl: fakeServer.url,
-    runTag,
-  });
+    const fixture = await makeAgentDir({
+      fakeLlmBaseUrl: fakeServer.url,
+      runTag,
+    });
 
-  const token = `e2e-fixed-token-${runTag}`;
-  const bridgeConfigPath = path.join(tmpRoot, 'bridge.json');
-  const bridgeConfig = {
-    worker_url: `ws://localhost:${E2E_WORKER_PORT}/bridge`,
-    web_base_url: `http://localhost:${E2E_WORKER_PORT}`,
-    work_dir: fixture.workDir,
-    token,
+    const token = `e2e-fixed-token-${runTag}`;
+    const bridgeConfigPath = path.join(tmpRoot, 'bridge.json');
+    const bridgeConfig = {
+      worker_url: `ws://localhost:${E2E_WORKER_PORT}/bridge`,
+      web_base_url: `http://localhost:${E2E_WORKER_PORT}`,
+      work_dir: fixture.workDir,
+      token,
+    };
+    await writeFile(bridgeConfigPath, JSON.stringify(bridgeConfig, null, 2), 'utf8');
+
+    const bridgeEnv = buildHermeticEnv({ agentDir: fixture.agentDir });
+    // The bridge itself doesn't read provider keys, but the env it
+    // inherits is what its pi child sees — so the hermeticity lives
+    // here exactly as it does in tests/integration. (Production bridge
+    // doesn't strip provider keys — that's a deliberate decision noted
+    // in pi-process.ts — but the E2E harness is closer to a test
+    // fixture than a production deploy, so we keep the strip on.)
+
+    // Order note (deviation from task 12 §全局 setup step 4, documented
+    // here for the next maintainer): the task file says "bridge →
+    // wrangler", but the BRIDGE 僵尸挂账 (current-state TODO 2026-09-07)
+    // means the bridge exits cleanly with code 0 if its initial WS
+    // connection fails (Node 22's WebSocket fires `onerror` but NEVER
+    // `onclose` on ECONNREFUSED, so `BridgeClient.handleClose()` never
+    // fires and no reconnect timer is scheduled — the process then
+    // has no work on the event loop and exits). The bridge is NOT
+    // touched per task 12's "no product fixes" constraint, so we
+    // reverse the order: wrangler first, /healthz 200, THEN bridge.
+    // The bridge then connects on its first attempt and logs
+    // "connected to". This is the only workable ordering until the
+    // bridge 僵尸挂账 is resolved.
+    const wrangler = await startWranglerProcess({
+      wranglerTomlPath: path.join(repoRoot, 'worker', 'wrangler.toml'),
+      cwd: repoRoot,
+      readyTimeoutMs: 45_000,
+      persistTo: path.join(repoRoot, 'worker', '.wrangler'),
+    });
+    // W3 — stash wrangler immediately too. If the bridge spawn /
+    // readiness times out, teardown can still reach wrangler's PID.
+    stashHarness({ wranglerPid: wrangler.child.pid });
+
+    // Forward wrangler + bridge stdout/stderr to a debug log for
+    // post-mortem. Helps triage "why did the test fail" without
+    // rerunning.
+    //
+    // W2 — debugStream backpressure + failed-path fd close:
+    //   1) `.write()` returning `false` means the internal buffer is
+    //      full; if we don't await the 'drain' event the next chunk
+    //      can deadlock the wrangler/bridge pipes (their internal
+    //      backpressure stops applying, output stalls).
+    //   2) The stream's underlying fd must be `end()`-ed on every
+    //      exit path (success, throw, or SIGKILL mid-flight) — a
+    //      dangling WriteStream leaks an fd that the GC won't
+    //      reclaim (libuv holds the fd until the handle closes).
+    //      The try/finally below ensures `.end()` is called even
+    //      when the inner readiness awaits throw.
+    const debugLogPath = path.join(tmpRoot, 'debug.log');
+    const debugStream = (await import('node:fs')).createWriteStream(debugLogPath, { flags: 'a' });
+    try {
+      // Fire-and-forget the first banner; if it's a backpressure
+      // moment (unlikely on a fresh file, but be safe) we await
+      // 'drain' inline before continuing.
+      await writeWithBackpressure(debugStream, '=== wrangler dev ===\n');
+      wireForward(wrangler.child.stdout, debugStream, '[wrangler stdout] ');
+      wireForward(wrangler.child.stderr, debugStream, '[wrangler stderr] ');
+
+      // First readiness leg: /healthz 200. ADR-0009 §7.5.
+      await wrangler.waitForReady();
+
+      const bridge = await startBridgeProcess({
+        bridgeEntry: path.join(repoRoot, 'packages', 'bridge', 'src', 'index.ts'),
+        configPath: bridgeConfigPath,
+        cwd: repoRoot,
+        env: bridgeEnv,
+        readyTimeoutMs: 30_000,
+      });
+      // W3 — stash bridge pid too. Once this is in globalThis, ALL
+      // three child PIDs are reachable from teardown.
+      stashHarness({ bridgePid: bridge.child.pid });
+
+      await writeWithBackpressure(debugStream, '=== bridge ===\n');
+      wireForward(bridge.child.stdout, debugStream, '[bridge stdout] ');
+      wireForward(bridge.child.stderr, debugStream, '[bridge stderr] ');
+
+      // Second readiness leg: bridge stdout "connected to". ADR-0009 §7.5.
+      await bridge.waitForReady();
+
+      // Third readiness leg (chat-view) is owned by the spec — the
+      // harness doesn't open Chromium.
+
+      const state: RunState = {
+        token,
+        baseUrl: `http://localhost:${E2E_WORKER_PORT}`,
+        tmpRoot,
+        agentDir: fixture.agentDir,
+        workDir: fixture.workDir,
+        bridgeConfigPath,
+        fakeLlmUrl: fakeServer.url,
+      };
+      // Write the run state so the specs can read it without depending
+      // on Playwright's `use()` fixture (which doesn't work across
+      // globalSetup ↔ spec boundaries in a typed way without a custom
+      // fixture module). The harness also re-uses `tmpRoot` for the
+      // teardown bookkeeping (fixture cleanup), so the teardown entry
+      // discovers it via the same JSON.
+      await writeFile(path.join(e2eRoot, '.tmp', 'run-state.json'), JSON.stringify(state, null, 2), 'utf8');
+
+      harness = { fakeServer, fixture, wrangler, bridge, state };
+      return harness;
+    } finally {
+      // W2 — close the fd on EVERY exit path (success + throw).
+      // Best-effort: a throw mid-await (e.g. bridge.waitForReady
+      // times out) must still release the WriteStream's fd so the
+      // GC can clean up. `.end()` is idempotent (subsequent calls
+      // after auto-close are no-ops).
+      try {
+        debugStream.end();
+      } catch {
+        // Best-effort — never mask the original error.
+      }
+    }
+  } catch (err) {
+    // S1 — setup failed mid-flight (any spawn or readiness threw).
+    // Wipe `.tmp/` so the next run doesn't pick up a stale
+    // run-state.json that points at dead PIDs (the teardown WILL
+    // also run, but it relies on either the run-state.json OR the
+    // globalThis stash — both of which may be partially-missing).
+    await clearStaleTmp();
+    throw err;
+  }
+}
+
+/** W3 — progressive stash helper. Each spawn that succeeds calls
+ *  this with its PID(s); subsequent failures still leave teardown
+ *  with the PIDs we already know about. Each call MERGES into the
+ *  existing stash rather than replacing it, so partial progress is
+ *  preserved.
+ *
+ *  Stash lives on `globalThis` because Playwright's globalSetup
+ *  and globalTeardown run in separate worker processes — the
+ *  JSON files at `.tmp/run-state.json` are the in-process companion
+ *  to this stash. */
+function stashHarness(patch: Partial<HarnessHandles>): void {
+  const prev =
+    ((globalThis as Record<string, unknown>)['__e2eHarness__'] as
+      | Partial<HarnessHandles>
+      | undefined) ?? {};
+  const next: HarnessHandles = {
+    bridgePid: patch.bridgePid ?? prev.bridgePid ?? null,
+    wranglerPid: patch.wranglerPid ?? prev.wranglerPid ?? null,
+    fakeServerPid: patch.fakeServerPid ?? prev.fakeServerPid ?? null,
+    fakeServerPort: patch.fakeServerPort ?? prev.fakeServerPort ?? null,
+    runTag: patch.runTag ?? prev.runTag ?? runTag,
+    tmpRoot: patch.tmpRoot ?? prev.tmpRoot ?? tmpRoot,
   };
-  await writeFile(bridgeConfigPath, JSON.stringify(bridgeConfig, null, 2), 'utf8');
+  (globalThis as Record<string, unknown>)['__e2eHarness__'] = next;
+}
 
-  const bridgeEnv = buildHermeticEnv({ agentDir: fixture.agentDir });
-  // The bridge itself doesn't read provider keys, but the env it
-  // inherits is what its pi child sees — so the hermeticity lives
-  // here exactly as it does in tests/integration. (Production bridge
-  // doesn't strip provider keys — that's a deliberate decision noted
-  // in pi-process.ts — but the E2E harness is closer to a test
-  // fixture than a production deploy, so we keep the strip on.)
-
-  // Order note (deviation from task 12 §全局 setup step 4, documented
-  // here for the next maintainer): the task file says "bridge →
-  // wrangler", but the BRIDGE 僵尸挂账 (current-state TODO 2026-09-07)
-  // means the bridge exits cleanly with code 0 if its initial WS
-  // connection fails (Node 22's WebSocket fires `onerror` but NEVER
-  // `onclose` on ECONNREFUSED, so `BridgeClient.handleClose()` never
-  // fires and no reconnect timer is scheduled — the process then
-  // has no work on the event loop and exits). The bridge is NOT
-  // touched per task 12's "no product fixes" constraint, so we
-  // reverse the order: wrangler first, /healthz 200, THEN bridge.
-  // The bridge then connects on its first attempt and logs
-  // "connected to". This is the only workable ordering until the
-  // bridge 僵尸挂账 is resolved.
-  const wrangler = await startWranglerProcess({
-    wranglerTomlPath: path.join(repoRoot, 'worker', 'wrangler.toml'),
-    cwd: repoRoot,
-    readyTimeoutMs: 45_000,
-    persistTo: path.join(repoRoot, 'worker', '.wrangler'),
+/** W2 — pipe a child's stdout/stderr through a WriteStream while
+ *  respecting backpressure. The handler is async; we don't await it
+ *  (the data event is fire-and-forget from Node's perspective) but
+ *  we DO attach an 'error' handler so an EPIPE on the child side
+ *  doesn't crash the harness. The `await writeWithBackpressure`
+ *  path is for the banner writes that happen inline (one-shot). */
+function wireForward(
+  source: NodeJS.ReadableStream | null,
+  dest: import('node:fs').WriteStream,
+  prefix: string,
+): void {
+  if (source === null) return;
+  source.on('data', (chunk: Buffer | string) => {
+    const text = typeof chunk === 'string' ? chunk : chunk.toString();
+    const ok = dest.write(prefix + text);
+    if (!ok) {
+      // Source backpressure: wait for the drain before resolving.
+      // We don't await this in the data handler (it would break the
+      // event-loop model), but we listen for drain so the NEXT
+      // chunk doesn't queue forever — the implicit back-pressure
+      // chain is: source pauses → our 'data' handler stops firing
+      // → child pipe stalls → child writes block. This matches the
+      // behaviour of `pipe()` without the lifecycle complexity.
+      dest.once('drain', () => undefined);
+    }
   });
-
-  // Forward wrangler stdout/stderr to a debug log for post-mortem.
-  // Helps triage "why did the test fail" without rerunning.
-  const debugLogPath = path.join(tmpRoot, 'debug.log');
-  const debugStream = (await import('node:fs')).createWriteStream(debugLogPath, { flags: 'a' });
-  debugStream.write('=== wrangler dev ===\n');
-  wrangler.child.stdout?.on('data', (c: Buffer | string) => debugStream.write(`[wrangler stdout] ${typeof c === "string" ? c : c.toString()}`));
-  wrangler.child.stderr?.on('data', (c: Buffer | string) => debugStream.write(`[wrangler stderr] ${typeof c === "string" ? c : c.toString()}`));
-
-  // First readiness leg: /healthz 200. ADR-0009 §7.5.
-  await wrangler.waitForReady();
-
-  const bridge = await startBridgeProcess({
-    bridgeEntry: path.join(repoRoot, 'packages', 'bridge', 'src', 'index.ts'),
-    configPath: bridgeConfigPath,
-    cwd: repoRoot,
-    env: bridgeEnv,
-    readyTimeoutMs: 30_000,
+  source.on('error', () => {
+    // EPIPE / child-exit. Swallow — the child already exited (its
+    // 'exit' handler will fire and tear down the harness); nothing
+    // actionable here.
   });
-  debugStream.write('=== bridge ===\n');
-  bridge.child.stdout?.on('data', (c: Buffer | string) => debugStream.write(`[bridge stdout] ${typeof c === "string" ? c : c.toString()}`));
-  bridge.child.stderr?.on('data', (c: Buffer | string) => debugStream.write(`[bridge stderr] ${typeof c === "string" ? c : c.toString()}`));
+}
 
-  // Second readiness leg: bridge stdout "connected to". ADR-0009 §7.5.
-  await bridge.waitForReady();
-
-  // Third readiness leg (chat-view) is owned by the spec — the
-  // harness doesn't open Chromium.
-
-  const state: RunState = {
-    token,
-    baseUrl: `http://localhost:${E2E_WORKER_PORT}`,
-    tmpRoot,
-    agentDir: fixture.agentDir,
-    workDir: fixture.workDir,
-    bridgeConfigPath,
-    fakeLlmUrl: fakeServer.url,
-  };
-  // Write the run state so the specs can read it without depending
-  // on Playwright's `use()` fixture (which doesn't work across
-  // globalSetup ↔ spec boundaries in a typed way without a custom
-  // fixture module). The harness also re-uses `tmpRoot` for the
-  // teardown bookkeeping (fixture cleanup), so the teardown entry
-  // discovers it via the same JSON.
-  await writeFile(path.join(e2eRoot, '.tmp', 'run-state.json'), JSON.stringify(state, null, 2), 'utf8');
-
-  return { fakeServer, fixture, wrangler, bridge, state };
+/** W2 — write a string to a WriteStream and resolve on 'drain' if
+ *  the buffer was full, immediately otherwise. Used for the inline
+ *  banner writes that happen before the pipe is fully wired. */
+function writeWithBackpressure(stream: import('node:fs').WriteStream, text: string): Promise<void> {
+  const ok = stream.write(text);
+  if (ok) return Promise.resolve();
+  return new Promise((resolve) => {
+    stream.once('drain', () => resolve());
+  });
 }
 
 /** Exported helper for specs that need to read the run state without
@@ -300,33 +450,18 @@ export async function readRunState(): Promise<RunState> {
 }
 
 export default async function globalSetup(): Promise<void> {
-  const harness = await setupHarness();
-  // Stash on globalThis for the global-teardown entry point.
-  // Playwright runs globalSetup and globalTeardown in separate
-  // worker processes, so we also serialize the handles into the
-  // `.tmp/run-state.json` (state) plus separate files for the
-  // child PIDs (we can't JSON-serialize a ChildProcess).
-  //
-  // The PID files live alongside `run-state.json`. teardown reads
-  // them and re-acquires handle references via `process.kill(pid, 0)`
-  // liveness checks + `child_process.spawn` re-creation if needed.
-  // In practice teardown sees the same PIDs and uses SIGKILL on the
-  // process groups, which is sufficient.
-  (globalThis as Record<string, unknown>)['__e2eHarness__'] = {
-    bridgePid: harness.bridge.child.pid,
-    wranglerPid: harness.wrangler.child.pid,
-    fakeServerPid: harness.fakeServer.child.pid,
-    fakeServerPort: harness.fakeServer.port,
-    runTag,
-    tmpRoot,
-  };
+  // W3 — PIDs are stashed progressively inside `setupHarness()`
+  // (after each successful spawn) so teardown can reach them even
+  // if a later spawn or readiness await throws. The default-export
+  // entry point is now just the catch-and-throw — the stash work
+  // already happened during setupHarness's life.
+  await setupHarness();
 }
 
 /** Force-clean the entire `.tmp/` directory tree on global-setup
- *  failure. We do this so a half-failed run doesn't leak the next
- *  run's run-state.json. The teardown ALSO runs on setup failure
- *  (per Playwright contract), but it's keyed off the in-memory
- *  harness handle which may already be partial. */
+ *  failure. Wired in by `setupHarness()`'s catch block (S1) so a
+ *  half-failed run doesn't leak into the next run. Public export
+ *  kept for tests / manual recovery (e.g. after a hard kill). */
 export async function clearStaleTmp(): Promise<void> {
   const tmpDir = path.join(e2eRoot, '.tmp');
   await rm(tmpDir, { recursive: true, force: true });

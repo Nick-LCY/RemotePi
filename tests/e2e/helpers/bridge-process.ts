@@ -94,7 +94,6 @@ function spawnBridge(opts: BridgeProcessOptions): BridgeProcess {
   });
 
   let connected = false;
-  let exitInfo: { code: number | null; signal: NodeJS.Signals | null } | null = null;
   // Mutated by the promise's resolve/reject closures below; we read
   // it lazily inside waitForReady so the surface area is minimal.
   let resolveReadyFn: (() => void) | null = null;
@@ -144,7 +143,6 @@ function spawnBridge(opts: BridgeProcessOptions): BridgeProcess {
     }
   });
   child.on('exit', (code, signal) => {
-    exitInfo = { code, signal };
     if (!connected) {
       const err = new Error(
         `bridge exited before connecting (code=${code}, signal=${signal}); ` +
@@ -172,7 +170,32 @@ function spawnBridge(opts: BridgeProcessOptions): BridgeProcess {
       clearTimeout(readyTimeout);
       readyTimeout = null;
     }
-    if (child.exitCode !== null) return;
+    // W5 — attach the one-shot exit listener BEFORE the kill (and
+    // before checking exitCode), so the listener can never miss an
+    // exit that races the kill. The previous code path attached
+    // `child.once('exit', …)` AFTER `process.kill(-pid, 'SIGKILL')`,
+    // which had a real race: Node 22 SIGKILL's the child within
+    // microseconds, the `exit` event fires synchronously on the
+    // libuv loop, and by the time we hit the `child.once(...)`
+    // attach the event has already been emitted. Node does NOT
+    // replay missed exit events, so `await` hangs until the outer
+    // promise timeout — teardown ordering then breaks down.
+    //
+    // Correct ordering: attach first, then check the
+    // already-exited case, then send the kill. The exit listener
+    // resolves the awaited promise regardless of which path fires
+    // it (kill-induced or natural exit).
+    const exitPromise = new Promise<void>((resolve) => {
+      child.once('exit', () => resolve());
+    });
+    if (child.exitCode !== null) {
+      // Already gone by the time stop() runs (e.g. bridge self-
+      // exited on ECONNREFUSED). The once listener may or may not
+      // have been called — race-free path is to check exitCode and
+      // resolve the await immediately if so.
+      await exitPromise;
+      return;
+    }
     // Process-group kill: the bridge spawns pi via
     // `nodeSpawn('pi', …)` without `detached:true`, so pi is a
     // child of the bridge and shares its process group. Sending
@@ -192,14 +215,9 @@ function spawnBridge(opts: BridgeProcessOptions): BridgeProcess {
         }
       }
     }
-    // Reap to avoid zombies. The exit listener above already ran by
-    // this point in normal cases; we await the close promise so
-    // teardown ordering is deterministic.
-    if (exitInfo === null) {
-      await new Promise<void>((resolve) => {
-        child.once('exit', () => resolve());
-      });
-    }
+    // Reap to avoid zombies. The once listener attached above
+    // fires either way (kill-induced or already-exited race).
+    await exitPromise;
   };
 
   // waitForReady just returns the inner promise so callers see the
