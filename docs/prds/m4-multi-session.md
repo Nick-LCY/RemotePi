@@ -1,6 +1,6 @@
 # M4 工作目录与会话管理（多会话并行 + 目录浏览 + 入口选择页）
 
-> 状态：**草案**（2026-09-08 落盘，待用户审法定稿）。协议基线：[[architecture/protocol/README.md|隧道协议 v1]]（2026-09-05 定稿）。本 PRD 在 envelope 演进规则 (a) 范围内为 `session_list` payload 新增可选 `work_dir` 过滤参数、为 `session_state` payload 新增可选 `work_dir` 字段、为 `pi/prompt` payload 新增可选 `work_dir` 字段（**仅 `session:'new'` 携带**——裁定 A 方案 A，新会话第一条消息是唯一入口），并按"协议演进小节"在 control 家族新增 4 个 type（`list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove`，破锁修订依据沿用 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]] 先例——v1 无第三方消费者 + 三端锁步部署）。pi 家族**仅 envelope (a) 增字段、零新增 type**（每会话独立 pi 进程推论，见 §1.4）。
+> 状态：**定稿**（2026-09-08，用户裁定定稿并拆任务）。协议基线：[[architecture/protocol/README.md|隧道协议 v1]]（2026-09-05 定稿）。本 PRD 在 envelope 演进规则 (a) 范围内为 `session_list` payload 新增可选 `work_dir` 过滤参数、为 `session_state` payload 新增可选 `work_dir` 字段、为 `pi/prompt` payload 新增可选 `work_dir` 字段（**仅 `session:'new'` 携带**——裁定 A 方案 A，新会话第一条消息是唯一入口），并按"协议演进小节"在 control 家族新增 4 个 type（`list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove`，破锁修订依据沿用 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]] 先例——v1 无第三方消费者 + 三端锁步部署）。pi 家族**仅 envelope (a) 增字段、零新增 type**（每会话独立 pi 进程推论，见 §1.4）。
 >
 > **修订注记（2026-09-08，业务共识来源）**：2026-09-08 用户裁定 M4 八条业务共识，本 PRD 一字不偏离——
 > 1. **并行多会话**（核心形态）：bridge 同时承载多个活跃对话；网页离开某会话 ≠ 关闭会话；idle 5min 回收按会话各自计时（M3 语义逐会话复制，回收后下次进入 / 发消息自动唤醒）。
