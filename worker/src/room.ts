@@ -22,11 +22,12 @@
 //      The DO deeply handles only handshake / bridge_status / error, and
 //      ping/pong carry special semantics (heartbeat nonce pairing). Every
 //      other envelope type — the rest of the control family (session_state,
-//      session_list, get_state, result) plus the entire pi family — is
-//      passed through verbatim via `forwardToOpposite`. The `default`
-//      branch in `routeOpenMessage` is the catch-all that enforces this
-//      "everything else forwards" contract (see also control.md
-//      §中间层处理规则: "其余一律原样转发").
+//      session_list, get_state, result, and the 4 M4 types:
+//      list_directories, work_dir_list, work_dir_add, work_dir_remove)
+//      plus the entire pi family — is passed through verbatim via
+//      `forwardToOpposite`. The `default` branch in `routeOpenMessage`
+//      is the catch-all that enforces this "everything else forwards"
+//      contract (see also control.md §中间层处理规则: "其余一律原样转发").
 //      - v ≠ 1            → `error(unsupported_version, terminal:true)` +
 //                            close 1008.
 //      - envelope parse fail → `error(invalid_envelope, terminal:false)`,
@@ -441,13 +442,23 @@ export class Room implements DurableObject {
         // bridge_status / error (all handled above or in handleHandshake)
         // and gives ping/pong the nonce-pairing carve-out (also above).
         // Everything else — the remaining control family members
-        // (session_state, session_list, get_state, result) and the entire
-        // pi family — is forwarded. The envelope has already been
-        // validated by `Envelope.safeParse` upstream (see webSocketMessage
-        // step 3), so this default cannot be hit by a structurally invalid
-        // or unknown type; only by legitimate protocol types we don't need
-        // to inspect. Future protocol additions naturally land here without
-        // needing a switch update.
+        // (session_state, session_list, get_state, result, and the 4 M4
+        // types: list_directories, work_dir_list, work_dir_add,
+        // work_dir_remove) and the entire pi family — is forwarded.
+        // The envelope has already been validated by `Envelope.safeParse`
+        // upstream (see webSocketMessage step 3), so this default cannot
+        // be hit by a structurally invalid or unknown type; only by
+        // legitimate protocol types we don't need to inspect. Future
+        // protocol additions naturally land here without needing a
+        // switch update.
+        //
+        // M3 lesson (commit `1c86aca`): this `default` branch was added
+        // after M3联调 showed that the v1 `switch` was missing the then-
+        // new `get_state` + the entire 9-type pi family — silently
+        // dropping them at the worker layer. The default-branch pattern
+        // is the only sustainable forward-compatible shape for the
+        // `routeOpenMessage` switch; any future protocol unlock
+        // (control or pi) lands here automatically.
       default:
         this.forwardToOpposite(meta, env);
         return;
