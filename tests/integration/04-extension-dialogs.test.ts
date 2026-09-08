@@ -1,4 +1,4 @@
-// Integration test 04 — extension UI dialogs (see docs/testing.md §2.6).
+// Integration test 04 — extension UI dialogs (see ADR-0008 §4 4 类阻塞弹窗脚本化触发).
 //
 // End-to-end coverage for the 4 blocking extension dialog methods
 // (select / confirm / input / editor) plus the cancelled response.

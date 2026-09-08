@@ -76,7 +76,7 @@ export async function makeAgentDir(opts: MakeAgentDirOptions): Promise<MakeAgent
   // `${baseURL}/v1/messages` verbatim; a trailing slash would yield
   // `/v1/messages` doubling the slash). `api` is the locked Anthropic
   // contract literal verified against `pi-ai` v0.x — see
-  // `docs/testing.md §2.5` for the source-of-truth reference.
+  // `ADR-0008 §1 Anthropic Messages API 决策` for the source-of-truth reference.
   const models = {
     providers: {
       'fake-anthropic': {

@@ -1,5 +1,4 @@
-// Integration test 03 — Anthropic error handling (see docs/testing.md
-// §2.6).
+// Integration test 03 — Anthropic error handling (see ADR-0008 §关键 wire 发现 #1).
 //
 // The plan for §3 originally expected the bridge to emit a
 // command_result{success:false, error:{code,message}} when the LLM

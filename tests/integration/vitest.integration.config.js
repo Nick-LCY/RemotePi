@@ -1,4 +1,4 @@
-// Vitest config for the integration test suite — see docs/testing.md §2.
+// Vitest config for the integration test suite — see ADR-0008 §3 (位置 + 独立 config + 根脚本).
 //
 // Runs the tests in `tests/integration/` that drive a real `pi` subprocess
 // pointed at a fixture agent-dir + a fake Anthropic Messages API server

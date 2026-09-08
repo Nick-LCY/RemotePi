@@ -1,4 +1,4 @@
-// Integration test 06 — multi-turn (see docs/testing.md §2.6).
+// Integration test 06 — multi-turn (see ADR-0008 §实施纪要 覆盖面 + §关键 wire 发现).
 //
 // Pins the multi-turn translation layer (`commit 44960b9` regression
 // class) end-to-end against the real pi subprocess:

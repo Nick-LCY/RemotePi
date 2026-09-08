@@ -10,7 +10,7 @@
 | 路线图 | 了解项目愿景、里程碑、待决问题 | [[roadmap.md]] |
 | 架构 | 理解系统设计、查看架构决策 (ADR) 与 RemotePi 隧道协议规范 | [[architecture/README.md]]（含 [[architecture/protocol/README.md\|protocol/]]） |
 | 约定 | 编码、提交、命名等规范 | [[conventions/README.md]] |
-| 测试规划 | 了解测试分层现状、假 LLM 集成测试方案、升级体检仪式 | [[testing.md]] |
+| 测试规划 | 了解 bridge wire 层集成测试方案、升级体检仪式（无头浏览器 E2E 仍挂账） | [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md\|ADR-0008]] |
 | 词汇表 | 统一文档库术语含义 | [[glossary.md]] |
 | 需求 (PRD) | 了解某个需求的设计 | [[prds/README.md]] |
 | 任务 | 领取 / 查看开发任务 | [[tasks/README.md]] |

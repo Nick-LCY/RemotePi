@@ -23,3 +23,6 @@
 | [[architecture/decisions/0003-session-lifecycle-and-history-source.md\|0003]] | DO 不持久化；session 生命周期与历史来源 | 已接受 | 2026-09-03 |
 | [[architecture/decisions/0004-extension-ui-dialog-forwarding.md\|0004]] | 扩展 UI 对话框转发到 web 弹窗 | 已接受 | 2026-09-03 |
 | [[architecture/decisions/0005-unified-domain-with-worker-static-assets-and-actions-cd.md\|0005]] | 部署形态：主域统一 + Worker Static Assets + GitHub Actions CD | 已接受 | 2026-09-05 |
+| [[architecture/decisions/0006-protocol-v1-get-state-unlock.md\|0006]] | 协议 v1 control 家族破锁：新增 `get_state` | 已接受 | 2026-09-05 |
+| [[architecture/decisions/0007-host-shared-pi-agent-dir.md\|0007]] | Bridge 复用宿主机 pi agent 目录 | 已接受 | 2026-09-05 |
+| [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md\|0008]] | 假 LLM server + 隔离 pi 集成测试（bridge wire 层回归套件） | 已接受 | 2026-09-08 |

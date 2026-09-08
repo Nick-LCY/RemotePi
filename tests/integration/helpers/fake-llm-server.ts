@@ -1,5 +1,5 @@
 // Fake Anthropic Messages API server for integration tests
-// (see docs/testing.md §2.4).
+// (see ADR-0008 §1 进程内假 LLM server 段).
 //
 // Spawns a Node `http.createServer` bound to `127.0.0.1:0` (random
 // free port) and serves a scripted sequence of SSE responses. The
@@ -189,7 +189,7 @@ export function sseMessageStop(): SseEvent {
 }
 
 /** Convenience: full 6-event sequence for a plain text reply.
- *  Matches the SSE shape pinned in docs/testing.md §2.4.2:
+ *  Matches the SSE shape pinned in ADR-0008 §1 SSE 事件序列铁律:
  *    message_start → content_block_start → content_block_delta
  *    → content_block_stop → message_delta → message_stop.
  */

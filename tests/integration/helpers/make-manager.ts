@@ -96,7 +96,7 @@ export function makeManager(opts: MakeManagerOptions): MakeManagerResult {
   // Fail fast with a clear message rather than letting every
   // case die with a 30 s spawn-timeout. CI intentionally does
   // not run this suite (see .github/workflows/ci.yml and
-  // docs/testing.md §2.7) — the guard is for local developers
+  // ADR-0008 §3) — the guard is for local developers
   // who haven't installed `@earendil-works/pi-coding-agent`.
   assertPiAvailable();
   const outbound: EnvelopeT[] = [];
@@ -119,7 +119,7 @@ export function makeManager(opts: MakeManagerOptions): MakeManagerResult {
   // concern — it needs pi to look ONLY at the fixture.
   baseEnv['PI_CODING_AGENT_DIR'] = opts.agentDir;
   // PI_OFFLINE=1 disables version check / telemetry / model catalogue
-  // refresh (see docs/testing.md §2.3) so pi never reaches the
+  // refresh (see ADR-0008 §1 环境变量三件套) so pi never reaches the
   // network for housekeeping during a fixture run.
   baseEnv['PI_OFFLINE'] = '1';
 
@@ -190,7 +190,7 @@ function assertPiAvailable(): void {
       `RemotePi integration suite requires the \`pi\` binary on PATH — ${reason}.\n` +
         `Install \`@earendil-works/pi-coding-agent\` (e.g. \`npm i -g @earendil-works/pi-coding-agent\`)\n` +
         `or run \`pi --version\` to verify your install. CI intentionally skips this suite\n` +
-        `(see docs/testing.md §2.7); it's meant to be run locally with \`pnpm run test:integration\`.`,
+        `(see ADR-0008 §3); it's meant to be run locally with \`pnpm run test:integration\`.`,
     );
   }
 }

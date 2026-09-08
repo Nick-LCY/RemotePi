@@ -1,4 +1,4 @@
-// Integration test 01 — happy path (see docs/testing.md §2.6).
+// Integration test 01 — happy path (see ADR-0008 §实施纪要 覆盖面).
 //
 // Verifies the four canonical end-to-end shapes a single prompt
 // round-trip produces on the bridge's outbound envelope stream:

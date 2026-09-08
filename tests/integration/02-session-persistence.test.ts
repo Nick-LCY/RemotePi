@@ -1,4 +1,4 @@
-// Integration test 02 — session persistence (see docs/testing.md §2.6).
+// Integration test 02 — session persistence (see ADR-0008 §实施纪要 覆盖面).
 //
 // Verifies the bridge correctly ties pi's session files to the bridge's
 // own state across restarts:
