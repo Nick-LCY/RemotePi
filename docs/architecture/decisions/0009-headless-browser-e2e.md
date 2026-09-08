@@ -196,3 +196,10 @@
 - **装配顺序铁律：wrangler → bridge**——Node 22 `WebSocket` 对 `ECONNREFUSED` 只 fire `onerror` 不 fire `onclose`，bridge `handleClose` 不调度重连，事件循环空 → bridge 进程以 exit 0 干净退出。这是**避免 bridge 僵尸挂账**的装配侧手段（[[current-state.md|TODO]] 2026-09-07 「bridge 僵尸」条目），**产品代码未动**（`packages/bridge/src/client.ts` 零 diff）。未来如根治该挂账（补 `onerror` → `onclose` 调度 / 加 `ws` 库代替原生 `WebSocket`），本铁律可取消。
 - **假 LLM 独立子进程铁律**——Playwright `globalSetup` worker 进程在 `setupHarness()` return 后**立即退出**（globalSetup 退出会带走 in-process server）。桥接的 pi 第一次 LLM 通话即 `ECONNREFUSED`，recovery ceremony 卡 5s。必须抽至独立子进程（`tests/e2e/helpers/fake-llm-process.ts` + `fake-llm-standalone.ts` 入口，`FAKE_LLM_URL=...` 首行 stdout banner 父进程解析）。详见 [[tasks/m3/12-e2e-harness.md#装配偏差task-12-全局-setup-step-4-vs-实际落地|12 装配偏差段]]。
 - **本机调试需预先清理残留进程**——`wrangler dev` / `workerd` / `tsx.*packages/bridge` 残留会占 8787 端口 / 留 .wrangler SQLite 状态。`pnpm test:e2e` 运行前最好 `pkill -9 -f 'wrangler|workerd|tsx.*packages/bridge'`——CI fresh runner 无此问题，仅本机调试需要。详见 [[tasks/m3/13-e2e-scenarios.md#收尾修复轮review-通过后的-follow-up-清单|13 收尾修复轮 stale process 清理项]]。
+
+### 全量测试基线（2026-09-08 实测）
+
+- **3 套件 314 条全绿**：`unit 281`（0.65s） + `integration 30`（11.7s） + `e2e 3`（10.1s，含一次性 globalSetup ≈3.2s：web 构建 + wrangler dev + bridge + fixture）；顺序总耗时 ≈23s。
+- **integration 成本结构**：几乎全在 hooks——每条 it 冷启真 pi（`spawnCount` + `bridge.start()` + handshake + LLM 假 server 装配），用例体本身仅 ~0.02s。按文件 wall 时长分布：`04-extension-dialogs 3.1s` > `01-happy-path 1.7s` > `06-multi-turn 1.2s` > `02-session-persistence 1.1s`，另 ~4.7s 在套件级 `beforeAll/afterAll` hook 无法按条归因。**未来提速方向**：per-file 复用 pi 进程（cache + 复用 `PiProcessManager` 实例），代价是牺牲隔离性（fixture 串味 + 状态污染），本套件**有意不优化**——隔离性是 ADR-0008 §1.5 密闭性的核心。
+- **口径注记**：vitest 原生「用例时长」不含 hooks，**看 `duration` 评估成本会严重低估**；需按文件 wall 而非 it duration 估算。`pnpm test:integration --reporter=verbose` 可看 it duration 但不包含 hook，`pnpm test:integration --reporter=default` 输出的 wall 总耗时更接近真实成本。
+- **数据来源**：本次为本机单轮实测，**非稳定基准**——耗时机器相关（CPU / 磁盘 / pi 二进制版本 / 假 server 端口分配延迟均影响），单次数据不推广；如需稳定基线需多轮 `hyperfine` 或类似工具采样。
