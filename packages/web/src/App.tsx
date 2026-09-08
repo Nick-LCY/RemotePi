@@ -5,6 +5,10 @@
 //   3. The connect/disconnect lifecycle tied to token presence.
 //   4. The M3 dual-query recovery gate between token-present and the
 //      chat surface (task 07 — PRD §4.4).
+//   5. M4 task 01 — 5s 修复接 phase 文案（PRD §6 / tasks/m4/01 B+C
+//      合体）：RecoveryInFlight 三态文案 + RecoveryErrorCard 4 类错误
+//      文案（新增 `bridge_offline`） + auto-start 补 bridgeStatus
+//      offline 守门。bridge / worker 零改动。
 //
 // The URL hash is the single source of truth for the token. The TokenPrompt
 // writes `window.location.hash` and triggers a `hashchange` event which
@@ -28,13 +32,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncExternalStore } from 'react';
 
+import type { SessionPhase } from '@remotepi/shared';
+
 import { ChatView } from './components/ChatView.js';
 import { StatusBar } from './components/StatusBar.js';
 import { TokenPrompt } from './components/TokenPrompt.js';
+import { errorHint } from './components/error-hint.js';
 import { WsClient, type ConnState } from './ws/WsClient.js';
-import { useConnState, useWsClient, WsClientProvider } from './ws/WsClientContext.js';
+import { useBridgeStatus, useConnState, useSessionPhase, useWsClient, WsClientProvider } from './ws/WsClientContext.js';
 import { initiateRecovery, type RecoveryError, type RecoveryGate } from './ws/recovery.js';
 import { resolveWssUrl } from './ws/config.js';
+
+export { errorHint };
 
 function readTokenFromHash(): string | null {
   const raw = window.location.hash;
@@ -179,6 +188,14 @@ function useGateRef(client: WsClient): RecoveryGate {
  *  torn down before the fresh pair of dual queries goes out. */
 function RecoveryView({ gate, token }: { gate: RecoveryGate; token: string }) {
   const connState = useConnState();
+  // M4 tasks/m4/01 B 方案补充：订阅 `bridgeStatus` 使 auto-start
+  // effect 能感知 bridge 离线（`null` 不触发——冷启动误杀防护）。
+  // 同时 `RecoveryInFlight` 仅需 phase 读取——bridgeStatus 文案仍
+  // 走 `StatusBar`，避免重复渲染。
+  const bridgeStatus = useBridgeStatus();
+  // M4 tasks/m4/01 §6.1 UI：`RecoveryInFlight` 接 `phase` prop 显示
+  // 阶段文案。phase 从 `useSessionPhase()` 读取（WebState 镜像）。
+  const phase = useSessionPhase();
   // `gate.subscribe` and `gate.getSnapshot` are arrow fields on the
   // gate object (stable per mount, see `RecoveryGate` JSDoc) — pass
   // them through verbatim. Inline arrows here would re-create the
@@ -205,16 +222,22 @@ function RecoveryView({ gate, token }: { gate: RecoveryGate; token: string }) {
   // First attempt per token: wait for the WebSocket to be open so
   // the dual queries actually go out. Token changes re-arm the
   // guard so a fresh token → online transition starts a new
-  // ceremony. The retry button (and F5) drive subsequent
-  // attempts manually — the WsClient drops `send()` if the
-  // socket is closed and the 5s timer will catch the no-reply
-  // case.
+  // ceremony. M4 B 方案补充 `bridgeStatus?.online === false`
+  // 守门：仪式启动瞬间若已知 bridge 离线（worker 握手后同步补发
+  // 的 `bridge_status` 显示 offline），不要发仪式；仪式由 retry
+  // 按钮 / bridge 重新上线后触发（ceremony 内部订阅 bridge_status，
+  // 上线后重新启动 retry 路径即可）。`null` 不触发——冷启动期间
+  // `bridge_status` 未补发是常态，避免误杀。 The retry button
+  // (and F5) drive subsequent attempts manually — the WsClient
+  // drops `send()` if the socket is closed and the 5s timer will
+  // catch the no-reply case.
   useEffect(() => {
     if (connState !== 'online') return;
+    if (bridgeStatus !== null && bridgeStatus.online === false) return;
     if (autoStartConsumedRef.current === token) return;
     autoStartConsumedRef.current = token;
     gateRef.current.retry();
-  }, [connState, gateRef, token]);
+  }, [connState, bridgeStatus, gateRef, token]);
 
   if (view.ready) {
     return <ChatView />;
@@ -222,26 +245,44 @@ function RecoveryView({ gate, token }: { gate: RecoveryGate; token: string }) {
   if (view.error !== null) {
     return <RecoveryErrorCard error={view.error} onRetry={() => gate.retry()} />;
   }
-  return <RecoveryInFlight connState={connState} />;
+  return <RecoveryInFlight connState={connState} phase={phase} />;
 }
 
 // ---------------------------------------------------------------------------
 // RecoveryInFlight — the placeholder shown while the dual-query ceremony
-// is in flight. Pure presentational; no client state beyond what the
-// StatusBar already surfaces.
+// is in flight. M4 tasks/m4/01 §6.1 UI：接 `phase` prop 三态文案。
 // ---------------------------------------------------------------------------
 
-function RecoveryInFlight({ connState }: { connState: ConnState }) {
+/** M4 §6.1 三态文案映射：
+ *  - `phase === 'spawning'` → "正在启动会话…"（pi 冷启动中）
+ *  - `phase` ∈ `'ready' | 'running' | 'idle'` → "正在加载历史…"（manager 已
+ *    完成握手，等待 get_messages 拉快照）
+ *  - `phase === null` → "5 秒未收到进度…"（5s 兑底未到前已可见——
+ *    UX 上该变量即刻呈现，不等兑底命中。仪式在 5s 内见到 phase 变化
+ *    后会重启 snapshot 定时器 15s 窗口。）
+ *
+ *  `'exited'` 单独处理：视为"正在加载历史…"——`spawn → ready` 链路中
+ *  exited 作为起始相位也是 bridge 内存视角的有效相位，不应误导用户。
+ *  其他未知值（`null`）不匹配任何分支 → 走默认提示。 */
+function RecoveryInFlight({ connState, phase }: { connState: ConnState; phase: SessionPhase | null }) {
+  const phaseText = ((): string => {
+    if (phase === 'spawning') return '正在启动会话…';
+    if (phase === 'ready' || phase === 'running' || phase === 'idle') return '正在加载历史…';
+    if (phase === 'exited') return '正在加载历史…';
+    return '5 秒未收到进度…';
+  })();
+
   return (
     <section
       className="card recovery-in-flight"
       aria-busy="true"
       aria-live="polite"
+      data-phase={phase ?? 'null'}
       data-testid="recovery-in-flight"
     >
       <h2>恢复中…</h2>
       <p>
-        正在拉取会话状态与历史消息（5 秒超时）。
+        {phaseText}
         {connState !== 'online' ? <span>（等待 WebSocket 连接…）</span> : null}
       </p>
     </section>
@@ -250,9 +291,9 @@ function RecoveryInFlight({ connState }: { connState: ConnState }) {
 
 // ---------------------------------------------------------------------------
 // RecoveryErrorCard — "恢复失败" surface with a manual retry button. The
-// three-way error discriminator maps to a short user-visible hint; the
-// longer operator-facing detail (PRD §6.4验收) lives in the per-error
-// JSDoc on `RecoveryError`.
+// four-way error discriminator (M4 tasks/m4/01 §新错误文案) maps to a
+// short user-visible hint; the longer operator-facing detail (PRD §6.4
+// 验收) lives in the per-error JSDoc on `RecoveryError`.
 // ---------------------------------------------------------------------------
 
 function RecoveryErrorCard({ error, onRetry }: { error: RecoveryError; onRetry: () => void }) {
@@ -265,17 +306,4 @@ function RecoveryErrorCard({ error, onRetry }: { error: RecoveryError; onRetry: 
       </button>
     </section>
   );
-}
-
-function errorHint(error: RecoveryError): string {
-  switch (error) {
-    case 'snapshot_failed':
-      return '无法拉取历史消息（snapshot 超时或返回失败）。请检查网络后重试。';
-    case 'state_failed':
-      return '无法拉取会话状态（get_state 超时或返回失败）。请检查网络后重试。';
-    case 'both_failed':
-      return '无法拉取会话状态与历史消息。请检查网络后重试，或刷新页面重连。';
-    default:
-      return '恢复失败，请重试。';
-  }
 }

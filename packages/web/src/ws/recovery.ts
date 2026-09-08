@@ -1,4 +1,5 @@
-// RemotePi web — M3 dual-query recovery ceremony (PRD §4.4).
+// RemotePi web — M3 dual-query recovery ceremony (PRD §4.4) + M4
+// 5s timeout fix (PRD §6 / tasks/m4/01).
 //
 // On every (re)connect the web fires a parallel pair of queries the
 // moment the WebSocket is open and the handshake has been sent:
@@ -15,13 +16,26 @@
 // acked. The handshake-replies bridge_status is the bridge-online
 // signal (carried over from M2), not the recovery gate.
 //
-// Failure handling (PRD §4.4): either reply missing for 5 seconds
-// (or arriving with `ok: false` / `success: false` / a malformed
-// data payload) flips the gate to a failure state and the UI
-// shows a "恢复失败" card with a manual retry button. The
-// ceremony is never silent — every timeout is observed, every
-// failure state is surfaced, every successful run mounts the
-// chat surface exactly once.
+// Failure handling (PRD §4.4): either reply missing for
+// `RECOVERY_TIMEOUT_MS` (or arriving with `ok: false` /
+// `success: false` / a malformed data payload) flips the gate to
+// a failure state and the UI shows a "恢复失败" card with a
+// manual retry button. The ceremony is never silent — every
+// timeout is observed, every failure state is surfaced, every
+// successful run mounts the chat surface exactly once.
+//
+// M4 timeout fix (PRD §6 / tasks/m4/01, B+C 合体方案):
+//   - **C (核心)** — snapshot 腿从"绝对 5s"改为"无进度窗口":
+//     `RECOVERY_TIMEOUT_MS` 保留作"无任何相位变化即失败"兜底；
+//     新增 `PHASE_PROGRESS_TIMEOUT_MS = 15_000` —— 仪式内注册
+//     `session_state` 监听（必须走 `ceremony.unsubs` 清理数组，
+//     StrictMode / retry 安全），看到 sessionPhase 字段实际变化
+//     （spawning / ready / running / idle 迁移）→ 重置 snapshot
+//     定时器为 15s 窗口；`blocked_on`-only 广播不重置（严格只认
+//     相位字段实际变化）。
+//   - **B (辅助)** — `bridgeStatus.online === false` 立即失败
+//     （`null` 不算离线——冷启动误杀防护）；新增 `bridge_offline`
+//     错误三态，UI 文案区分"bridge 离线"与 snapshot/state 失败。
 //
 // The gate is framework-free (plain object + subscribe), so the
 // React layer in `App.tsx` can plug it into `useSyncExternalStore`
@@ -30,36 +44,56 @@
 // the WsClient and the gate's pending timers will simply expire
 // to `both_failed` and the user retries.
 
-import { PROTOCOL_VERSION, type Envelope } from '@remotepi/shared';
+import { PROTOCOL_VERSION, type Envelope, type SessionPhase } from '@remotepi/shared';
 
-import type { WsClient } from './WsClient.js';
+import type { BridgeStatusInfo, WsClient } from './WsClient.js';
 import { tryDecodeGetStateData } from './WsClient.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Per-reply deadline for the dual-query ceremony. The PRD §4.4
- *  quotes "5s" and calls it adjustable; the value is intentionally
- *  generous because a `get_messages` arriving during `exited` phase
- *  has to wake a pi subprocess (PRD §2.7) before it can produce
- *  a snapshot. On a healthy machine the round-trip is well under
- *  one second; 5s is the safety net for cold-start + slow disks. */
+/** Per-reply baseline deadline for the dual-query ceremony. The
+ *  PRD §4.4 quotes "5s" and calls it adjustable; the value is
+ *  intentionally generous because a `get_messages` arriving during
+ *  `exited` phase has to wake a pi subprocess (PRD §2.7) before
+ *  it can produce a snapshot. On a healthy machine the round-trip
+ *  is well under one second; 5s is the safety net for cold-start
+ *  + slow disks.
+ *
+ *  M4 修订注记（tasks/m4/01 B+C 方案）—— 常量**保留**但语义改
+ *  为"无进度窗口兜底"：
+ *  - snapshot 定时器初始值 = `RECOVERY_TIMEOUT_MS`（5s）——仪式
+ *    启动后 5s 内若**无任何 sessionPhase 变化**，视为 pi 冷启动
+ *    失败 / 网络静默失败 → 判 `snapshot_failed`。
+ *  - 一旦看到 sessionPhase 实际变化 → snapshot 定时器重置为
+ *    `PHASE_PROGRESS_TIMEOUT_MS`（15s，见下），5s 兜底失效。
+ *  - state 定时器仍以 `RECOVERY_TIMEOUT_MS` 为死线（state 包小
+ *    且源自 bridge 内存视图，5s 足够）。 */
 export const RECOVERY_TIMEOUT_MS = 5_000;
+
+/** Snapshot "with-progress" deadline — the snapshot timer is reset
+ *  to this value on every observed `sessionPhase` change (M4 §6.1
+ *  / tasks/m4/01）。15s 足够覆盖 pi 冷启动 + bridge → worker →
+ *  pi 完整握手 + 派生 → snapshot 落地的整链路（实测 pi 启动
+ *  ~500ms，bridge spawn + handshake + idle 唤醒余量 10s+）。 */
+export const PHASE_PROGRESS_TIMEOUT_MS = 15_000;
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
-/** Recovery failure discriminator. The three values let the UI
- *  surface a more specific hint than "everything failed" — the
- *  snapshot side can fail because bridge is dead; the state side
- *  can fail because the bridge's memory view is corrupt; both
- *  can fail because the WebSocket itself died. The PRD only
- *  requires the user-visible "恢复失败" + retry affordance; the
- *  three-way split is local diagnostic detail logged for the
- *  operator. */
-export type RecoveryError = 'snapshot_failed' | 'state_failed' | 'both_failed';
+/** Recovery failure discriminator. M4 增 `bridge_offline`：B 方案
+ *  检测到 `bridgeStatus.online === false` 时立即失败（`null` 不
+ *  触发——冷启动期间 `bridge_status` 未补发是常态），UI 文案独立
+ *  区分"bridge 离线"与 snapshot/state 失败。UI 层 `RecoveryErrorCard`
+ *  按 `bridge_offline` > `both_failed`（文案已暗示 bridge 离线）
+ *  > `snapshot_failed` > `state_failed` 优先级渲染。 */
+export type RecoveryError =
+  | 'snapshot_failed'
+  | 'state_failed'
+  | 'both_failed'
+  | 'bridge_offline';
 
 /** Snapshot of the gate's externally-visible state. `ready` and
  *  `error` are mutually exclusive in steady state (ready=true
@@ -124,8 +158,13 @@ export interface RecoveryGate {
  *  bag lets unit tests inject deterministic ids + a custom timeout
  *  without monkey-patching globals. */
 export interface InitiateRecoveryOptions {
-  /** Override the 5s per-reply timeout. */
+  /** Override the baseline 5s per-reply timeout (state side + initial
+   *  snapshot timer). M4 修订后语义 = "无进度窗口兜底"。 */
   timeoutMs?: number;
+  /** Override the 15s "with-progress" snapshot timeout (M4 §6.1）。
+   *  在仪式内看到 sessionPhase 实际变化后，snapshot 定时器重置为
+   *  此值。 */
+  phaseProgressTimeoutMs?: number;
   /** Override the id generator. Production uses `crypto.randomUUID`
    *  so each ceremony's m1 / g1 ids are unique even across
    *  retries in the same session. Tests inject a deterministic
@@ -144,6 +183,7 @@ export function initiateRecovery(
   options: InitiateRecoveryOptions = {},
 ): RecoveryGate {
   const timeoutMs = options.timeoutMs ?? RECOVERY_TIMEOUT_MS;
+  const phaseProgressTimeoutMs = options.phaseProgressTimeoutMs ?? PHASE_PROGRESS_TIMEOUT_MS;
   const makeId = options.makeId ?? defaultMakeId;
   const onTransition = options.onTransition;
 
@@ -225,6 +265,16 @@ export function initiateRecovery(
       stateId,
       snapshotOutcome: 'pending',
       stateOutcome: 'pending',
+      // M4 §6.1: initial `lastSeenPhase` 镜像仪式启动瞬间的
+      // `wsClient.sessionPhase`；后续 `subscribeToSessionState`
+      // 收到不同 phase 时重置 snapshot 定时器。
+      lastSeenPhase: wsClient.sessionPhase,
+      // M4 B 方案：仪式启动时如果 bridgeStatus 已知为 offline，
+      // 立刻标记；后续 `subscribeToBridgeStatus` 也可触发。
+      bridgeOfflineDetected: false,
+      // snapshot 定时器句柄（独立于 `timers` Set——它的"重置"
+      // 语义决定我们需直接持有句柄以 `clearTimeout`）。
+      snapshotTimerHandle: null,
       stale: false,
       timers: new Set(),
       unsubs: [],
@@ -250,19 +300,14 @@ export function initiateRecovery(
       }),
     );
 
-    // Arm the per-reply timeout. Two independent timers (not one
-    // shared deadline) so a late snapshot on a slow bridge
-    // doesn't get punished by the state timer already having
-    // fired. Each timer only marks its own outcome.
-    ceremony.timers.add(
-      setTimeout(() => {
-        if (ceremony.stale) return;
-        if (ceremony.snapshotOutcome === 'pending') {
-          ceremony.snapshotOutcome = 'fail';
-        }
-        checkComplete(ceremony);
-      }, timeoutMs),
-    );
+    // M4 §6.1 C 方案：snapshot 定时器初始值 = `RECOVERY_TIMEOUT_MS`
+    // （5s 兜底——仪式启动后 5s 内若无 phase 变化即失败）。收到
+    // session_state phase 实际变化时通过 `armSnapshotTimer(
+    // phaseProgressTimeoutMs)` 重置为 15s 窗口。
+    armSnapshotTimer(ceremony, timeoutMs);
+
+    // State 定时器仍以 `RECOVERY_TIMEOUT_MS` 为死线（state
+    // 包小且源自 bridge 内存视图，5s 足够）。
     ceremony.timers.add(
       setTimeout(() => {
         if (ceremony.stale) return;
@@ -271,6 +316,42 @@ export function initiateRecovery(
         }
         checkComplete(ceremony);
       }, timeoutMs),
+    );
+
+    // M4 §6.1 C 方案——仪式内注册 `session_state` 监听：内部
+    // 返回的 unsub 注册到 `ceremony.unsubs` 清理数组（沿用现有
+    // 仪式 unsubscribe 模式，StrictMode / retry 安全）。看到
+    // sessionPhase 字段实际变化（spawning / ready / running / idle
+    // 迁移）→ 重置 snapshot 定时器为 `PHASE_PROGRESS_TIMEOUT_MS`。
+    // `blocked_on`-only 广播不重置——我们的 listener 只关心
+    // `envelope.payload.phase` 字段本身，不读取 blocked_on，
+    // 浅相等守护天然挡重复帧（lastSeenPhase === newPhase）。
+    ceremony.unsubs.push(
+      subscribeToSessionState(wsClient, (newPhase) => {
+        if (ceremony.stale) return;
+        if (newPhase === ceremony.lastSeenPhase) return;
+        ceremony.lastSeenPhase = newPhase;
+        armSnapshotTimer(ceremony, phaseProgressTimeoutMs);
+      }),
+    );
+
+    // M4 §6.1 B 方案——仪式内注册 `bridge_status` 监听：同样走
+    // `ceremony.unsubs` 清理；看到 `online === false` 立即标记
+    // 失败（`null` 不触发——冷启动期间 `bridge_status` 未补发是
+    // 常态，避免误杀）。仪式启动时若当前 bridgeStatus 已知为
+    // offline 也同步标记（不等待下一帧）。
+    const initialBridgeStatus = wsClient.bridgeStatus;
+    if (initialBridgeStatus !== null && initialBridgeStatus.online === false) {
+      ceremony.bridgeOfflineDetected = true;
+    }
+    ceremony.unsubs.push(
+      subscribeToBridgeStatus(wsClient, (status) => {
+        if (ceremony.stale) return;
+        if (status.online === false) {
+          ceremony.bridgeOfflineDetected = true;
+          checkComplete(ceremony);
+        }
+      }),
     );
 
     // Parallel send — handshake has no ack (PRD §4.4), so the
@@ -317,16 +398,58 @@ export function initiateRecovery(
     return tryDecodeGetStateData(env) !== null;
   };
 
+  /** Arm / re-arm the snapshot timer. M4 §6.1 C 方案核心：
+   *  - 仪式启动时调用 `armSnapshotTimer(ceremony, timeoutMs)`
+   *    （= 5s 兜底）；
+   *  - 收到 sessionPhase 实际变化后调用
+   *    `armSnapshotTimer(ceremony, phaseProgressTimeoutMs)`
+   *    （= 15s with-progress 窗口）。
+   * 每次重置前先 `clearTimeout` 旧句柄——`snapshotTimerHandle`
+   * 持有当前活跃句柄，外部 `cancelActive` 通过 `timers` Set 仍可
+   * 清掉，但重置场景必须直持句柄。timer 自身触发时把
+   * `snapshotOutcome` 标 'fail' 并触发 `checkComplete`，与
+   * state timer 同形。 */
+  const armSnapshotTimer = (ceremony: ActiveCeremony, delayMs: number): void => {
+    if (ceremony.stale) return;
+    if (ceremony.snapshotTimerHandle !== null) {
+      clearTimeout(ceremony.snapshotTimerHandle);
+      ceremony.snapshotTimerHandle = null;
+    }
+    const handle = setTimeout(() => {
+      // Handle fired — drop reference so a future arm() call
+      // doesn't try to clearTimeout a stale id.
+      if (ceremony.snapshotTimerHandle === handle) {
+        ceremony.snapshotTimerHandle = null;
+      }
+      if (ceremony.stale) return;
+      if (ceremony.snapshotOutcome === 'pending') {
+        ceremony.snapshotOutcome = 'fail';
+      }
+      checkComplete(ceremony);
+    }, delayMs);
+    ceremony.snapshotTimerHandle = handle;
+  };
+
   /** Per-reply outcome resolution: when BOTH replies have
    *  resolved (or timed out), tear down the active ceremony
    *  and update the gate's externally-visible state. The
    *  active-pointer check guards against the (admittedly
    *  unreachable-in-practice) case where a stale attempt's
-   *  late timer fires after a fresh attempt has taken over. */
+   *  late timer fires after a fresh attempt has taken over.
+   *
+   *  M4 §6.1 B 方案——`bridgeOfflineDetected` 优先级最高：仪式
+   *  检测到 bridge 离线立即失败（不等 snapshot / state 任一
+   * 回应），错误态 = `bridge_offline`。仅当仪式 active 且非 stale
+   * 时生效。 */
   const checkComplete = (ceremony: ActiveCeremony): void => {
     if (ceremony.stale) return;
-    if (ceremony.snapshotOutcome === 'pending' || ceremony.stateOutcome === 'pending') return;
     if (active !== ceremony) return;
+    if (ceremony.bridgeOfflineDetected) {
+      cancelActive();
+      setState({ ready: false, error: 'bridge_offline' });
+      return;
+    }
+    if (ceremony.snapshotOutcome === 'pending' || ceremony.stateOutcome === 'pending') return;
     cancelActive();
     if (ceremony.snapshotOutcome === 'ok' && ceremony.stateOutcome === 'ok') {
       setState({ ready: true, error: null });
@@ -345,13 +468,20 @@ export function initiateRecovery(
     setState({ ready: false, error: nextError });
   };
 
-  /** Tear down the active ceremony: clear timers, unsubscribe
-   *  reply resolvers, mark stale so a late callback is a no-op.
-   *  Idempotent. */
+  /** Tear down the active ceremony: clear timers (incl. snapshot
+   *  timer handle), unsubscribe reply resolvers + session_state /
+   *  bridge_status listeners, mark stale so a late callback is a
+   *  no-op. Idempotent. M4 增项：`snapshotTimerHandle` 也需
+   *  clearTimeout——重置路径用同一个 handle，跟 `timers` Set
+   * 共享清理语义。 */
   const cancelActive = (): void => {
     const current = active;
     if (current === null) return;
     current.stale = true;
+    if (current.snapshotTimerHandle !== null) {
+      clearTimeout(current.snapshotTimerHandle);
+      current.snapshotTimerHandle = null;
+    }
     for (const timer of current.timers) {
       clearTimeout(timer);
     }
@@ -407,6 +537,18 @@ interface ActiveCeremony {
   readonly stateId: string;
   snapshotOutcome: 'pending' | 'ok' | 'fail';
   stateOutcome: 'pending' | 'ok' | 'fail';
+  /** M4 §6.1 C 方案：仪式启动瞬间镜像 `wsClient.sessionPhase`，
+   *  后续 `subscribeToSessionState` 收到不同 phase 时重置
+   *  snapshot 定时器。`null` → 'spawning' 同样是实际变化（重置）。 */
+  lastSeenPhase: SessionPhase | null;
+  /** M4 §6.1 B 方案：bridgeStatus.online === false 时置位（启动时
+   *  若已知离线也立刻置位），`checkComplete` 看到此标志立即判
+   *  `bridge_offline`。 */
+  bridgeOfflineDetected: boolean;
+  /** M4 §6.1 C 方案：snapshot 定时器句柄——`armSnapshotTimer` 重置
+   *  时需 `clearTimeout` 旧句柄，独立于 `timers` Set（state 定时器
+   *  与 reply resolvers 走 Set，重置场景唯一）。 */
+  snapshotTimerHandle: ReturnType<typeof setTimeout> | null;
   /** Set true on retry-cancellation. Late timer
    *  firings + late reply-resolver callbacks observe this and
    *  short-circuit instead of mutating the (now-cancelled)
@@ -418,4 +560,54 @@ interface ActiveCeremony {
 
 function defaultMakeId(): string {
   return crypto.randomUUID();
+}
+
+// ---------------------------------------------------------------------------
+// Ceremony-internal subscribers — M4 §6.1 B+C 方案
+// ---------------------------------------------------------------------------
+
+/** Subscribe to `control/session_state` envelopes and yield the
+ *  authoritative `phase` value on every broadcast. Designed to be
+ *  registered into `ceremony.unsubs` (StrictMode / retry 安全):
+ *  the returned unsub 闭包闭包了 `wsClient.on('session_state', ...)`
+ *  的返回 unsub，外部代码需将它 push 到 `ceremony.unsubs` 以走
+ *  `cancelActive` 的统一清理路径。
+ *
+ *  浅相等由调用方负责（ceremony 在 `lastSeenPhase === newPhase`
+ *  时直接 return），本函数不重复比较——`session_state.blocked_on`
+ *  变化的广播仍是 `session_state` 信封但 `payload.phase` 不变，
+ *  调用方因此拒绝重置 snapshot 定时器（PRD §技术裁定 2 严格只认
+ *  相位字段变化）。 */
+export function subscribeToSessionState(
+  wsClient: WsClient,
+  onPhaseChange: (phase: SessionPhase) => void,
+): () => void {
+  return wsClient.on('session_state', (envelope) => {
+    if (envelope.kind !== 'control' || envelope.type !== 'session_state') return;
+    onPhaseChange(envelope.payload.phase);
+  });
+}
+
+/** Subscribe to `control/bridge_status` envelopes and yield a
+ *  fully-formed `BridgeStatusInfo` (含 `receivedAt = Date.now()`)
+ *  on every broadcast. 与 `subscribeToSessionState` 同模式——返回
+ *  unsub 需 push 到 `ceremony.unsubs` 以走 `cancelActive` 清理。
+ *
+ *  调用方负责解读 `status.online === false` 并标记仪式失败；
+ *  本函数不主动设错误状态，保证仪式唯一真相源 = ceremony 内的
+ *  `bridgeOfflineDetected` 字段。`null` / `online === true` 状态
+ *  不产生错误（冷启动误杀防护）。 */
+export function subscribeToBridgeStatus(
+  wsClient: WsClient,
+  onBridgeStatusChange: (status: BridgeStatusInfo) => void,
+): () => void {
+  return wsClient.on('bridge_status', (envelope) => {
+    if (envelope.kind !== 'control' || envelope.type !== 'bridge_status') return;
+    onBridgeStatusChange({
+      online: envelope.payload.online,
+      changedAt: envelope.payload.changed_at,
+      reason: envelope.payload.reason,
+      receivedAt: Date.now(),
+    });
+  });
 }
