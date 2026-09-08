@@ -71,3 +71,11 @@ status: done
 
 - **无头浏览器 E2E**（原 `testing` §3，2026-09-08 拆解时挂账于 [[current-state.md]] TODO）已立项——见 [[architecture/decisions/0009-headless-browser-e2e.md|ADR-0009]]（已接受·待实施，2026-09-08，与本 ADR 同日成对）。本套件覆盖 bridge wire 层；浏览器 UI 层（ChatView 渲染、F5 仪式、双 tab 先答者胜）实施任务待排期。**任务 08 注记**：脚本化触发基建已就绪（bridge wire 层，由 ADR-0008 §1.4 钉死），web UI 层仍需手测验收直至 ADR-0009 实施完成。
 - **pi 升级体检仪式**（原 `testing` §4，2026-09-08 承接至 [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md#升级体检仪式pi-升级时真实形状比对|ADR-0008 §升级体检仪式]]）——本套件即"体检清单的回归化"：未来 pi 升级时跑 `pnpm test:integration`，**任一 it 红即等价于体检清单 6 项偏差**，§升级体检仪式流程落地更彻底。
+
+## follow-up 补记（任务 12 review 期间顺带修复，2026-09-08）
+
+任务 12 review 期间（S8 跟进项）发现 `eslint.config.js` 的 `projectService` ignores 漏配 `tests/integration/.tmp/**`——本任务实施时 fixture 落盘产物（隔离目录 + 假 LLM 录制 + work_dir 副本）落 `tests/integration/.tmp/<run-tag>/`，未加 ignore → ESLint typecheck 试图解析 `jsonl` / `auth.json` 等 fixture 临时文件，触发非项目源码的 false positive 风险。**本任务未及时补配**（commit `3c6656d` + `bb6293b` 均未动 `eslint.config.*`，与 §完成情况「零改动」表述一致——漏配非主动零改动）。
+
+**补配位置**：任务 12 主体 commit `127595c` 在改 `eslint.config.js`（加 `tests/e2e/.tmp/**` / `tests/e2e/playwright-report/**` / `tests/e2e/test-results/**` 3 条 ignore）时**顺带补配**本任务的 `tests/integration/.tmp/**`，共 4 条 ignore 一次性提交。本任务的「零改动」表述需补注：实际为「**本任务自身零改动**；下游任务 12 review 期间发现漏配、顺带补配覆盖」。
+
+**教训一句**：任务 10 review 期间 6W 全修 / 2S 合理跳过的清单里，ESLint `projectService` ignores 未列入排查项——既因本任务实施时 ESLint 还未在 flat config `projectService` 模式下报错（fixture 临时文件由 vitest 进程隔离、不走 `pnpm lint`），也因 review 时未对 fixture 落盘产物路径做覆盖性检查。下次类似任务（`tests/*/` 顶层新建）需把 `eslint.config.*` 改为「`tests/*/.*` 显式 ignore」并入 review 必查项。

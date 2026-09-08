@@ -1,7 +1,7 @@
 # 0009. 无头浏览器 E2E（Playwright 全栈本地链路 UI 回归套件）
 
 - 日期：2026-09-08（已核实）
-- 状态：已接受（**待实施**——本 ADR 只定决策，实施任务待排期）
+- 状态：已接受、已实施（MVP 三场景落地，2026-09-08 实施注记，详见末尾）
 - 背景：
   [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md|ADR-0008]] 把 bridge→pi 的 wire 层从"用户手测"升级成了回归资产（`tests/integration/` 30 条全绿），但它明确划界：浏览器 UI 层不在其范围内（ADR-0008 背景段末 + 决策 §2 末 + 备选否决末条等处均标注"将另立 ADR 承载"）。本 ADR 即那个承载位，也是原 `docs/testing.md` §3 的最终归宿（2026-09-08 拆解时挂账于 [[current-state.md|current-state TODO]]）。
 
@@ -164,3 +164,35 @@
   - [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]]——4 类弹窗转发 + 先答者胜 / `request_expired` 语义；场景 (c) 契约来源。
   - [[architecture/decisions/0005-unified-domain-with-worker-static-assets-and-actions-cd.md|ADR-0005]]——主域统一 + Worker Static Assets 部署形态；wrangler dev 作为 SUT 的真实性依据（备选否决第二条）。
   - **关键源码锚点**：`worker/wrangler.toml`（`[assets]` / `run_worker_first` / `not_found_handling`）；`packages/web/src/ws/config.ts:12,29`（`VITE_WSS_URL` 解析与 `DEV_DEFAULT_WSS_URL`）；`packages/web/src/ws/recovery.ts:48`（`RECOVERY_TIMEOUT_MS = 5_000`，开放点 1）；`packages/web/src/App.tsx`（`readTokenFromHash` / 恢复三态 / `autoStartConsumedRef` 守门）；`packages/bridge/src/config.ts:219-226`（token 非空即逐字使用不回写）；`tests/integration/helpers/{fake-llm-server,make-fixture,make-manager}.ts`（复用与提炼对象）。
+
+## 实施注记（2026-09-08）
+
+本 ADR §开放点 2 拆分建议落地为三任务，**5 笔本地 commit 全部落地**——本 ADR 状态由「待实施」升级为「已落地 MVP」（状态改为：已接受、已实施）。
+
+- **(i) testid 抓手先行**（[[tasks/m3/11-web-testid-hooks.md|11]]，commit `96477eb`）—— 8 文件 / 22 处 `data-testid` 新增 + 2 处 `data-count` 计数透出；className/DOM/文案/样式/状态机/事件流零变化；review 零 C 零 W 零 S。
+- **(ii) harness 装配 + 场景 (a)**（[[tasks/m3/12-e2e-harness.md|12]]，commit `127595c`）—— 4 进程装配（wrangler dev / bridge / 真 pi / 假 LLM 独立子进程）+ 场景 (a) 首次对话流式渲染 + 3 spec stub 指回任务 13；敲定点 1-4 全部落定（`.ts` 通过 ESLint projectService / 3 条 gitignore / globalSetup + `webDistWssUrlCheck` bundle 审计 / bridge stdout grep `connected to` 探针）；`buildHermeticEnv` 抽取首选落地（集成 30 条回归全绿）。
+- **(ii) 后半部 场景 (b) + (c)**（[[tasks/m3/13-e2e-scenarios.md|13]]，commit `5b27300`）—— 场景 (b) F5 reload 逐字段对账（message-row 文本与条数）+ 场景 (c) 多端弹窗先答者胜（双 context 同 token + A 后答 / B 端 observation annotation 记录 `request_expired`）；假 LLM admin 端点 `POST /__e2e/script` + `GET /__e2e/requests`（精确路径匹配 + loopback-only）支撑 spec 脚本化注入；`flushEachEvent: true` 支撑场景 (a) 多 delta 严格单调断言。
+- **两轮 review 修复**（commit `1558309` 合并三任务 W1-W5 + S1/S3/S5 + commit `bb34aaa` 收尾 W5 残留竞态 + 10 项清理）—— 总计 1 必修 W5（bridge 已退时 `stop()` 立即返回）+ 14 项机械清理（孤儿 JSDoc / 注释如实化 / 死字段删除 / 死代码三处 / 逐字段断言 / observation annotation 替代 console.log 等）。
+- **验收终态**：e2e 3 场景全绿（≈10-11s 连跑 2 次稳定），基线 281 单测 + 30 集成不变，typecheck/lint/build 全绿，CI 四步零改动；`packages/*` / `worker/` / `.github/` 零改动——产品行为面仅 web 包增 22 处 `data-testid` 属性（任务 11 唯一 web 源码改动）。任务 10 review 期间漏配的 `eslint.config.js` `tests/integration/.tmp/**` ignore 由任务 12 顺带补配（4 条 ignore 一次性提交）。
+
+### 开放点收敛
+
+- **开放点 1（恢复仪式 5s 超时 vs pi 冷启动）**——走**短期 retry 容错路径**未变。e2e 已按此运行（任务 12 场景 (a) 步骤链 + 任务 13 场景 (b) F5 都以此为第一条容错逻辑）。**未触发** retry——本机 pi 冷启动 ~500ms 远低于 5s 超时。挂账仍**开放**（[[current-state.md|TODO]] 2026-09-07 条目），未根治；e2e 断言链就位，挂账修复后可简化断言为「纯等 ChatView」无需改 spec。
+- **开放点 2（实施任务拆分）**——拆为三个任务（11 / 12 / 13），与本 ADR §开放点 2 建议（两任务 i/ii）**微调**：以「装配与场景 (a) 同任务」取代「装配 + 三场景同任务」——理由：任务 12 依赖任务 11 的 testid 抓手（不能完全独立），任务 13 依赖任务 12 的装配 + 场景 (a) 作为 retry 容错 helper 复用源；拆为三任务使每个 commit 体积适中、review 可分别发起。三任务已在 M3 周期内全部 done。
+- **开放点 3（决策条文“待实施时敲定”项）**——**全部落定**：
+  - Playwright config `.ts` 不撞 ESLint `projectService`（敲定点 1，首选 `.ts`）✅
+  - 场景 (c) `request_expired` 竞态构造手法走**首选 A 降级**——主断言「先答者胜 + 双端收起」+ `request_expired` 降为 observation annotation（理由：本地快机器 dialog 生命周期仅 36-48ms，B 端迟交不会真触发；ADR-0004 语义在慢速环境/真机仍可能成立）✅（敲定点 5）
+  - `data-testid` 命名与数量：22 处全库统一（任务 11 完成情况表）✅
+  - env 构造逻辑走**首选抽取**（`buildHermeticEnv` 迁至 `tests/integration/helpers/build-hermetic-env.ts` 共用真源，e2e `env-builder.ts` 是 4 行 re-export 包装）✅
+  - build 塞 Playwright `globalSetup`（首选「dist 存在性预检 + bundle 内容审计」两步：assertDistArtifacts + webDistWssUrlCheck——单纯 `pnpm -r build` 不会修 prod-default bundle，需 web build 显式带 `VITE_WSS_URL=ws://localhost:8787/web`）✅（敲定点 3）
+  - bridge 就绪探针走 stdout（grep `connected to ` 子串）+ `child.on('exit')` 提前 reject 防「30s 虚假超时」✅（敲定点 4）
+  - `.gitignore` 具体条目：3 条落定（`tests/e2e/.tmp/` + `tests/e2e/test-results/` + `tests/e2e/playwright-report/`）✅（敲定点 2）
+  - timeout/retries 具体值：`timeout: 60_000` + `retries: 1`（与 ADR-0009 §影响-代价段起点建议一致）✅
+
+### 关键实测（本地快速环境，本机化不推广）
+
+- **dialog 生命周期 36-48ms**——场景 (c) MutationObserver 采样本机实测「add:dialog-confirm」与「remove:dialog-confirm」间隔仅 36-48ms（远低于 Playwright 默认轮询粒度）。**结论**：B 端迟交触发 `request_expired` 的竞态窗口在本机**不存在**。本 ADR §决策 3 首选 A 路径代码在「中速/慢速」环境下仍可能成立，e2e 已加 `test.info().annotations` observation 记录实际不触发状态；**仍可能藏 hidden flakiness**，未来慢速环境/真机仍需重新评估。详见 [[tasks/m3/13-e2e-scenarios.md#敲定点-5-结论|13 敲定点 5 结论]]。
+- **pi 冷启动 ~500ms**——本机实测 pi 0.85.1 冷启动（`spawning → ready → running → idle`）仅 500ms。5s 恢复超时未踩中，retry 容错断言**未实际触发**。断言链就位为“不同机器/首次 SQLite migration 时仍可能踩”预留——该断言是 e2e **已知行为**而非产品修复，根因挂账仍**开放**。详见 [[tasks/m3/12-e2e-harness.md#场景-a-断言要点|12 场景 (a) 断言要点]]。
+- **装配顺序铁律：wrangler → bridge**——Node 22 `WebSocket` 对 `ECONNREFUSED` 只 fire `onerror` 不 fire `onclose`，bridge `handleClose` 不调度重连，事件循环空 → bridge 进程以 exit 0 干净退出。这是**避免 bridge 僵尸挂账**的装配侧手段（[[current-state.md|TODO]] 2026-09-07 「bridge 僵尸」条目），**产品代码未动**（`packages/bridge/src/client.ts` 零 diff）。未来如根治该挂账（补 `onerror` → `onclose` 调度 / 加 `ws` 库代替原生 `WebSocket`），本铁律可取消。
+- **假 LLM 独立子进程铁律**——Playwright `globalSetup` worker 进程在 `setupHarness()` return 后**立即退出**（globalSetup 退出会带走 in-process server）。桥接的 pi 第一次 LLM 通话即 `ECONNREFUSED`，recovery ceremony 卡 5s。必须抽至独立子进程（`tests/e2e/helpers/fake-llm-process.ts` + `fake-llm-standalone.ts` 入口，`FAKE_LLM_URL=...` 首行 stdout banner 父进程解析）。详见 [[tasks/m3/12-e2e-harness.md#装配偏差task-12-全局-setup-step-4-vs-实际落地|12 装配偏差段]]。
+- **本机调试需预先清理残留进程**——`wrangler dev` / `workerd` / `tsx.*packages/bridge` 残留会占 8787 端口 / 留 .wrangler SQLite 状态。`pnpm test:e2e` 运行前最好 `pkill -9 -f 'wrangler|workerd|tsx.*packages/bridge'`——CI fresh runner 无此问题，仅本机调试需要。详见 [[tasks/m3/13-e2e-scenarios.md#收尾修复轮review-通过后的-follow-up-清单|13 收尾修复轮 stale process 清理项]]。

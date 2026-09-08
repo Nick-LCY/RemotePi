@@ -225,3 +225,10 @@ status: done
 
 - 真实 multi-tab 场景（task 13）需要并发 browser contexts 与同一 Room DO 共享的隔离——目前 `workers: 1` 写死，单 spec 串行。task 13 实施时改为场景 (c) 内部 `Promise.all([ctxA.newPage(), ctxB.newPage()])` 共享同一 `test` 的 fixture，但 spec 间仍串行。
 - `webDistWssUrlCheck` 当前 grep 全 bundle 字符串——大 bundle 上 O(n) 但实测 < 1ms，可接受；future-proof 可改为 sourcemap 反查或 vite 编译期 contract。
+
+### 审查轮结论（2026-09-08 落地）
+
+- **第一轮 review**（commit `1558309` 合并三任务 W1-W5 + S1/S3/S5 修复轮）：**通过**。本任务主线 W 集中于装配链（4 进程 / 端口抢占 / token run-tag / 假 LLM 子进程 / debugStream fd 管理 / clearStaleTmp 等），全部已修；3 Suggestion 落地（spec helper 断言语义约定 JSDoc 钉死「弹窗自动关闭走 React key 卸载」+「同 token 重连不重发仪式」两条——见 ADR-0009 §决策 7 末条）。
+- **收尾修复轮**（commit `bb34aaa` 顺带覆盖本任务 global-setup.ts 内的 7 项清理：孤儿 JSDoc / backpressure 注释 / `appendFileSync` 注释如实化 / `freshSpecToken` 死字段删除 / `postMortemLogStream` end() / admin 端点精确路径匹配 / `KNOWN_FLAKY` + `dialogAutoCloseAssertion` 死代码删除）：**通过**。本任务自身无新增 W/S，10 项清理全部为 review 期间浮出的机械项；本任务无 commit 落新提交，复用 `bb34aaa` 一笔扫尾。
+- **本任务额外补漏**：实施期发现 `eslint.config.js` 的 `projectService` ignores 漏配 `tests/integration/.tmp/**`（任务 10 实施时未补）—— 任务 13 期间顺带补 4 条 ignore 行（`tests/e2e/.tmp/**` / `tests/e2e/playwright-report/**` / `tests/e2e/test-results/**` / `tests/integration/.tmp/**`），覆盖任务 10 漏配项；详见 [[tasks/m3/10-integration-test-infra.md|任务 10 完成情况]] 末尾 follow-up 补记。
+- **验收终态**：e2e 3 场景全绿（≈10-2× 连跑稳定），基线 281 单测 + 30 集成不变，typecheck/lint/build 全绿，CI 四步零改动；本任务 commit `127595c`（主体）+ 收尾 `bb34aaa`（顺带覆盖）共 2 笔本地未 push。

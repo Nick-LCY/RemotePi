@@ -151,3 +151,8 @@ status: done
 - **无偏离**——意图清单全覆盖（11 组件 / 22 testid），命名规范全栈一致
 - **不触任何既有挂账**——恢复仪式 snapshot 5s 超时（[TODO](current-state.md) 2026-09-07 条目）/ bridge 僵尸 / 其他产品修复均不在本任务范围；E2E 实施任务（[[tasks/m3/12-e2e-harness.md|12]] + [[tasks/m3/13-e2e-scenarios.md|13]]）按 ADR-0009 §开放点 2「先落、零风险」建议，已具备抓手
 - **Commit**：`6d470fe879d777f5af19f78452f2f950bf5318d7`（本地 commit，未 push）
+
+### 审查轮结论（2026-09-08 落地）
+
+- **第一轮 review**（commit `1558309` 合并三任务 W1-W5 + S1/S3/S5 修复轮）：**通过**。本任务因改动面纯 `data-testid` 属性，**零 Critical / 零 Warning / 零 Suggestion**——reviewer 用 `git diff packages/web/src/` 机械复核确认唯一非 `data-testid` 差异是 JSX 多行格式重排 + `data-count` 计数透出 2 处；className / DOM 结构 / 文案 / 状态机 / 事件流全部零变化。
+- **本任务无独立 commit 落 review 修复**——三任务共用一笔 `1558309` 修复轮提交；本任务 commit `96477eb`（主体）+ 收尾修复轮 `bb34aaa`（本任务无 diff，仅随任务 12/13 共线）共 2 笔本地未 push。

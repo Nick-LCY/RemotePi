@@ -1,6 +1,6 @@
 ---
 prd: prds/m3-single-session.md
-status: todo
+status: done
 ---
 # 任务：E2E 场景 (b) F5 恢复 + (c) 多端弹窗先答者胜（ADR-0009 §决策 3 后半部）
 
@@ -206,3 +206,13 @@ status: todo
 #### 本笔 commit
 
 `test(e2e): 收尾修复——W5 残留竞态 + review 跟进清单（任务 11-13 审查轮）`
+
+### 审查轮结论（2026-09-08 落地）
+
+任务 11/12/13 三笔 commit 上线后编排者发起两轮 review，结论与处置：
+
+- **第一轮 review**（commit `1558309`，合并三任务 W1-W5 + S1/S3/S5）：**通过**。5 Warning 全修（渐进 PID stash / fake-llm banner 跨 chunk 累积 / debugStream fd 管理 / clearStaleTmp 接入 / spec-helper 断言语义约定 JSDoc）+ 3 Suggestion 落地。覆盖任务 12 装配与场景 (a)、任务 13 三场景 spec 主干；任务 11 因改动面纯 `data-testid` 零 Critical/零 Warning 走过。
+- **第二轮 review**（commit `5b27300`，任务 13 后半部——(b) F5 恢复 + (c) 多端弹窗 + 假 LLM admin 端点 + bridge 日志 pipe 修）：**通过**。1 Warning（场景 (c) 竞态窗口首选 A 路径降级为「先答者胜 + 双端收起」+ `request_expired` 降为 observation annotation——理由：本机 dialog 生命周期 36-48ms，B 端迟交不会真触发）+ 2 Suggestion 落地。
+- **收尾修复轮**（commit `bb34aaa`，W5 残留竞态 + postMortem fd 关闭 + 10 项清理）：**通过**。1 必修 W5（bridge 已退时 `stop()` 立即返回，照 wrangler-process 模式）+ 10 项顺手清理（孤儿 JSDoc、注释如实化、freshSpecToken 死字段删除、sawYesButton 探针防选择器改名静默通过、逐字段断言、observation annotation 替代 console.log、死代码三处）。任务 11-13 三笔 commit `96477eb` / `127595c` / `1558309` + 收尾 `bb34aaa` + 任务 13 主线 `5b27300` 共 5 笔本地未 push，统一由编排者随后提交。
+
+**验收终态**：e2e 3 场景全绿（≈10-2× 连跑稳定），基线 281 单测 + 30 集成不变，typecheck/lint/build 全绿，CI 四步零改动，web 行为面零改动（仅任务 11 的 testid 属性）。`packages/*` / `worker/` / `.github/` 零改动——产品行为面仅 web 包增 22 处 `data-testid` 属性。
