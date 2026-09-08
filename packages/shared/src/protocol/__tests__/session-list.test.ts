@@ -199,6 +199,26 @@ describe('SessionListEntry (M4 PRD §9.1 — 5 enum + illegal-status + M3 fields
       const result = SessionListEntrySchema.safeParse(fixture);
       expect(result.success, `entry without \`${field}\` should be rejected`).toBe(false);
     }
+
+    // Nullable-contract pin — `name` and `first_message` are typed
+    // `z.string().nullable()` so a literal `null` value is legal (pi may
+    // not have assigned a name / written a first message yet — see
+    // `session-list.ts` JSDoc). Missing (undefined) fields remain
+    // rejected under the existing required-field contract above; this
+    // pins the distinct null-OK / undefined-fail leg of the nullable
+    // contract so a future tightening (e.g. switching to `z.string()`)
+    // surfaces as a deliberate schema change rather than silent drift.
+    const withNullName = { ...makeEntry('running'), name: null };
+    expect(
+      SessionListEntrySchema.safeParse(withNullName).success,
+      '`name: null` must parse (nullable contract)',
+    ).toBe(true);
+
+    const withNullFirstMessage = { ...makeEntry('running'), first_message: null };
+    expect(
+      SessionListEntrySchema.safeParse(withNullFirstMessage).success,
+      '`first_message: null` must parse (nullable contract)',
+    ).toBe(true);
   });
 });
 

@@ -26,10 +26,11 @@
 //                              `WorkDirAddPayloadSchema` /
 //                              `WorkDirRemovePayloadSchema`) + result-data
 //                              revalidation schemas (`ListDirectoriesResult
-//                              Schema` / `WorkDirListResultSchema`) +
-//                              `PiPromptPayloadWorkDirSchema` (only the
-//                              `work_dir?` field lives here; the rest of
-//                              `pi/prompt` payload stays in `pi.ts`).
+//                              Schema` / `WorkDirListResultSchema`).
+//                              Note: the `pi/prompt.payload.work_dir?`
+//                              field lives directly on `PromptPayloadSchema`
+//                              in `./pi.ts` (carried only when envelope
+//                              `session === 'new'`; see ADR-0010 §决策.2).
 //   - `./session-list.ts`    — M4 `SessionListEntrySchema` (per-row,
 //                              includes the new `status` 5-enum field) +
 //                              `SessionListResultSchema` (whole

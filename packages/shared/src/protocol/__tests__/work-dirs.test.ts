@@ -37,20 +37,13 @@
 //        does NOT enforce the `session` correlation; see ADR-0010 §决策.2)
 //    19. PromptPayloadSchema — rejects non-string `work_dir`
 //
-// ## Schema note (deviation from the task spec)
+// ## `pi/prompt.payload.work_dir` test location
 //
-// `work-dirs.ts` JSDoc and `envelope.ts` header reference a
-// `PiPromptPayloadWorkDirSchema` that exposes ONLY the `work_dir?` field.
-// The actual M4 implementation integrates `work_dir` directly into
-// `PromptPayloadSchema` in `pi.ts` (so `PromptPayloadSchema` itself is
-// the schema that the envelope (a) extension lands on). There is no
-// dedicated `PiPromptPayloadWorkDirSchema` exported today; the cases
-// below exercise the `work_dir` field through `PromptPayloadSchema`
-// directly so the assertions line up with what the M4 implementation
-// actually emits. The dedicated schema was always described as "the
-// `work_dir?` field lives here" — i.e. conceptually it is just the
-// optional field, which is what we test. See `pi.test.ts` for the
-// envelope-level round-trip.
+// The `work_dir?` field lives directly on `PromptPayloadSchema` in
+// `pi.ts` (per the `envelope.ts` header convention); the cases below
+// exercise it through `PromptPayloadSchema` so the assertions line up
+// with what the M4 implementation actually emits. See `pi.test.ts` for
+// the envelope-level round-trip.
 //
 // Style: every assertion goes through `schema.safeParse(...)` (for the
 // payload-only shape) and `Envelope.safeParse(...)` (for the envelope-level
@@ -151,6 +144,17 @@ describe('Work-dir request payloads (M4 PRD §9.1 — 11 cases)', () => {
       const result = WorkDirListPayloadSchema.safeParse(root);
       expect(result.success, `root=${JSON.stringify(root)} should be rejected`).toBe(false);
     }
+
+    // Strip-contract pin — `WorkDirListPayloadSchema` is `z.object({})`;
+    // zod's default object policy strips unknown keys (mirrors the
+    // `AbortPayload` case 16 precedent in `pi.test.ts`). A `{ extra: 'x' }`
+    // input parses successfully and the resulting `data` is exactly `{}`,
+    // pinning the contract that unknown keys never leak through this
+    // payload surface.
+    const stripped = WorkDirListPayloadSchema.safeParse({ extra: 'x' });
+    expect(stripped.success).toBe(true);
+    if (!stripped.success) return;
+    expect(stripped.data).toEqual({});
   });
 
   // ----- WorkDirAddPayloadSchema (cases 6–8) -----
