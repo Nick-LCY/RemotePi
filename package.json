@@ -16,11 +16,14 @@
     "typecheck": "pnpm -r run typecheck",
     "test": "vitest run --passWithNoTests",
     "test:integration": "vitest run --config tests/integration/vitest.integration.config.js",
+    "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
     "typecheck:integration": "tsc -p tests/integration/tsconfig.json",
+    "typecheck:e2e": "tsc -p tests/e2e/tsconfig.json",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^22.10.2",
     "@typescript-eslint/eslint-plugin": "^8.18.0",
     "@typescript-eslint/parser": "^8.18.0",

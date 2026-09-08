@@ -10,60 +10,17 @@
 //     here in arrival order (mirrors what the bridge forwards to web)
 //   - `cleanup`: stops the manager, waits for the child to exit, and
 //     removes the temp directories
+//
+// Hermeticity (the env-var-strip + fixture-pinning logic) lives in
+// `build-hermetic-env.ts` and is the **shared source of truth** for
+// the integration suite AND the `tests/e2e/` harness (see
+// ADR-0009 §5 复用策略 + 任务 12 抽取首选). Any future provider
+// additions belong in that helper so both suites stay in sync.
 
 import { spawnSync } from 'node:child_process';
 import { Envelope, PROTOCOL_VERSION, type Envelope as EnvelopeT } from '@remotepi/shared';
 import { PiProcessManager, type PiProcessOptions } from '@remotepi/bridge/pi-process.js';
-
-// Provider-specific env var keys we strip from the inherited env.
-// pi's `auth.js getAuth` falls back to `process.env.<PROVIDER>_API_KEY`
-// (or AWS / ADC vars for Bedrock / Vertex) if `auth.json` is missing
-// for that provider, so leaving a real provider key in the env would
-// let pi bypass our fake and route to a real provider.
-//
-// ## Defense layers (intentional redundancy — don't simplify)
-//
-// This list is **layer 1 only** — it covers the realistic host-leak
-// candidates (Anthropic / OpenAI / Gemini / Google + the most common
-// "poly-provider" keys a developer is likely to have set, plus Bedrock
-// IAM vars + Vertex ADC). It's NOT exhaustive: pi-ai has 30+
-// `envApiKeyAuth`-wired providers with one env var each, and we
-// cannot enumerate all of them here without forking the SDK.
-//
-// The **load-bearing guarantees** are downstream of this list:
-//
-//   - Layer 2: `makeAgentDir` writes `settings.json` with
-//     `defaultProvider: 'fake-anthropic'`, so the resolved provider
-//     is hermetic even if some other env var sneaks through.
-//   - Layer 3: the fake-llm-server's `fake-claude-*` model-name
-//     fail-fast guard rejects any request that would have leaked
-//     to a real model (500 with a descriptive error).
-//
-// Together (1)+(2)+(3) make the fixture safe even when this list
-// misses a provider. Layer 1 keeps the most common cases from
-// even hitting the network for ambient auth resolution.
-const PROVIDER_KEY_ENV_VARS = [
-  // Layer 1: the realistic host-leak candidates (originally four;
-  // expanded per integration-test review 2026-09-08).
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_OAUTH_TOKEN',
-  'OPENAI_API_KEY',
-  'GEMINI_API_KEY',
-  'GOOGLE_API_KEY',
-  // Multi-provider aggregators developers frequently have set.
-  'OPENROUTER_API_KEY',
-  // European / secondary providers with `envApiKeyAuth`-wired env vars.
-  'MISTRAL_API_KEY',
-  // Azure OpenAI.
-  'AZURE_OPENAI_API_KEY',
-  // Amazon Bedrock (IAM-based; the SDK reads these via the AWS
-  // standard chain — without stripping, an AWS-profiled host
-  // would silently route to Bedrock).
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  // Google Vertex (Application Default Credentials file path).
-  'GOOGLE_APPLICATION_CREDENTIALS',
-] as const;
+import { buildHermeticEnv } from './build-hermetic-env.js';
 
 export interface MakeManagerOptions {
   /** Agent-dir from `makeAgentDir`. */
@@ -101,27 +58,13 @@ export function makeManager(opts: MakeManagerOptions): MakeManagerResult {
   assertPiAvailable();
   const outbound: EnvelopeT[] = [];
 
-  // Strip provider-specific API keys from the host env so the bridge
-  // fixture is hermetic against accidental host bleed. `PATH` is kept
-  // because the spawn relies on `pi` being on PATH (we invoke `pi`
-  // without an absolute path).
-  const baseEnv: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if ((PROVIDER_KEY_ENV_VARS as readonly string[]).includes(k)) continue;
-    baseEnv[k] = v;
-  }
-  // Pin pi's agent dir to the test fixture. Without this, pi falls
-  // back to the operator's `~/.pi/agent` and reads its real models.json
-  // (which has real provider credentials) — defeating the hermetic
-  // fixture. Note: the production bridge deliberately does NOT inject
-  // `PI_CODING_AGENT_DIR` (decision 2026-09-05: bridge reuses the
-  // host's pi agent dir), but the integration suite is a different
-  // concern — it needs pi to look ONLY at the fixture.
-  baseEnv['PI_CODING_AGENT_DIR'] = opts.agentDir;
-  // PI_OFFLINE=1 disables version check / telemetry / model catalogue
-  // refresh (see ADR-0008 §1 环境变量三件套) so pi never reaches the
-  // network for housekeeping during a fixture run.
-  baseEnv['PI_OFFLINE'] = '1';
+  // Sanitize the env (strip provider keys) + pin pi's agent dir +
+  // PI_OFFLINE=1. See build-hermetic-env.ts for the full defense
+  // layer rationale; this call is layer 1 only — layers 2 (fixture
+  // settings.json default provider) + 3 (fake-llm-server's
+  // fake-claude-* guard) live in make-fixture.ts and
+  // fake-llm-server.ts respectively.
+  const baseEnv = buildHermeticEnv({ agentDir: opts.agentDir });
 
   const piOpts: PiProcessOptions = {
     agentDir: opts.agentDir,

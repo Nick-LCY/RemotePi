@@ -1,0 +1,19 @@
+{
+  "_comment": "Opt-in typecheck for tests/e2e — NOT consumed by `pnpm -r typecheck` (which iterates the workspace packages). Trigger explicitly via `pnpm run typecheck:e2e`. Extends the root base so module resolution / strictness / NodeNext line up with the rest of the repo. `baseUrl` + `paths` map the workspace package names to their source `.ts` files (instead of relying on workspace symlinks, which don't exist at `tests/e2e/node_modules`) — same pattern as tests/integration/tsconfig.json but with two extra entries: shared is consumed via bridge's tree-shake paths, and @playwright/test (root devDependency) is loaded via module resolution from node_modules. We deliberately do NOT include the `.tmp/` subtree (the per-run fixture) — it's runtime-only and not part of the source graph.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@remotepi/shared": ["../../packages/shared/src/index.ts"],
+      "@remotepi/shared/*": ["../../packages/shared/src/*"],
+      "@remotepi/bridge": ["../../packages/bridge/src/index.ts"],
+      "@remotepi/bridge/*": ["../../packages/bridge/src/*"]
+    }
+  },
+  "include": ["./**/*.ts", "./playwright.config.ts"],
+  "exclude": [".tmp/", "node_modules/", "test-results/", "playwright-report/"]
+}

@@ -20,6 +20,15 @@ export default tseslint.config(
       // way to keep them out of the lint run without disabling rules
       // they don't need anyway.
       'worker/scripts/**/*.mjs',
+      // E2E runtime artefacts: per-run fixture + test extension copy
+      // mirror the integration suite's .tmp pattern (see ADR-0008 §1
+      // + ADR-0009 §7.7). The .ts files inside are runtime
+      // hand-crafted (NOT in any project service include) and would
+      // otherwise trip the same "not found by project service" error.
+      'tests/e2e/.tmp/**',
+      'tests/e2e/playwright-report/**',
+      'tests/e2e/test-results/**',
+      'tests/integration/.tmp/**',
     ],
   },
   ...tseslint.configs.recommendedTypeChecked,

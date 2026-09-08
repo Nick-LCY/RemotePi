@@ -35,6 +35,14 @@ pnpm-debug.log*
 tests/integration/.tmp/
 tests/integration/**/sessions/
 
+# E2E harness runtime artefacts (see ADR-0009 §7.7 + 任务 12 敲定点 2).
+# Per-run fixture + run-state.json + playwright HTML report + per-spec test
+# results (trace.zip, screenshots, videos when retain-on-failure). All
+# regenerated on the next `pnpm test:e2e`.
+tests/e2e/.tmp/
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+
 # Editor / OS
 .DS_Store
 .vscode/*
