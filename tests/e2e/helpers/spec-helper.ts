@@ -48,33 +48,15 @@
 //   Asserting the absence (no second `recovery-in-flight`) is the
 //   right shape, but it's brittle to test reliably; prefer just
 //   keeping the rule in mind when writing reconnect tests.
-
-/** Dialog auto-close helper. Returns a Playwright assertion that
- *  the dialog container has been unmounted (React-key drop in
- *  `DialogHost`'s render loop, not a timer). The default selector
- *  matches the convention's first `data-testid`; pass a more
- *  specific selector for stacked / multi-dialog assertions.
- *
- *  Use this helper rather than rolling your own `expect(...).toBeHidden`
- *  so the convention lives in one place — if the rendering shape
- *  changes (e.g. dialogs move out of DialogHost), only this
- *  helper needs updating. */
-export const dialogAutoCloseAssertion = (selector = '[data-testid^="dialog-"]:not([data-testid="dialog-host"]):not([data-testid="dialog-toast"])'): string => {
-  // We intentionally return a selector string rather than a
-  // pre-built `expect.poll(() => …)` so the spec retains control
-  // over timeout + retry semantics. Typical usage:
-  //   await expect(page.locSelector(dialogAutoCloseAssertion('dialog-confirm')))
-  //     .toHaveCount(0, { timeout: 5_000 });
-  return selector;
-};
-
-/** Sentinel: throw this from a spec body to mark a test as a
- *  known-flaky implementation gap rather than a regression. The
- *  `globalSetup` runs once per `pnpm test:e2e` invocation, so the
- *  test runner collects `test.skip()` reasons from `test.info()`
- *  annotations when an assertion is wrapped in this helper.
- *
- *  Currently unused — kept as a marker for the multi-tab scenario
- *  if the "B sees request_expired" assertion degrades to a soft
- *  fail (敲定点 5 备选 C 路径). */
-export const KNOWN_FLAKY = Symbol.for('remotepi.e2e.known-flaky');
+//
+// ## Why this file has no exports
+//
+//   This module deliberately ships the two断言语义约定 (ADR-0009
+//   §决策 7 末条) as JSDoc-only. An earlier revision exported
+//   `dialogAutoCloseAssertion` (selector builder) and `KNOWN_FLAKY`
+//   (sentinel symbol for soft-fail assertion paths), but neither
+//   was wired into a spec — both lived as dead code with
+//   speculative future use. The conventions themselves are the
+//   load-bearing artefact here; any helper that grows up around
+//   them should be co-designed with its first consumer rather
+//   than pre-shipped.

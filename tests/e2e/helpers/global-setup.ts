@@ -41,7 +41,6 @@
 // handles the best-effort cleanup path. See global-teardown.ts for
 // the ordering rationale.
 
-import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -81,15 +80,17 @@ interface RunState {
   /** URL of the fake LLM server (informational; the bridge spawns
    *  pi pointed at the fixture which carries the same URL). */
   fakeLlmUrl: string;
-  /** Helper: build a fresh spec-scoped token so each scenario can
-   *  use its own Room DO. Without this, all three scenarios share
-   *  the same runTag-based token and SQLite messages bleed across
-   *  (scenario (b) saw scenario (a)'s prompt history when run
-   *  together). The per-spec token is a 16-byte hex string that
-   *  stays in the same family as the bridge's runTag token
-   *  (matches `^[-_a-zA-Z0-9]+$`) so the worker's extractToken
-   *  regex accepts it. */
-  freshSpecToken(): string;
+  // Note: a previous revision included a `freshSpecToken()` helper
+  // here for "anti-cross-write" between scenarios (each scenario
+  // would get its own Room DO). It was deleted in task 13's
+  // 收尾修复轮 because (a) methods on this object are stripped by
+  // JSON.stringify when run-state.json is persisted (functions
+  // don't survive serialization), and (b) no spec actually called
+  // it. The current MVP scenarios all share one token — they filter
+  // their own messages by content (see spec (b)'s `beforeRows`
+  // filter) instead of relying on per-spec DO partitioning. If a
+  // future scenario needs token isolation, add a free function in
+  // a helper module rather than resurrecting the field here.
 }
 
 export interface GlobalHarness {
@@ -229,11 +230,6 @@ async function setupHarness(): Promise<GlobalHarness> {
   // are complementary, not redundant: teardown kills child PIDs;
   // clearStaleTmp wipes stale on-disk state.
   let harness: GlobalHarness | null = null;
-  // Counter backing `freshSpecToken` — incremented per call so
-  // two specs requesting at the same time get distinct tokens.
-  // Closure-scoped to setupHarness so it resets each globalSetup
-  // pass (i.e. each `pnpm test:e2e` invocation).
-  let specTokenCounter = 0;
   try {
     assertDistArtifacts();
     await mkdir(tmpRoot, { recursive: true });
@@ -370,9 +366,13 @@ async function setupHarness(): Promise<GlobalHarness> {
       // shared-drain-flag deadlock). The bridge's complete output
       // is captured by bridge-postmortem.log (independent
       // listener attached by bridge-process.ts to bypass any
-      // global-setup-side issues). Single-write + drop-on-
-      // backpressure is acceptable here because the bridge.log is
-      // a debug aid; the postmortem is the authoritative capture.
+      // global-setup-side issues). Sync I/O is fine here because
+      // the bridge emits a small amount of structured output per
+      // phase transition; if bridge output ever surges to the
+      // point where sync writes block the event loop, the
+      // postmortem listener (also synchronous) would block too —
+      // switch to WriteStream + drain then. Today, observed bridge
+      // output volume is well under any blocking threshold.
       const bridgeOutFanout = bridge.child.stdout;
       if (bridgeOutFanout !== null) {
         const { appendFileSync } = await import('node:fs');
@@ -413,15 +413,6 @@ async function setupHarness(): Promise<GlobalHarness> {
         workDir: fixture.workDir,
         bridgeConfigPath,
         fakeLlmUrl: fakeServer.url,
-        // Per-spec token factory — derived from the runTag + a
-        // per-call counter so two specs asking at the same time
-        // don't collide. 16 hex chars = 8 bytes of entropy; the
-        // worker `extractToken` regex (`/^[-_a-zA-Z0-9]+$/`,
-        // min length 1) accepts this without modification.
-        freshSpecToken(): string {
-          specTokenCounter += 1;
-          return `${runTag}-spec-${specTokenCounter.toString(36).padStart(4, '0')}`;
-        },
       };
       // Write the run state so the specs can read it without depending
       // on Playwright's `use()` fixture (which doesn't work across
@@ -482,58 +473,28 @@ function stashHarness(patch: Partial<HarnessHandles>): void {
   (globalThis as Record<string, unknown>)['__e2eHarness__'] = next;
 }
 
-/** W2 — pipe a child's stdout/stderr through a WriteStream via
- *  `pipe()` + a Transform that prepends a per-source prefix
- *  (`[wrangler stdout] ` etc.) to every chunk. The Transform
- *  approach was chosen over a hand-rolled `'data'` handler because:
- *    - `pipe()` attaches listeners synchronously, so no chunk is
- *      dropped in the race window between `spawn()` returning
- *      and the listener attaching (a real failure mode observed
- *      during task 11 review).
- *    - backpressure is managed automatically (via `'drain'`) —
- *      a hand-rolled `'data'` handler that doesn't pause the
- *      source during backpressure will buffer writes inside the
- *      Node runtime until the GC reclaims or the process exits.
- *    - the Transform lets us rewrite each chunk (prepend the
- *      prefix) without breaking the pipe semantics.
- *
- *  On `dest.end()` (in the surrounding `try/finally`), `pipe()`
- *  auto-unpipes; no manual cleanup needed.
- *
- *  `await writeWithBackpressure` for the inline banner writes
- *  keeps the existing await-drain behaviour on a per-write
- *  basis — those one-shot writes have nothing to do with the
- *  streaming pipe. */
 /** W2 — pipe a child's stdout/stderr through a WriteStream with
- *  a per-source prefix and proper backpressure handling. We use a
- *  hand-rolled `'data'` listener (rather than `pipe()`) because the
- *  earlier `pipe()` + Transform implementation silently dropped
- *  chunks after the initial setup banner — empirically observed
- *  during task 13 review where the bridge was clearly writing
- *  `spawning pi (count=1)`, `phase transition: …`, etc. (verified
- *  via the bridge-process.ts post-mortem sink) yet none of those
- *  lines reached the bridge.log file written by this function.
+ *  a per-source prefix. We use a hand-rolled `'data'` listener
+ *  (rather than `pipe()`) because the earlier `pipe()` + Transform
+ *  implementation silently dropped chunks after the initial setup
+ *  banner — empirically observed during task 13 review where the
+ *  bridge was clearly writing `spawning pi (count=1)`,
+ *  `phase transition: …`, etc. (verified via the bridge-process.ts
+ *  post-mortem sink) yet none of those lines reached the bridge.log
+ *  file written by this function.
  *
- *  The hand-rolled approach has three correctness requirements:
- *    1. Each `'data'` event must result in exactly one
- *       `dest.write(prefix + text)` call (or zero, if the chunk
- *       is empty). Dropping chunks is the symptom we're guarding
- *       against.
- *    2. On backpressure (`write()` returns false), we register
- *       a one-shot `'drain'` listener and stop emitting further
- *       writes until drain fires. This prevents the WriteStream's
- *       internal buffer from growing unbounded and ensures the
- *       child pipe back-pressures upstream (so the child process
- *       stalls on stdout writes rather than buffering them
- *       indefinitely in the kernel pipe).
- *    3. We attach `'error'` handlers so an EPIPE / child-exit
- *       doesn't crash the harness via unhandled stream error.
- *
- *  The flag `drainPending` deduplicates the 'drain' listener — a
- *  second `false` return while the buffer is still full would
- *  otherwise pile up listeners and trigger Node's
- *  MaxListenersExceededWarning (observed in an earlier iteration of
- *  task 13's W2 fix). */
+ *  Honest backpressure note: the source is NOT paused on a
+ *  `'drain'` event — the implementation simply DE-DUPLICATES the
+ *  drain listener registration. Subsequent 'data' events while
+ *  the buffer is still full are absorbed into the WriteStream's
+ *  internal buffer (and from there into the OS-level fd write).
+ *  The volume is small enough in practice that no chunk is
+ *  actually dropped for this harness; the only consequence under
+ *  burst is a temporary memory spike, not a hang. The earlier
+ *  'stop emitting further writes' wording overstated what this
+ *  helper actually does — see `appendFileSync` path used for the
+ *  bridge child (where synchronous I/O is fine because bridge
+ *  output volume is small). */
 function wireForward(
   source: NodeJS.ReadableStream | null,
   dest: import('node:fs').WriteStream,
@@ -602,8 +563,3 @@ export async function clearStaleTmp(): Promise<void> {
  *  global-teardown didn't run (e.g. a Playwright version that
  *  doesn't fire teardown on early setup failure). */
 export { runTag, tmpRoot };
-
-// Keep the unused-import linter quiet — `spawn` is referenced in
-// JSDoc above (the bridge child comment about "node …" runtime),
-// not as an actual code dependency in this file.
-void spawn;

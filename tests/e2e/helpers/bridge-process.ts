@@ -168,6 +168,20 @@ function spawnBridge(opts: BridgeProcessOptions): BridgeProcess {
     }
   });
   child.on('exit', (code, signal) => {
+    if (postMortemLogStream !== null) {
+      // W2-fanout — close the post-mortem log fd on every exit path
+      // (success, throw, SIGKILL mid-flight). The stream's
+      // underlying fd is libuv-owned; until `.end()` is called
+      // Node holds it open and the GC can't reclaim. The exit
+      // listener fires exactly once per child lifetime so this is
+      // safe to call here (idempotent on already-closed streams).
+      try {
+        postMortemLogStream.end();
+      } catch {
+        // Best-effort — never mask the original error.
+      }
+      postMortemLogStream = null;
+    }
     if (!connected) {
       const err = new Error(
         `bridge exited before connecting (code=${code}, signal=${signal}); ` +
@@ -195,30 +209,16 @@ function spawnBridge(opts: BridgeProcessOptions): BridgeProcess {
       clearTimeout(readyTimeout);
       readyTimeout = null;
     }
-    // W5 — attach the one-shot exit listener BEFORE the kill (and
-    // before checking exitCode), so the listener can never miss an
-    // exit that races the kill. The previous code path attached
-    // `child.once('exit', …)` AFTER `process.kill(-pid, 'SIGKILL')`,
-    // which had a real race: Node 22 SIGKILL's the child within
-    // microseconds, the `exit` event fires synchronously on the
-    // libuv loop, and by the time we hit the `child.once(...)`
-    // attach the event has already been emitted. Node does NOT
-    // replay missed exit events, so `await` hangs until the outer
-    // promise timeout — teardown ordering then breaks down.
-    //
-    // Correct ordering: attach first, then check the
-    // already-exited case, then send the kill. The exit listener
-    // resolves the awaited promise regardless of which path fires
-    // it (kill-induced or natural exit).
-    const exitPromise = new Promise<void>((resolve) => {
-      child.once('exit', () => resolve());
-    });
+    // W5 — follow the `wrangler-process.ts:189` short-circuit pattern.
+    // If the bridge self-exited BEFORE stop() was called (e.g.
+    // ECONNREFUSED → bridge exited cleanly with code 0, see current-
+    // state TODO 2026-09-07 "bridge 僵尸"), `child.exitCode` is
+    // already non-null and the `exit` event has already been emitted.
+    // There is NO future `exit` event to wait for — `await` would hang
+    // until the outer teardown timeout fires, breaking ordering for
+    // any later teardown step. Check exitCode FIRST and bail out
+    // immediately; the process is already gone.
     if (child.exitCode !== null) {
-      // Already gone by the time stop() runs (e.g. bridge self-
-      // exited on ECONNREFUSED). The once listener may or may not
-      // have been called — race-free path is to check exitCode and
-      // resolve the await immediately if so.
-      await exitPromise;
       return;
     }
     // Process-group kill: the bridge spawns pi via
@@ -240,9 +240,17 @@ function spawnBridge(opts: BridgeProcessOptions): BridgeProcess {
         }
       }
     }
-    // Reap to avoid zombies. The once listener attached above
-    // fires either way (kill-induced or already-exited race).
-    await exitPromise;
+    // W5 — attach the one-shot exit listener AFTER the kill (since
+    // we've already bailed out on the self-exited case above, the
+    // race that motivated the previous "attach first" ordering no
+    // longer exists). We await this listener to reap the zombie
+    // cleanly so teardown ordering stays deterministic. The earlier
+    // code attached the listener before the exitCode check AND
+    // awaited it in the already-exited path — that combination
+    // hanged teardown on every self-exited bridge.
+    await new Promise<void>((resolve) => {
+      child.once('exit', () => resolve());
+    });
   };
 
   // waitForReady just returns the inner promise so callers see the

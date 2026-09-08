@@ -223,17 +223,18 @@ test.describe('scenario (b) — F5 reload recovery', () => {
       afterRows.length,
       'post-reload row count for this scenario must equal pre-reload row count',
     ).toBe(beforeRows.length);
-    // Per-row text + role class must match in order. We use a
-    // pairwise comparison so a single swapped row would fail
-    // loudly (vs a single text-concatenation check that could
-    // paper over a permutation).
+    // Per-row text + role class must match in order. We use
+    // field-by-field asserts (testid / roleClass / text) so a
+    // single failure points at the offending field rather than
+    // dumping both halves of a `toEqual({before, after})`
+    // object and forcing the operator to diff by eye. The
+    // `expect` messages name the row index for cross-reference.
     for (let i = 0; i < beforeRows.length; i += 1) {
       const before = beforeRows[i] as MessageRowSnapshot;
       const after = afterRows[i] as MessageRowSnapshot;
-      expect(
-        { before, after },
-        `row[${i}] content mismatch`,
-      ).toEqual({ before, after });
+      expect(after.testid, `row[${i}] testid mismatch`).toBe(before.testid);
+      expect(after.roleClass, `row[${i}] roleClass mismatch`).toBe(before.roleClass);
+      expect(after.text, `row[${i}] text mismatch`).toBe(before.text);
     }
     // Sanity: chat-view is interactive (input-field present + enabled).
     await expect(page.locator('[data-testid="input-field"]')).toBeEnabled({ timeout: 5_000 });

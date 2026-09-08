@@ -460,13 +460,24 @@ export async function startFakeLlmServer(
       // mean a future admin endpoint accidentally consumes an LLM
       // call. The path-namespace convention keeps the two surfaces
       // disjoint.
-      if (req.method === 'POST' && url.startsWith('/__e2e/script')) {
+      //
+      // Exact-path matching (after stripping the `?query` suffix):
+      // we used to do `startsWith('/__e2e/script')` which would
+      // happily swallow `/__e2e/scripts` (note the trailing `s`) or
+      // `/__e2e/script/foo`, then forward that to the script-
+      // injection handler as if it were the canonical path. Split
+      // on `?` to peel the query string, then compare the pathname
+      // for equality so only the documented endpoints reach the
+      // admin handlers. Anything else falls through to the 404
+      // branch.
+      const pathname = url.split('?', 1)[0] ?? '';
+      if (req.method === 'POST' && pathname === '/__e2e/script') {
         await handleScriptInjection(req, res, (next) => {
           script = next;
         });
         return;
       }
-      if (req.method === 'GET' && url.startsWith('/__e2e/requests')) {
+      if (req.method === 'GET' && pathname === '/__e2e/requests') {
         handleRequestsDump(res, requests);
         return;
       }

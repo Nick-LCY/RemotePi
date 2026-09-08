@@ -164,3 +164,45 @@ status: todo
 - **场景 (c) `request_expired` UI 不验证**：在快速机器上几乎不可触发（见敲定点 5 结论）；保留 PRD §4.5 toast UX 作为 spec 的「best-effort console.log 记录」而非硬断言。
 - **`tests/e2e/helpers/global-setup.ts` 在 W1/W2 review 期间发现 pipe-based `bridgeLogStream` 在首段 setup 之后掉 chunk**——所有 bridge 桥接日志改用 `appendFileSync` 直写文件（独立 listener，由 `bridge-process.ts` 的 `postMortemLogPath` 选项驱动），不依赖 WriteStream 内部 buffer。`bridge-postmortem-*.log` 是 task 13 期间捕获 bridge 真实日志（spawn pi / phase transitions / extension_ui）的唯一可靠 surface。
 - **stale process 清理**：测试间如残留 `wrangler dev` / `workerd` / `fake-llm-standalone` / `tsx.*packages/bridge`，`tests/e2e/.tmp/` 清理可能 race 导致端口占用或 SQLite 残留。`pnpm test:e2e` 运行前最好 `pkill -9 -f 'wrangler|workerd|tsx.*packages/bridge'`——CI 环境不会有此问题（fresh runner），仅本机调试需要。
+
+### 收尾修复轮（review 通过后的 follow-up 清单）
+
+任务 13/ADR-0009 三场景落地后 review 通过一轮（commit `5b27300`）。本轮是 review 留下的「follow-up 清单」一次性收口，单笔本地 commit，所有改动仍限 `tests/` 内；`packages/*` / `worker/` / `.github/` 零改动。
+
+#### 必修一项
+
+- **W5 残留竞态** `tests/e2e/helpers/bridge-process.ts:215-223` ——bridge 已自退（`exitCode` 非空、`'exit'` 已发出）时 `await exitPromise` 永久挂到 teardown 超时。照 `wrangler-process.ts:189` 的模式改：attach 前先 `if (child.exitCode !== null) return;`，使 `stop()` 在已退场景立即返回。W5-fanout：`child.on('exit', …)` 监听器里 `postMortemLogStream.end()` 关闭 fd（libuv 持有 fd 不 GC 回收——本轮顺手落地）。
+
+#### 顺手清理（机械项）
+
+1. **`global-setup.ts:485-505`** ——W2 被否决方案的孤儿 JSDoc 块（21 行，描述 `pipe() + Transform` 实现）删除。
+2. **`global-setup.ts:507-536` JSDoc** ——backpressure 描述与实现不符（实现只去重 drain 监听，并不会暂停 source）。改为如实描述「去重 drain 监听，后续写由 dest 缓冲吸收，不丢 chunk」。
+3. **`global-setup.ts:378-399` `appendFileSync` 注释** ——原声称「drop-on-backpressure」，同步 I/O 实际不会丢。改为如实注明「同步 I/O，量小可接受；若 bridge 输出激增会阻塞事件循环」——同时删除「Single-write + drop-on-backpressure」的措辞。
+4. **`global-setup.ts` + `readRunState` 的 `freshSpecToken`** ——函数挂在 state 对象上会被 `JSON.stringify` 剥掉，且全库无调用方。**选择**：**直接删除 JSDoc 声称**（二选一中的后者，理由：MVP 三场景共享 token + 用文本过滤解决串写，per-spec token 不是刚需；如果未来需要，应在 helper 模块自由函数设计，避免复活 state 字段）。`specTokenCounter` 局部变量同步删除。
+5. **`bridge-process.ts:140-146`** ——`postMortemLogStream` 从不 `end()`。在 `child.on('exit', …)` 监听器里 `end()`（一次性格外 + 置 null；try/catch 兜底）。
+6. **`specs/03:226-238`** ——click 的 `try/catch` 会把「选择器改名」吞成静默通过。click 前先记录 `sawYesButton = (await yesA.count()) > 0`，catch 里仅在 `!sawYesButton && dialog 已消失` 时视为竞态窗口通过，否则 rethrow——确保选择器改名后会红。
+7. **`fake-llm-server.ts:464,468`** ——admin 端点 `startsWith('/__e2e/script')` 改为精确路径匹配（`split '?'` 取 `pathname` 相等），防 `/__e2e/scripts` 之类误吞。JSDoc 同步说明精确路径语义。
+8. **`specs/02:158-161`** ——pairwise `toEqual({before, after})` 改为逐字段断言（testid / roleClass / text 三个 expect），失败时能定位字段。
+9. **`specs/03:206-217`** ——`request_expired` 的 `console.log` 降级诊断改用 `test.info().annotations.push({type:'observation', …})`（Playwright HTML 报告可见）。
+10. **死代码三处** ——`global-setup.ts` 的 `spawn` 导入 + `void spawn` 垫片删除；`spec-helper.ts` 的 `KNOWN_FLAKY` + `dialogAutoCloseAssertion` 两个 helper 删除（**选择**：删除，理由：两个 helper 都无 spec 调用方，是早期设计的「spec 化未来」遗留；S5 的两条断言语义约定 JSDoc 保留在文件头，不受影响，JSDoc 末尾新增一段「Why this file has no exports」说明删除原因）。
+
+#### 不动（review 判可接受的现状）
+
+- `HarnessHandles` 双份接口（JSDoc 已给出理由——globalSetup / globalTeardown 两 worker 跨进程，不共享模块比共享更稳）。
+- `appendFileSync` 本身（仅改注释）。
+- 20 ms 快轮询（仅确认现状，仍是 spec (c) 在快机器上的必要手段）。
+
+#### 验收结果
+
+| 命令 | 结果 |
+|------|------|
+| `pnpm run test:e2e`（连跑 2 次） | **3 passed**（≈11.3 s / 10.2 s，3 场景全绿，0 skipped） |
+| `pnpm run test:integration` | **30 passed**（≈11.7 s，6 文件）——改了 fake-llm-server 必须回归 |
+| `pnpm run test` | **281 passed**（基线不变） |
+| `pnpm run typecheck` / `typecheck:e2e` / `typecheck:integration` | 全绿 |
+| `pnpm run lint` | 0 errors / 5 pre-existing warnings（`WsClient.ts` 5 条 `no-console`，与本轮无关） |
+| `packages/*` / `worker/` / `.github/` diff | 零结果（限 `tests/` 内） |
+
+#### 本笔 commit
+
+`test(e2e): 收尾修复——W5 残留竞态 + review 跟进清单（任务 11-13 审查轮）`

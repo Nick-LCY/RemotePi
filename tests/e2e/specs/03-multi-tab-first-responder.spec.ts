@@ -237,19 +237,31 @@ test.describe('scenario (c) — multi-tab first-responder wins', () => {
     //
     // On a fast machine A's dialog might already be gone
     // (B's commit cleared blocked_on before A could click).
-    // We tolerate the auto-closed case: if the dialog is gone,
-    // we record it as a soft pass with a note for the task file.
+    // The catch block below tolerates ONLY the auto-closed race
+    // window: if the dialog had already vanished before our
+    // click resolved, treat it as a soft pass. We probe the
+    // dialog's presence BEFORE the click (via `count()`) so
+    // that a future selector rename (`dialog-confirm-yes` →
+    // something else) doesn't silently degrade into a
+    // always-soft-pass — we explicitly require the dialog to
+    // have been there in the first place.
     const yesA = ctxA.page.locator('[data-testid="dialog-confirm-yes"]');
+    const sawYesButton = (await yesA.count()) > 0;
     try {
       await yesA.click({ timeout: 5_000 });
     } catch (e) {
       const stillThere = await ctxA.page.locator(dialogSelector).count();
-      if (stillThere === 0) {
+      if (!sawYesButton && stillThere === 0) {
         // A's dialog already closed because B's click took
         // priority — this is the expected race window for path A.
-        // (See step 7's soft assertion below for the
-        // request_expired-side effect on B.)
+        // The probe above guarantees we didn't silently pass on
+        // a missing selector. (See step 7's soft assertion
+        // below for the request_expired-side effect on B.)
       } else {
+        // Dialog was still there at probe time, OR re-appeared
+        // after the click failed for some other reason (e.g.
+        // selector rename, transient click error): rethrow so
+        // the failure isn't papered over as a race-window pass.
         throw e;
       }
     }
@@ -273,17 +285,24 @@ test.describe('scenario (c) — multi-tab first-responder wins', () => {
     // arrives after the dialog is gone but BEFORE the bridge
     // can tag it request_expired. On a fast machine the toast
     // is unlikely to appear because the dialog auto-closes
-    // before B's click can register. We record the result
-    // for the task file rather than failing the spec.
+    // before B's click can register. We record the observation
+    // as a `test.info().annotations.push(...)` so it shows up
+    // in the Playwright HTML report (and on CI artefacts) —
+    // replacing the previous console.log path that drowned in
+    // the test runner's stdout.
     const toastB = ctxB.page.locator('[data-testid="dialog-toast"]');
     const toastVisible = await toastB.isVisible().catch(() => false);
     if (toastVisible) {
       const toastText = await toastB.textContent();
-      // eslint-disable-next-line no-console
-      console.log('[scenario-c] B request_expired toast:', toastText);
+      test.info().annotations.push({
+        type: 'observation',
+        description: `[scenario-c] B request_expired toast: ${toastText ?? '<empty>'}`,
+      });
     } else {
-      // eslint-disable-next-line no-console
-      console.log('[scenario-c] B toast did not appear (acceptable per 敲定点 5)');
+      test.info().annotations.push({
+        type: 'observation',
+        description: '[scenario-c] B toast did not appear (acceptable per 敲定点 5)',
+      });
     }
 
     // Step 9: follow-up assistant message (the LLM's second
