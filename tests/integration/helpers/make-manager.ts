@@ -11,22 +11,58 @@
 //   - `cleanup`: stops the manager, waits for the child to exit, and
 //     removes the temp directories
 
+import { spawnSync } from 'node:child_process';
 import { Envelope, PROTOCOL_VERSION, type Envelope as EnvelopeT } from '@remotepi/shared';
 import { PiProcessManager, type PiProcessOptions } from '@remotepi/bridge/pi-process.js';
 
 // Provider-specific env var keys we strip from the inherited env.
 // pi's `auth.js getAuth` falls back to `process.env.<PROVIDER>_API_KEY`
-// if `auth.json` is missing for that provider, so leaving a real
-// provider key in the env would let pi bypass our fake. The bridge's
-// per-provider fallback list is hard to enumerate without reading
-// every provider; the four most common ones cover the realistic
-// bleed scenarios (the bridge fixture is hermetic, but host leakage
-// would silently route to a real provider).
+// (or AWS / ADC vars for Bedrock / Vertex) if `auth.json` is missing
+// for that provider, so leaving a real provider key in the env would
+// let pi bypass our fake and route to a real provider.
+//
+// ## Defense layers (intentional redundancy — don't simplify)
+//
+// This list is **layer 1 only** — it covers the realistic host-leak
+// candidates (Anthropic / OpenAI / Gemini / Google + the most common
+// "poly-provider" keys a developer is likely to have set, plus Bedrock
+// IAM vars + Vertex ADC). It's NOT exhaustive: pi-ai has 30+
+// `envApiKeyAuth`-wired providers with one env var each, and we
+// cannot enumerate all of them here without forking the SDK.
+//
+// The **load-bearing guarantees** are downstream of this list:
+//
+//   - Layer 2: `makeAgentDir` writes `settings.json` with
+//     `defaultProvider: 'fake-anthropic'`, so the resolved provider
+//     is hermetic even if some other env var sneaks through.
+//   - Layer 3: the fake-llm-server's `fake-claude-*` model-name
+//     fail-fast guard rejects any request that would have leaked
+//     to a real model (500 with a descriptive error).
+//
+// Together (1)+(2)+(3) make the fixture safe even when this list
+// misses a provider. Layer 1 keeps the most common cases from
+// even hitting the network for ambient auth resolution.
 const PROVIDER_KEY_ENV_VARS = [
+  // Layer 1: the realistic host-leak candidates (originally four;
+  // expanded per integration-test review 2026-09-08).
   'ANTHROPIC_API_KEY',
+  'ANTHROPIC_OAUTH_TOKEN',
   'OPENAI_API_KEY',
   'GEMINI_API_KEY',
   'GOOGLE_API_KEY',
+  // Multi-provider aggregators developers frequently have set.
+  'OPENROUTER_API_KEY',
+  // European / secondary providers with `envApiKeyAuth`-wired env vars.
+  'MISTRAL_API_KEY',
+  // Azure OpenAI.
+  'AZURE_OPENAI_API_KEY',
+  // Amazon Bedrock (IAM-based; the SDK reads these via the AWS
+  // standard chain — without stripping, an AWS-profiled host
+  // would silently route to Bedrock).
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  // Google Vertex (Application Default Credentials file path).
+  'GOOGLE_APPLICATION_CREDENTIALS',
 ] as const;
 
 export interface MakeManagerOptions {
@@ -55,6 +91,14 @@ export interface MakeManagerResult {
  * call triggers the lazy spawn.
  */
 export function makeManager(opts: MakeManagerOptions): MakeManagerResult {
+  // Pre-flight check: the integration suite spawns a real
+  // `pi --mode rpc` subprocess, so the binary must be on PATH.
+  // Fail fast with a clear message rather than letting every
+  // case die with a 30 s spawn-timeout. CI intentionally does
+  // not run this suite (see .github/workflows/ci.yml and
+  // docs/testing.md §2.7) — the guard is for local developers
+  // who haven't installed `@earendil-works/pi-coding-agent`.
+  assertPiAvailable();
   const outbound: EnvelopeT[] = [];
 
   // Strip provider-specific API keys from the host env so the bridge
@@ -66,11 +110,6 @@ export function makeManager(opts: MakeManagerOptions): MakeManagerResult {
     if ((PROVIDER_KEY_ENV_VARS as readonly string[]).includes(k)) continue;
     baseEnv[k] = v;
   }
-  // Inject the hermetic fixture marker so any future code that
-  // needs to know it's running under the integration suite can
-  // branch on this without a separate config knob. (Not used today;
-  // reserved for cross-test debugging hooks.)
-  baseEnv['REMOTEPI_INT_FIXTURE'] = '1';
   // Pin pi's agent dir to the test fixture. Without this, pi falls
   // back to the operator's `~/.pi/agent` and reads its real models.json
   // (which has real provider credentials) — defeating the hermetic
@@ -121,3 +160,37 @@ export function makeManager(opts: MakeManagerOptions): MakeManagerResult {
 // building an inbound envelope) don't need a second import.
 export { PROTOCOL_VERSION };
 export { Envelope };
+
+/**
+ * Verify that the `pi` binary is on PATH and responds to `--version`.
+ * Throws an `Error` with a clear remediation hint when it isn't, so a
+ * developer without `@earendil-works/pi-coding-agent` installed sees
+ * the failure immediately instead of waiting for every test case to
+ * time out on its 30 s spawn timeout.
+ *
+ * `spawnSync` (rather than `which`) so PATH resolution matches the
+ * exact behaviour of `PiProcessManager`'s `nodeSpawn('pi', ...)` call
+ * downstream.
+ */
+function assertPiAvailable(): void {
+  const probe = spawnSync('pi', ['--version'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 5_000,
+  });
+  if (probe.error !== undefined || probe.status !== 0) {
+    const errno = probe.error as NodeJS.ErrnoException;
+    const reason =
+      errno !== undefined
+        ? errno.code === 'ENOENT'
+          ? '`pi` binary not found on PATH'
+          : `spawn error: ${errno.message}`
+        : `\`pi --version\` exited with status ${probe.status}`;
+    throw new Error(
+      `RemotePi integration suite requires the \`pi\` binary on PATH — ${reason}.\n` +
+        `Install \`@earendil-works/pi-coding-agent\` (e.g. \`npm i -g @earendil-works/pi-coding-agent\`)\n` +
+        `or run \`pi --version\` to verify your install. CI intentionally skips this suite\n` +
+        `(see docs/testing.md §2.7); it's meant to be run locally with \`pnpm run test:integration\`.`,
+    );
+  }
+}

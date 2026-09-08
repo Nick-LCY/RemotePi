@@ -11,7 +11,7 @@
 //        re-walks spawning → ready.
 
 import { randomUUID } from 'node:crypto';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   PROTOCOL_VERSION,
   type Envelope as EnvelopeT,
@@ -236,6 +236,3 @@ describe('01 — happy path (handshake + streaming + idle kill + re-spawn)', () 
     });
   });
 });
-
-// Reference unused-import lint rule check.
-void afterEach;

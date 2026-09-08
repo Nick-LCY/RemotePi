@@ -47,9 +47,14 @@
 //   recovery spawn + 2 LLM roundtrips + idle timer ≈ 15–20 s in
 //   practice). `hookTimeout: 30_000` is generous for fixture setup /
 //   teardown that does synchronous `mkdtemp` + writes.
-// - `--passWithNoTests` mirrors the root `pnpm run test` contract so
-//   a developer without `pi` installed still gets a clean exit code
-//   instead of a vitest "no tests" error.
+// - `passWithNoTests: true` mirrors the root `pnpm run test` contract
+//   so a clean checkout with no `tests/integration/**/*.test.ts`
+//   matched (e.g. if a future refactor moves them) exits 0. NOTE: this
+//   does NOT excuse a missing `pi` binary — if the test files ARE
+//   present but `pi` is absent, every case will time out on its 30 s
+//   spawn probe rather than being silently skipped. The
+//   `assertPiAvailable()` guard in `helpers/make-manager.ts` catches
+//   that case with a clear error message.
 import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -79,6 +84,9 @@ export default defineConfig({
       },
       {
         find: /^@remotepi\/shared\/(.+)$/,
+        // No `.js` rewrite — vite's default `resolve.extensions`
+        // already covers `.ts` / `.js`, so source files under
+        // `packages/shared/src/<x>` resolve directly.
         replacement: path.join(repoRoot, 'packages/shared/src/') + '$1',
       },
       {

@@ -188,7 +188,11 @@ export function sseMessageStop(): SseEvent {
   return { event: 'message_stop', data: { type: 'message_stop' } };
 }
 
-/** Convenience: full 7-event sequence for a plain text reply. */
+/** Convenience: full 6-event sequence for a plain text reply.
+ *  Matches the SSE shape pinned in docs/testing.md §2.4.2:
+ *    message_start → content_block_start → content_block_delta
+ *    → content_block_stop → message_delta → message_stop.
+ */
 export function textReply(
   text: string,
   opts: { messageId?: string; model?: string; inputTokens?: number } = {},

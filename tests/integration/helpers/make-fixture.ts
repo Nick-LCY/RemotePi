@@ -11,7 +11,7 @@
 // a missing directory is fine, but other errors surface so the test
 // can fail loudly rather than masking file-leak symptoms.
 
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 // Repo-root-relative path for the test extension source. We COPY the
@@ -120,7 +120,6 @@ export async function makeAgentDir(opts: MakeAgentDirOptions): Promise<MakeAgent
   // Copy the test extension source into <agentDir>/extensions/.
   // We copy (not symlink) to keep the directory self-contained for
   // rm-rf cleanup.
-  const { copyFile } = await import('node:fs/promises');
   await copyFile(EXTENSION_SOURCE, path.join(agentDir, 'extensions', 'test-ext.ts'));
 
   const cleanup = async (): Promise<void> => {

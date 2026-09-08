@@ -14,7 +14,7 @@
 // models.json, jiti extension discovery failing, etc.) with one
 // failure rather than 5 separate ones.
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import {
   Envelope,
@@ -100,7 +100,3 @@ describe('integration smoke (fixtures + fake server + real pi subprocess)', () =
     }
   });
 });
-
-// Suppress unused-import warning from `afterEach` (not used here but
-// imported by other tests that follow the same pattern).
-void afterEach;

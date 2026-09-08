@@ -134,27 +134,47 @@ describe('06 — multi-turn (sequential prompts + steer + follow_up)', () => {
       mgr = makeManager({ agentDir: fixture.agentDir, workDir: fixture.workDir });
       mgr.manager.start();
 
-      // First scripted response (after prompt): tool_use → after
-      // the tool result flows back, pi emits a second LLM request.
-      // We script TWO tool_use replies to keep pi "in flight" so we
-      // have a window for the steer.
-      // Actually, the simpler model: pi's RPC mode treats steer as
-      // a mid-run insert (no separate LLM call). The bridge writes
-      // the steer to pi's stdin; pi's internal handler inserts the
-      // message into the running session. So we don't need a
-      // scripted tool_use — a single text reply is enough; the
-      // steer lands in the same LLM turn.
+      // ## Wire-shape pin (commit 44960b9 regression class)
+      //
+      // The old test only asserted `success: true` on the steer
+      // command_result, which would still pass even if the bridge
+      // mis-translated `content → message` and pi dropped the steer
+      // text on the floor (steer is fire-and-forget at the protocol
+      // level — `success: true` means "steer was accepted into the
+      // queue", NOT "steer text was consumed by the model").
+      //
+      // To pin the real end-to-end behaviour we make the fake server
+      // observable in two ways:
+      //
+      //   1. The second scripted reply (`'steer acknowledged'`) only
+      //      makes sense if the steer text landed in the conversation
+      //      — pi consumes the steer queue between turns (see
+      //      `pi-agent-core/agent-loop.js`: `getSteeringMessages`
+      //      drains `steerQueue` after each turn), so the second
+      //      LLM call's `messages` array will contain the steer
+      //      text. If the bridge had translated the steer payload
+      //      wrongly, pi would drop it and the agent would settle
+      //      after the first LLM call → no second request, no
+      //      'steer acknowledged' text in the assistant stream.
+      //
+      //   2. The recorded `requests` array on the fake server
+      //      carries the raw JSON body of every POST /v1/messages
+      //      call. We assert the steer text appears in the SECOND
+      //      request's messages array — a direct ground-truth check
+      //      that bridge→pi→fake-server all carried the steer
+      //      content end-to-end.
       fakeServer.script([
-        // First turn response: a tool_use to keep pi in "running"
-        // until we send the steer.
-        textReply('final text after steer'),
+        textReply('first reply'),
+        textReply('steer acknowledged'),
       ]);
 
       promptEnv = makeEnvelope('prompt', 'first');
       steerEnv = makeEnvelope('steer', 'mid-run correction');
       mgr.manager.handleEnvelope(promptEnv);
       // Don't wait for idle; send the steer immediately so it lands
-      // in the running turn.
+      // in pi's `steerQueue` before the first turn settles. Pi's
+      // `agent-loop` drains the queue between turns and appends the
+      // steer message into the conversation before the next LLM call.
       mgr.manager.handleEnvelope(steerEnv);
       // Now wait for the prompt's command_result.
       await waitForEnvelope(
@@ -176,7 +196,7 @@ describe('06 — multi-turn (sequential prompts + steer + follow_up)', () => {
         },
         { timeoutMs: 30_000 },
       );
-      // Then wait for the final assistant text via idle.
+      // Then wait for the second LLM round-trip + final settle into idle.
       await waitForPhase(mgr.outbound, 'idle', { timeoutMs: 30_000 });
     }, 60_000);
 
@@ -198,9 +218,37 @@ describe('06 — multi-turn (sequential prompts + steer + follow_up)', () => {
       expect(r!.payload.success).toBe(true);
     });
 
-    it('the final assistant text after steer appears in the stream', () => {
+    it('final assistant text reflects the steer landing (post-steer LLM round-trip)', () => {
+      // The second scripted reply is `textReply('steer acknowledged')`
+      // which only fires AFTER the steer text has been injected into
+      // pi's conversation. If the bridge→pi translation layer
+      // mis-routes the steer payload (the bug class commit 44960b9
+      // closed), pi drops the steer and the agent settles after the
+      // first LLM call — the second reply is never consumed and
+      // 'steer acknowledged' never appears. The OLD assertion of
+      // just 'final text after steer' would have hidden this
+      // regression.
       const text = collectAssistantText(mgr.outbound);
-      expect(text).toContain('final text after steer');
+      expect(text).toContain('first reply');
+      expect(text).toContain('steer acknowledged');
+    });
+
+    it('steer text appears in the post-steer LLM request body (ground-truth wire check)', () => {
+      // The fake server records the parsed body of every POST
+      // /v1/messages call. The SECOND request (made after pi drains
+      // the steer queue) MUST carry the steer text somewhere in its
+      // `messages` array — this is the direct end-to-end wire proof
+      // that bridge→pi→fake-server all carried the steer content.
+      expect(fakeServer.requests.length).toBeGreaterThanOrEqual(2);
+      const secondReq = fakeServer.requests[1];
+      expect(secondReq).toBeDefined();
+      const msgs = secondReq!.body.messages;
+      expect(Array.isArray(msgs)).toBe(true);
+      // Walk every message's content for the steer text. The exact
+      // shape of a `user` message carrying the steer is open
+      // (pi's native `AgentMessage` shape), so we flatten to text.
+      const flat = JSON.stringify(msgs);
+      expect(flat).toContain('mid-run correction');
     });
 
     it('no re-spawn between prompt and steer (spawnCount = 1)', () => {

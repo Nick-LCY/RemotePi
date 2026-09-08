@@ -140,12 +140,27 @@ describe('03 — Anthropic error response normalises through pi → bridge to {c
     if (errorData === null || typeof errorData !== 'object') {
       throw new Error('expected message_end event data to be an object');
     }
-    // The `message` field on a message_end carries the actual message.
-    const dataObj = errorData as { message?: unknown; stopReason?: unknown; errorMessage?: unknown };
-    const messageObj = (dataObj.message !== undefined ? dataObj.message : dataObj) as {
-      stopReason?: unknown;
-      errorMessage?: unknown;
-    };
+    // Per pi 0.85.1 (`rpc-mode.js` + `rpc-types.d.ts`), the
+    // `message_end` event ALWAYS carries the full message under
+    // `data.message` (a `Message` shape with `stopReason` +
+    // `errorMessage`). The bridge forwards the event verbatim (see
+    // the "Every other event" branch in `pi-process.ts` event
+    // forwarder, around L1129 — no reshape) so asserting on
+    // `data.message.stopReason` directly catches any regression in
+    // pi's wire shape or the bridge's pass-through. We deliberately
+    // do NOT fall back to `errorData` itself here: doing so would
+    // mask the very kind of wire regression the bridge→pi
+    // translation-layer fix (commit 44960b9) was meant to prevent.
+    // If `data.message` is missing, the assertion below surfaces a
+    // clear diagnostic rather than a false-positive pass.
+    const dataObj = errorData as { message?: unknown };
+    if (dataObj.message === undefined || dataObj.message === null || typeof dataObj.message !== 'object') {
+      throw new Error(
+        'expected pi message_end to carry `message` key per pi 0.85.1 event wire; got data=' +
+          JSON.stringify(dataObj).slice(0, 200),
+      );
+    }
+    const messageObj = dataObj.message as { stopReason?: unknown; errorMessage?: unknown };
     expect(messageObj.stopReason).toBe('error');
     expect(typeof messageObj.errorMessage).toBe('string');
     expect(messageObj.errorMessage).toContain('max_tokens must be > 0');

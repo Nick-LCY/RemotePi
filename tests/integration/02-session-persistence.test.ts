@@ -14,7 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   PROTOCOL_VERSION,
   type Envelope as EnvelopeT,
@@ -26,7 +26,7 @@ import {
 import {
   encodeCwdForPi,
   sessionSubdir,
-} from '../../packages/bridge/src/pi-cwd-encoder.js';
+} from '@remotepi/bridge/pi-cwd-encoder.js';
 import { startFakeLlmServer, textReply, type FakeLlmServer } from './helpers/fake-llm-server.js';
 import { makeManager, type MakeManagerResult } from './helpers/make-manager.js';
 import { waitForEnvelope, waitForPhase } from './helpers/wait-for.js';
@@ -212,6 +212,3 @@ function extractMessageText(content: unknown): string {
   }
   return '';
 }
-
-// Reference unused-import lint rule check.
-void afterEach;
