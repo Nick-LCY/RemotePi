@@ -354,6 +354,7 @@ export function start(options: StartOptions = {}): {
       agentDir,
       workDirStore,
       onOutbound: (env) => client.sendEnvelope(env),
+      defaultWorkDir: config.work_dir,
       makeManager: () => options.piProcessManager!,
       ...(options.sessionLayerOptions ?? {}),
     });
@@ -368,10 +369,16 @@ export function start(options: StartOptions = {}): {
       sessionJsonlPath: null,
     });
   } else {
+    // Default path: construct a fresh session layer. The
+    // `defaultWorkDir` (from `config.work_dir`) preserves M3's
+    // token-only URL hash behaviour — when a session-less command
+    // arrives and no manager exists yet, the layer auto-spawns
+    // an implicit manager under this workDir (M3-compat path).
     sessionLayer = new BridgeSessionLayer({
       agentDir,
       workDirStore,
       onOutbound: (env) => client.sendEnvelope(env),
+      defaultWorkDir: config.work_dir,
       ...(options.sessionLayerOptions ?? {}),
     });
     sessionLayer.start();

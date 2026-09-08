@@ -210,6 +210,16 @@ export interface BridgeSessionLayerOptions {
    *  rather than the host's `~/.pi/agent`. */
   baseEnv?: NodeJS.ProcessEnv;
 
+  /** Optional default work directory. When a session-less command
+   *  arrives and the layer has zero managers, this workDir is used
+   *  to spawn an implicit M3-compat manager (auto-spawn on first
+   *  command, same as the M3 single-manager behaviour). When
+   *  absent, session-less commands with zero managers are rejected
+   *  as `invalid_envelope` (M4 multi-session strict mode).
+   *  index.ts sets this to the legacy `config.work_dir` so the
+   *  M3-era token-only URL hash keeps working. */
+  defaultWorkDir?: string;
+
   /** Optional manager factory for unit tests. Defaults to
    *  `PiProcessManager`. Tests inject a wrapper that swaps the
    *  `spawn` factory so the FakeChild pattern (see
@@ -284,6 +294,7 @@ export class BridgeSessionLayer {
   private readonly onStderr: (chunk: string) => void;
   private readonly workDirStore: WorkDirStoreType;
   private readonly baseEnv: NodeJS.ProcessEnv | undefined;
+  private readonly defaultWorkDir: string | undefined;
   private readonly makeManager: (opts: PiProcessOptions) => PiProcessManager;
 
   // ---- runtime state ----
@@ -313,6 +324,7 @@ export class BridgeSessionLayer {
     this.onStderr = options.onStderr ?? ((chunk) => logger.warn(`pi stderr: ${chunk.trimEnd()}`));
     this.workDirStore = options.workDirStore;
     this.baseEnv = options.baseEnv;
+    this.defaultWorkDir = options.defaultWorkDir;
     this.makeManager = options.makeManager ?? ((opts) => new PiProcessManager(opts));
   }
 
@@ -656,13 +668,28 @@ export class BridgeSessionLayer {
     }
 
     // Branch 5+6: no session field, no new intent. M3 compat path:
-    // forward to the only manager if there is exactly one.
+    // forward to the only manager if there is exactly one. If zero
+    // managers exist AND a defaultWorkDir was configured, spawn
+    // an implicit M3-compat manager (token-only URL hash from M3
+    // keeps working — the e2e suite relies on this behaviour).
     if (sessionField === undefined) {
       if (this.managers.size === 1) {
         const only = this.managers.values().next().value;
         if (only !== undefined) {
           return { ok: true, manager: only };
         }
+      }
+      if (this.managers.size === 0 && this.defaultWorkDir !== undefined) {
+        // M3-compat auto-spawn: synthesise a manager under the
+        // legacy 'm3-legacy' sentinel key (same key index.ts uses
+        // for the back-compat `piProcessManager` injection). The
+        // manager handles all subsequent session-less commands.
+        const m = this.spawnManager({
+          mapKey: 'm3-legacy',
+          workDir: this.defaultWorkDir,
+          sessionJsonlPath: null,
+        });
+        return { ok: true, manager: m };
       }
       return {
         ok: false,
@@ -838,20 +865,31 @@ export class BridgeSessionLayer {
    *  manager's phase + blocked_on (or invalid_envelope if no
    *  manager exists for the given session). The M3 manager had a
    *  get_state handler that emitted from memory; the M4 layer
-   *  wraps it because each session is its own manager now. */
+   *  wraps it because each session is its own manager now.
+   *
+   *  M3-compat: when no session field is present, route to the
+   *  M3-legacy manager (auto-spawn one if the map is empty and a
+   *  defaultWorkDir is configured). This preserves the M3 token-
+   *  only URL hash behaviour — the e2e suite relies on it. */
   private handleGetState(requestId: string, session: string | undefined): void {
-    if (session === undefined || session === '') {
-      this.replyInvalidEnvelope(requestId, undefined, 'get_state requires session field in M4 mode');
-      return;
+    let m: PiProcessManager | undefined;
+    let resolvedSession: string | undefined;
+    if (session !== undefined && session !== '') {
+      m = this.managers.get(session);
+      resolvedSession = session;
+      if (m === undefined) {
+        this.replyInvalidEnvelope(requestId, session, `no manager for session: ${session}`);
+        return;
+      }
+    } else {
+      // M3-compat path: no session field.
+      m = this.resolveM3CompatManager();
+      resolvedSession = undefined;
+      if (m === undefined) {
+        this.replyInvalidEnvelope(requestId, undefined, 'get_state requires session field in M4 mode');
+        return;
+      }
     }
-    const m = this.managers.get(session);
-    if (m === undefined) {
-      this.replyInvalidEnvelope(requestId, session, `no manager for session: ${session}`);
-      return;
-    }
-    // Forward to the manager's get_state — but we need to rebuild
-    // the envelope so it carries the session field (the manager's
-    // own reply would not, because it doesn't know about sessions).
     const blockedOn = m.getBlockedOn();
     const data: ManagerSessionStatePayload = {
       phase: m.getPhase(),
@@ -863,16 +901,39 @@ export class BridgeSessionLayer {
       type: 'result',
       id: randomUUID(),
       reply_to: requestId,
-      session,
+      ...(resolvedSession !== undefined ? { session: resolvedSession } : {}),
       payload: { ok: true, data },
     });
+  }
+
+  /** Resolve an M3-compat manager for session-less control commands.
+   *  Returns the only manager if the map has exactly one; auto-spawns
+   *  an implicit manager under the configured `defaultWorkDir` if
+   *  the map is empty and the option is set. Returns `undefined`
+   *  when no manager can be resolved (caller emits invalid_envelope). */
+  private resolveM3CompatManager(): PiProcessManager | undefined {
+    if (this.managers.size === 1) {
+      return this.managers.values().next().value;
+    }
+    if (this.managers.size === 0 && this.defaultWorkDir !== undefined) {
+      return this.spawnManager({
+        mapKey: 'm3-legacy',
+        workDir: this.defaultWorkDir,
+        sessionJsonlPath: null,
+      });
+    }
+    return undefined;
   }
 
   /** `control/session_list` — M4 操作惯例必带 work_dir (schema is
    *  optional for M3 compat). Scans `<agentDir>/sessions/--<encoded>--/`
    *  and emits a row per jsonl with the simplified `status` mapped
    *  from `manager.phase` (or `'unknown'` if no manager currently
-   *  owns the session). */
+   *  owns the session).
+   *
+   *  M3-compat: session-less `session_list` scans the agent-dir
+   *  tree (no work_dir filter) — preserves the M3 token-only URL
+   *  behaviour. */
   private handleSessionList(
     requestId: string,
     workDir: string | undefined,

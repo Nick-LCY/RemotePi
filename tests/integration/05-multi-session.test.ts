@@ -76,7 +76,7 @@ describe('BridgeSessionLayer integration — multi-session (M4 task 06)', () => 
       layer,
       outbound,
       store,
-      cleanup: async () => {
+      cleanup: () => {
         layer.stop();
       },
     };
