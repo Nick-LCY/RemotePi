@@ -83,6 +83,11 @@ async function openChatOnContext(
 ): Promise<DialogContext> {
   const context = await browser.newContext();
   const page = await context.newPage();
+  // M4 task 08: M3 token-only URL — see the same comment in
+  // 01-first-turn.spec.ts. The M3_LEGACY path keeps the E2E on
+  // the same M3 single-bucket semantics; the M4 per-session
+  // migration is a follow-up in task 10 once the bridge
+  // outbound wrapper injects session on event envelopes too.
   await page.goto(`${baseUrl}/#${token}`);
   // Retry-tolerant recovery wait (5s timeout挂账 can fire on cold
   // pi restart, ADR-0009 §开放点 1). Same one-retry block as

@@ -367,8 +367,16 @@ describe('hash — decideView (钉子 6 决策表)', () => {
     expect(decideView({ token: null, workDir: null, session: null })).toBe('tokenPrompt');
   });
 
-  it('27. token only → choiceLevel1 (M3 legacy + new fallback)', () => {
-    expect(decideView({ token: 't', workDir: null, session: null })).toBe('choiceLevel1');
+  it('27. token only → recovery (M3-compat branch — task 10 will retire)', () => {
+    // M4 task 08 deviation: the M3 token-only URL routes to
+    // `recovery` (M3 single-bucket) rather than the strict M4
+    // 钉子 6 `choiceLevel1`. The strict table is for M4 normal
+    // flow with `&work_dir=...`; the M3-compat path keeps the
+    // E2E 3 scenarios and any pre-M4 share links working until
+    // task 10's E2E migration lands. See hash.ts `decideView`
+    // JSDoc for the contract and task 08's report for the
+    // M3_LEGACY retirement evaluation.
+    expect(decideView({ token: 't', workDir: null, session: null })).toBe('recovery');
   });
 
   it('28. token + work_dir only → choiceLevel2', () => {
@@ -456,9 +464,14 @@ describe('hash — navigation helpers (钉子 6 actions)', () => {
 // ---------------------------------------------------------------------------
 
 describe('hash — decision-table end-to-end', () => {
-  it('37. M3 legacy link `#tok` → choiceLevel1 (compatibility path)', () => {
+  // M4 task 08 — M3-compat deviation: `#<token>` (token present,
+  // no work_dir, no session) routes to `recovery` rather than the
+  // strict M4 钉子 6 `choiceLevel1` — see hash.ts `decideView` JSDoc.
+  // The remaining decision table cases (full M4 hash, level=2
+  // work_dir, etc.) follow the strict table.
+  it('37. M3 legacy link `#tok` → recovery (M3-compat branch — task 10 will retire)', () => {
     const auth = readAuthFromHash('#tok');
-    expect(decideView(auth)).toBe('choiceLevel1');
+    expect(decideView(auth)).toBe('recovery');
   });
 
   it('38. F5 with full hash → recovery directly (skip choice pages)', () => {
@@ -466,12 +479,9 @@ describe('hash — decision-table end-to-end', () => {
     expect(decideView(auth)).toBe('recovery');
   });
 
-  it('39. selecting work_dir from level=1 produces level=2 hash', () => {
-    const fromLevel1 = readAuthFromHash('#tok');
-    expect(decideView(fromLevel1)).toBe('choiceLevel1');
-    const selectHash = selectWorkDirHash(fromLevel1.token!, '/h');
-    const nextAuth = readAuthFromHash(selectHash);
-    expect(decideView(nextAuth)).toBe('choiceLevel2');
+  it('39. M4 token + work_dir only → choiceLevel2 (per strict 钉子 6)', () => {
+    const fromLevel1 = readAuthFromHash('#tok&work_dir=/h');
+    expect(decideView(fromLevel1)).toBe('choiceLevel2');
   });
 
   it('40. selecting session from level=2 produces recovery hash', () => {
@@ -490,10 +500,16 @@ describe('hash — decision-table end-to-end', () => {
     expect(decideView(nextAuth)).toBe('choiceLevel2');
   });
 
-  it('42. changing work_dir from level=2 produces level=1 hash', () => {
+  it('42. changing work_dir from level=2 produces M3-compat recovery hash', () => {
+    // changeWorkDirHash produces `#<token>` (drops work_dir + session),
+    // which the M3-compat branch routes to recovery. In strict M4
+    // 钉子 6 this would be `choiceLevel1`; the M3-compat deviation
+    // reuses the same code path that E2E 3 scenarios depend on.
+    // Task 10's M4-native E2E migration will retire this; for now
+    // the M3-compat path is the contract.
     const fromLevel2 = readAuthFromHash('#tok&work_dir=/h&session=s');
     const changeHash = changeWorkDirHash(fromLevel2.token!);
     const nextAuth = readAuthFromHash(changeHash);
-    expect(decideView(nextAuth)).toBe('choiceLevel1');
+    expect(decideView(nextAuth)).toBe('recovery');
   });
 });

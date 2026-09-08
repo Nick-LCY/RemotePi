@@ -1,9 +1,27 @@
 // DialogHost — the layered container for one-or-more extension UI
 // dialogs. Sits on top of the chat view (CSS z-index handles the
-// layer stack) and renders one dialog per entry in `blockedOn`.
+// layer stack) and renders one dialog per entry in the current
+// session's `blockedOn` bucket.
+//
+// M4 §4.5 per-session isolation (tasks/m4/08):
+//   - Reads `useBlockedOnFor(currentSessionKey)` — the entries are
+//     a `BlockedOnEntry[]` (each `{ entry, enqueuedAt }`) so the
+//     countdown math can read `enqueuedAt` (see WsClient.ts
+//     `setBucketBlockedOn` JSDoc for the why).
+//   - Background sessions' dialogs are stored in their own bucket
+//     but not rendered here — DialogHost is keyed by the current
+//     session via `currentSessionKey`. Switching sessions unmounts
+//     the foreground dialogs; switching back re-mounts them with
+//     the same `enqueuedAt` so the countdown resumes from where
+//     it would have been (remaining = timeout - (Date.now() -
+//     enqueuedAt) per PRD §4.5).
+//   - The local `Map<id, DialogLocalState>` is keyed by the
+//     payload's `id` (not the bucket's array index) so a
+//     `session_state` broadcast that REORDERS the blocked_on
+//     array doesn't desync the local state from the dialog.
 //
 // Local state (M3 PRD §4.2 关闭规则 + §4.5 提交失败处理):
-//   `Map<request_id, DialogState>` — tracks each dialog's local
+//   `Map<id, DialogLocalState>` — tracks each dialog's local
 //   status:
 //     - 'open'        — entry is in blockedOn, no action taken yet
 //     - 'submitting'  — outbound extension_ui_response sent; we're
@@ -20,34 +38,36 @@
 //                       bridge already cleared the pending entry
 //                       when it issued the request_expired).
 //
-// Auto-close: DialogHost observes `useBlockedOn()` on every render.
-// When an entry's id is no longer in the array, the dialog
-// unmounts. This satisfies PRD §4.2 关闭规则: "session_state 帧
-// blocked_on 不含该 id → 自动收起（即使本地'已提交待确认'）".
+// Auto-close: DialogHost observes `useBlockedOnFor(currentSessionKey)`
+// on every render. When an entry's id is no longer in the array,
+// the dialog unmounts. This satisfies PRD §4.2 关闭规则:
+// "session_state 帧 blocked_on 不含该 id → 自动收起（即使本地'已提交
+// 待确认'）".
 //
 // Optimistic UI: OFF (H decision). The 'submitting' state disables
 // the dialog buttons to avoid double-submit but does not advance
 // any visual state — the user still sees the dialog until the
 // bridge confirms via the next session_state frame.
 //
-// Local-timeout branch (W3 review): when `useCountdown` expires in
-// the dialog's header BEFORE the bridge mirrors its own timer,
+// Local-timeout branch (W3 review): when `useCountdown` expires
+// in the dialog's header BEFORE the bridge mirrors its own timer,
 // the previous implementation flipped the dialog's local Map state
 // to `expired`. That was effectively invisible: the bridge's
 // mirrored timer fires ~immediately after (within the same tick
-// in practice) and the next `session_state` drops the id — so React
-// unmounts the dialog on key change before the user can see the
-// expired banner. Per reviewer feedback, we now DO NOT mutate the
-// Map on the local timer; instead we surface a brief global toast
-// ("弹窗已超时") that the host owns, so the UX is decoupled from
-// whichever dialog fired. The countdown UI keeps rendering until
-// the bridge confirms via session_state, which is the source of
-// truth.
+// in practice) and the next `session_state` drops the id — so
+// React unmounts the dialog on key change before the user can see
+// the expired banner. Per reviewer feedback, we now DO NOT mutate
+// the Map on the local timer; instead we surface a brief global
+// toast ("弹窗已超时") that the host owns, so the UX is decoupled
+// from whichever dialog fired. The countdown UI keeps rendering
+// until the bridge confirms via session_state, which is the source
+// of truth.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
-  useBlockedOn,
+  useBlockedOnFor,
+  useCurrentSessionKey,
   useDialogExpiredSubscription,
   useWsClient,
 } from '../../ws/WsClientContext.js';
@@ -73,7 +93,8 @@ interface DialogLocalState {
 }
 
 export function DialogHost() {
-  const entries = useBlockedOn();
+  const currentSessionKey = useCurrentSessionKey();
+  const entries = useBlockedOnFor(currentSessionKey);
   const client = useWsClient();
   const [local, setLocal] = useState<Map<string, DialogLocalState>>(initialLocalState);
   // W3 — brief global toast shown when a dialog's local countdown
@@ -87,10 +108,14 @@ export function DialogHost() {
   // React to session_state-driven entry removal: if an id disappears
   // from blockedOn, prune it from our local map so the Map doesn't
   // grow unbounded. The dialog itself unmounts automatically via
-  // React's `key` matching in the render loop below.
+  // React's `key` matching in the render loop below. The entries
+  // are `BlockedOnEntry[]` (entry + enqueuedAt); we key by the
+  // payload's id so the local map stays decoupled from the bucket's
+  // enqueuedAt timestamps (which are replaced wholesale on every
+  // session_state broadcast — see WsClient.setBucketBlockedOn).
   useEffect(() => {
     const seen = new Set<string>();
-    for (const entry of entries) seen.add(entry.id);
+    for (const { entry } of entries) seen.add(entry.id);
     setLocal((prev) => {
       let changed = false;
       const next = new Map(prev);
@@ -184,7 +209,7 @@ export function DialogHost() {
     setLocal((prev) => {
       let changed = false;
       const next = new Map(prev);
-      for (const entry of entries) {
+      for (const { entry } of entries) {
         if (!next.has(entry.id)) {
           next.set(entry.id, { status: 'open', outboundId: null, errorMessage: null });
           changed = true;
@@ -202,7 +227,7 @@ export function DialogHost() {
   // visible above the chat surface and below the dialog stack.
   return (
     <div className="dialog-host" aria-label="Pending dialogs" data-testid="dialog-host">
-      {entries.map((entry) => {
+      {entries.map(({ entry, enqueuedAt }) => {
         const state = local.get(entry.id) ?? {
           status: 'open',
           outboundId: null,
@@ -218,6 +243,7 @@ export function DialogHost() {
           <DialogEntry
             key={entry.id}
             entry={entry}
+            enqueuedAt={enqueuedAt}
             pending={pending}
             errorMessage={errorMessage}
             submit={submit}
@@ -241,6 +267,12 @@ export function DialogHost() {
 
 interface DialogEntryProps {
   entry: BlockedOnEntryPayload;
+  /** `Date.now()` at the moment the entry arrived via
+   *  `session_state`. Dialog components read this for the
+   *  countdown math (PRD §4.5: remaining = timeout -
+   *  (Date.now() - enqueuedAt)) so a switch-back to a background
+   *  session resumes the countdown at the correct point. */
+  enqueuedAt: number;
   pending: boolean;
   errorMessage: string | null;
   submit: (entry: BlockedOnEntryPayload, payload: ExtensionUIResponsePayload) => void;
@@ -250,6 +282,7 @@ interface DialogEntryProps {
 
 function DialogEntry({
   entry,
+  enqueuedAt,
   pending,
   errorMessage,
   submit,
@@ -261,6 +294,7 @@ function DialogEntry({
       return (
         <SelectDialog
           entry={entry}
+          enqueuedAt={enqueuedAt}
           pending={pending}
           errorMessage={errorMessage}
           onSubmit={(p) => submit(entry, p)}
@@ -272,6 +306,7 @@ function DialogEntry({
       return (
         <ConfirmDialog
           entry={entry}
+          enqueuedAt={enqueuedAt}
           pending={pending}
           errorMessage={errorMessage}
           onSubmit={(p) => submit(entry, p)}
@@ -283,6 +318,7 @@ function DialogEntry({
       return (
         <InputDialog
           entry={entry}
+          enqueuedAt={enqueuedAt}
           pending={pending}
           errorMessage={errorMessage}
           onSubmit={(p) => submit(entry, p)}
@@ -294,6 +330,7 @@ function DialogEntry({
       return (
         <EditorDialog
           entry={entry}
+          enqueuedAt={enqueuedAt}
           pending={pending}
           errorMessage={errorMessage}
           onSubmit={(p) => submit(entry, p)}

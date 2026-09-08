@@ -21,6 +21,13 @@ import type { BlockedOnEntryPayload } from '@remotepi/shared';
 
 export interface ConfirmDialogProps {
   entry: Extract<BlockedOnEntryPayload, { method: 'confirm' }>;
+  /** M4 §4.5 (tasks/m4/08): `Date.now()` at the moment the entry
+   *  arrived via `session_state` (the WsClient stamps it on
+   *  inbound). Drives the countdown math so a switch-back to a
+   *  background dialog resumes at the correct point — see
+   *  `useCountdown` JSDoc in `SelectDialog.tsx` for the full
+   *  rationale. */
+  enqueuedAt: number;
   pending: boolean;
   errorMessage: string | null;
   onSubmit: (payload: { request_id: string; cancelled: false; value: boolean }) => void;
@@ -30,6 +37,7 @@ export interface ConfirmDialogProps {
 
 export function ConfirmDialog({
   entry,
+  enqueuedAt,
   pending,
   errorMessage,
   onSubmit,
@@ -69,6 +77,7 @@ export function ConfirmDialog({
         id={`confirm-title-${entry.id}`}
         title={entry.title}
         timeoutMs={entry.timeout}
+        enqueuedAt={enqueuedAt}
         onTimeout={onTimeout}
       />
       {errorMessage !== null ? (

@@ -21,6 +21,11 @@ import type { BlockedOnEntryPayload } from '@remotepi/shared';
 
 export interface EditorDialogProps {
   entry: Extract<BlockedOnEntryPayload, { method: 'editor' }>;
+  /** M4 §4.5 (tasks/m4/08): see `ConfirmDialog` JSDoc. Editor
+   *  does not timeout so the countdown UI never renders; the
+   *  field is accepted for shape consistency with the other
+   *  dialogs and is unused. */
+  enqueuedAt: number;
   pending: boolean;
   errorMessage: string | null;
   onSubmit: (payload: { request_id: string; cancelled: false; value: string }) => void;
@@ -34,6 +39,7 @@ export interface EditorDialogProps {
 
 export function EditorDialog({
   entry,
+  enqueuedAt,
   pending,
   errorMessage,
   onSubmit,
@@ -68,7 +74,12 @@ export function EditorDialog({
     >
       {/* Editor never carries a timeout — the prop is undefined and
           DialogHeader renders the title-only variant. */}
-      <DialogHeader id={`editor-title-${entry.id}`} title={entry.title} onTimeout={onTimeout} />
+      <DialogHeader
+        id={`editor-title-${entry.id}`}
+        title={entry.title}
+        enqueuedAt={enqueuedAt}
+        onTimeout={onTimeout}
+      />
       {errorMessage !== null ? (
         <p className="dialog-error" role="alert" data-testid="dialog-error">
           {errorMessage}

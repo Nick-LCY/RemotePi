@@ -7,16 +7,20 @@
 //     through; the App memoizes the instance so React StrictMode's
 //     double-mount in dev doesn't create two parallel sockets (each WsClient
 //     owns a single WebSocket).
-//   - Components subscribe to a *slice* of state via `useWsState`. The
-//     helper returns `useSyncExternalStore(subscribe, () => selector(client))`,
-//     so each component only re-renders when its slice changes identity.
+//   - Components subscribe to a *slice* of state via `useWsState` or the
+//     dedicated per-session hooks (`useMessagesFor` / `useSessionPhaseFor`
+//     / `useBlockedOnFor` / `useQueueFor` / `useStreamingDraftFor` /
+//     `useSessionListFor`). The selector approach lets each component
+//     pin the exact bucket it cares about and only re-render when that
+//     bucket's slice changes identity.
 
 import { useCallback, useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import { createContext } from 'react';
-import type { BlockedOnEntryPayload, SessionListEntry, SessionPhase } from '@remotepi/shared';
+import type { SessionListEntry, SessionPhase } from '@remotepi/shared';
 
 import {
   WsClient,
+  type BlockedOnEntry,
   type BridgeStatusInfo,
   type CommandErrorHandler,
   type CommandErrorNotice,
@@ -25,6 +29,7 @@ import {
   type DialogExpiredNotice,
   type EnvelopeHandler,
   type QueueState,
+  type SessionBucket,
   type StreamingDraft,
 } from './WsClient.js';
 
@@ -86,36 +91,90 @@ export function useBridgeStatus(): BridgeStatusInfo | null {
   return useWsState((c) => c.bridgeStatus);
 }
 
-/** Pi subprocess lifecycle phase. `null` until the first `session_state`
- *  or `get_state` reply arrives — PhaseIndicator renders a placeholder
- *  while null (M3 PRD §4.3). */
+/** Mirror of the URL hash's `session` component (M4 §4.1).
+ *  `null` when the hash has no session (level=1 / level=2 / M3
+ *  token-only legacy). */
+export function useCurrentSessionKey(): string | null {
+  return useWsState((c) => c.currentSessionKey);
+}
+
+/** Pi subprocess lifecycle phase for the **current** session. `null`
+ *  until the first `session_state` (or `get_state` reply) for the
+ *  current bucket lands — PhaseIndicator renders a placeholder
+ *  while null. M3 semantics; for per-session access, prefer
+ *  `useSessionPhaseFor(currentSessionKey)`. */
 export function useSessionPhase(): SessionPhase | null {
   return useWsState((c) => c.sessionPhase);
 }
 
-/** Pending extension UI requests (dialog queue). Each element is a
- *  full `BlockedOnEntryPayload` discriminated union — dialog components
- *  switch on `entry.method` to pick the matching renderer. The
- *  component re-renders only when the array's identity changes
- *  (WsClient emits a fresh array on every `session_state` broadcast). */
-export function useBlockedOn(): readonly BlockedOnEntryPayload[] {
+/** Pending extension UI requests for the **current** session. Each
+ *  element is a `BlockedOnEntry` (entry + enqueuedAt) — DialogHost
+ *  unwraps the entry and reads `enqueuedAt` for the countdown math
+ *  (PRD §4.5). For per-session access, prefer
+ *  `useBlockedOnFor(currentSessionKey)`. */
+export function useBlockedOn(): readonly BlockedOnEntry[] {
   return useWsState((c) => c.blockedOn);
 }
 
-/** Steering / follow-up queue snapshot. */
+/** Steering / follow-up queue snapshot for the current session. */
 export function useQueue(): QueueState {
   return useWsState((c) => c.queue);
 }
 
-/** Streaming draft — accumulates text_delta events. `null` when no
- *  draft is in flight. */
+/** Streaming draft for the current session — accumulates text_delta
+ *  events. `null` when no draft is in flight. */
 export function useStreamingDraft(): StreamingDraft | null {
   return useWsState((c) => c.streamingDraft);
 }
 
-/** Authoritative message list (history). */
+/** Authoritative message list (history) for the current session. */
 export function useMessages(): readonly unknown[] {
   return useWsState((c) => c.messages);
+}
+
+// ---- M4 per-session hooks (tasks/m4/08) ------------------------------------
+//
+// Each `useXxxFor(sessionKey)` hook pins the bucket to a specific
+// session. The selector returns a stable reference (the bucket's
+// field) for the given session — when the bucket hasn't changed, the
+// reference is identical and React skips the re-render. When
+// `sessionKey` is `null` (ChoicePage level=2 / M3 legacy), the
+// hook reads from the M3_LEGACY bucket, which is the same shape
+// the M3 single-bucket code path produced.
+
+/** Read a single field from a session bucket. Used internally by
+ *  the `useXxxFor` hooks; exported for any future per-session
+ *  read that doesn't have a dedicated hook (e.g. a debug
+ *  inspector). */
+export function useBucketField<T>(
+  sessionKey: string | null,
+  selector: (bucket: SessionBucket) => T,
+): T {
+  return useWsState((c) => selector(c.bucketFor(sessionKey)));
+}
+
+export function useMessagesFor(sessionKey: string | null): readonly unknown[] {
+  return useBucketField(sessionKey, (b) => b.messages);
+}
+
+export function useSessionPhaseFor(sessionKey: string | null): SessionPhase | null {
+  return useBucketField(sessionKey, (b) => b.sessionPhase);
+}
+
+export function useBlockedOnFor(sessionKey: string | null): readonly BlockedOnEntry[] {
+  return useBucketField(sessionKey, (b) => b.blockedOn);
+}
+
+export function useQueueFor(sessionKey: string | null): QueueState {
+  return useBucketField(sessionKey, (b) => b.queue);
+}
+
+export function useStreamingDraftFor(sessionKey: string | null): StreamingDraft | null {
+  return useBucketField(sessionKey, (b) => b.streamingDraft);
+}
+
+export function useSessionListFor(sessionKey: string | null): readonly SessionListEntry[] | null {
+  return useBucketField(sessionKey, (b) => b.sessionList);
 }
 
 // ---- M4 choice-page hooks (tasks/m4/07) ------------------------------------
@@ -134,20 +193,23 @@ export function useCurrentWorkDir(): string | null {
   return useWsState((c) => c.currentWorkDir);
 }
 
-/** Sessions under the current `work_dir` (ChoicePage level=2 list).
- *  `null` until the first `session_list` reply arrives (so the
- *  ChoicePage can show a loading state vs an empty list). The
- *  array is replaced wholesale on every reply. */
+/** Sessions under the current session's `work_dir` (ChoicePage
+ *  level=2 list — but since level=2 is reached when there's no
+ *  session in the URL, this effectively reads from the
+ *  M3_LEGACY bucket's sessionList mirror). `null` until the
+ *  first `session_list` reply arrives (so the ChoicePage can
+ *  show a loading state vs an empty list). The array is
+ *  replaced wholesale on every reply. */
 export function useSessionList(): readonly SessionListEntry[] | null {
   return useWsState((c) => c.sessionList);
 }
 
 /** Subscribe to dialog-expired notices (command_result with
- *  error.code === 'request_expired'). Used by DialogHost to map late
- *  submissions back to the originating dialog. The hook attaches the
- *  listener for the lifetime of the calling component; callers
- *  typically pass an inline handler that filters on `replyTo` to
- *  locate the right dialog. */
+ * error.code === 'request_expired'). Used by DialogHost to map late
+ * submissions back to the originating dialog. The hook attaches the
+ * listener for the lifetime of the calling component; callers
+ * typically pass an inline handler that filters on `replyTo` to
+ * locate the right dialog. */
 export function useDialogExpiredSubscription(handler: DialogExpiredHandler): void {
   const client = useWsClient();
   useEffect(() => {
@@ -161,11 +223,11 @@ export function useDialogExpiredSubscription(handler: DialogExpiredHandler): voi
 }
 
 /** Subscribe to ordinary-command error notices (PRD §4.5 — prompt /
- *  steer / follow_up with `command_result{success:false}`). Used by
- *  the InputBar to surface the temporary error banner. The hook only
- *  fires for failures whose `reply_to` matches a prompt / steer /
- *  follow_up envelope id THIS tab issued — failures with foreign
- *  reply_to are silently dropped at the WsClient layer. */
+ * steer / follow_up with `command_result{success:false}`). Used by
+ * the InputBar to surface the temporary error banner. The hook only
+ * fires for failures whose `reply_to` matches a prompt / steer /
+ * follow_up envelope id THIS tab issued — failures with foreign
+ * reply_to are silently dropped at the WsClient layer. */
 export function useCommandErrorSubscription(handler: CommandErrorHandler): void {
   const client = useWsClient();
   useEffect(() => {
@@ -184,4 +246,6 @@ export type {
   DialogExpiredNotice,
   CommandErrorHandler,
   CommandErrorNotice,
+  BlockedOnEntry,
+  SessionBucket,
 };

@@ -6,16 +6,27 @@
 //      fields are tolerated (`#<token>` is the M3 legacy shape and
 //      is treated as "no work_dir, no session" → level=1).
 //   3. The connect/disconnect lifecycle tied to token presence.
-//   4. The M3 dual-query recovery gate between token-present and the
-//      chat surface (task 07 — PRD §4.4).
+//   4. The per-session M3 dual-query recovery gate (M4 task 08 /
+//      §4.2) — each session key gets its own gate, persisted across
+//      navigation so re-entering a session doesn't re-fire the
+//      ceremony.
 //   5. M4 task 01 — 5s 修复接 phase 文案（PRD §6 / tasks/m4/01 B+C
-//      合体）：RecoveryInFlight 三态文案 + RecoveryErrorCard 4 类错误
-//      文案（新增 `bridge_offline`） + auto-start 补 bridgeStatus
-//      offline 守门。bridge / worker 零改动。
+//      合体方案）：RecoveryInFlight 三态文案 + RecoveryErrorCard
+//      4 类错误文案（新增 `bridge_offline`） + auto-start 补
+//      bridgeStatus offline 守门。bridge / worker 零改动。
 //   6. M4 task 07 — ChoicePage 三态分派（钉子 6 决策表）：no token
 //      → TokenPrompt; token + no work_dir → ChoicePage level=1;
 //      token + work_dir + no session → ChoicePage level=2;
 //      token + work_dir + session → RecoveryView/ChatView.
+//   7. M4 task 08 — per-session ChatView + per-session
+//      RecoveryGate map (see `RecoveryShell`). ChatView receives
+//      `currentSessionKey` so its store reads/writes are bucket-
+//      scoped (M4 §4.6 / §4.3). On session_state arriving with
+//      a new `session` value while the current bucket is the
+//      pending `'new'` marker, the hash gets refilled
+//      (`&session=<realStem>`) and a session_list re-query is
+//      fired so ChoicePage level=2's mirror catches up
+//      (钉子 5 — stem 回填后重查).
 //
 // The URL hash is the single source of truth. The TokenPrompt /
 // ChoicePage / DirectoryBrowser all write `window.location.hash` and
@@ -43,10 +54,28 @@
 //   - token + work_dir + session → RecoveryView → ChatView
 //     (`session: 'new'` falls through here; task 08 wires the
 //     pending-state stem refilling).
+//
+// M4 per-session wiring (task 08 / PRD §4.2 / 钉子 6):
+//   - ChatView takes `session` as a prop; its store reads/writes
+//     go through `sessions[session]` (or the M3_LEGACY bucket
+//     when session is `null` — the M3 token-only URL path).
+//   - RecoveryGate per-session: a `Map<sessionKey, RecoveryGate>`
+//     in the `RecoveryShell` keeps one gate per session. Enter
+//     creates; leave does NOT destroy (暂存 so re-entering a
+//     session doesn't re-fire the ceremony).
+//   - Stem refilling: a session_state broadcast whose session
+//     field is a real stem (i.e. not the literal 'new') while
+//     the URL hash's `session` is still 'new' triggers a hash
+//     refill (`&session=<realStem>`) and a session_list re-query
+//     for the current work_dir (钉子 5 — see `useStemRefilled`).
+//   - ChoicePage level=2 reads `sessionList` from the per-session
+//     bucket (M3_LEGACY bucket when `currentSessionKey === null`,
+//     which is the level=2 case).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncExternalStore } from 'react';
 
+import { selectSessionHash } from './hash.js';
 import type { SessionPhase } from '@remotepi/shared';
 
 import { ChatView } from './components/ChatView.js';
@@ -55,8 +84,8 @@ import { StatusBar } from './components/StatusBar.js';
 import { TokenPrompt } from './components/TokenPrompt.js';
 import { errorHint } from './components/error-hint.js';
 import { decideView, readAuthFromHash, type AuthFromHash } from './hash.js';
-import { WsClient, type ConnState } from './ws/WsClient.js';
-import { useBridgeStatus, useConnState, useSessionPhase, useWsClient, WsClientProvider } from './ws/WsClientContext.js';
+import { WsClient, M3_LEGACY_KEY, type ConnState } from './ws/WsClient.js';
+import { useBridgeStatus, useConnState, useSessionPhase, WsClientProvider } from './ws/WsClientContext.js';
 import { initiateRecovery, type RecoveryError, type RecoveryGate } from './ws/recovery.js';
 import { resolveWssUrl } from './ws/config.js';
 
@@ -85,32 +114,29 @@ export function App() {
   // writes (TokenPrompt / ChoicePage / DirectoryBrowser) and
   // back/forward navigation. The listener is stable and only depends
   // on `setAuth`, which is itself stable. We also mirror the parsed
-  // `work_dir` into the WsClient store so the ChoicePage's outbound
-  // commands (session_list + future pi commands) can read it off the
-  // store without re-parsing the URL.
+  // `work_dir` + `session` into the WsClient store so outbound
+  // commands (session_list auto-fill + pi/control session auto-fill
+  // — M4 §4.3) can read them off the store without re-parsing the
+  // URL.
   //
   // Review 修复轮 W6 + S1——hashchange effect 收敛为 mount-once：
   //   - 监听器本身读 `window.location.hash`（不依赖 `auth`），所以
-  //     没必要将 `auth.workDir` 列入 deps。
-  //   - 原实现 deps = `[auth.workDir, client]` 错误：依赖了
-  //     auth.workDir 意味着每当 work_dir 变化（点“选择工作目录” /
-  //     点“更换目录”）该 effect 重跑，监听器被清理后重新加载——但
-  //     hashchange 事件本来就在下一个 tick 发出，新监听器听得到。
-  //     净效果是 *看起来* 能工作，但多了一次 cleanup + 重建 + 同步
-  //     `setCurrentWorkDir`（重复 setState，不幂等）。
-  //   - S1 一并处理：初始 `setCurrentWorkDir` 同步移出该 effect，
-  //     作为独立 mount-once 调用 + 监听器为权威路径（每次 hashchange
-  //     重新调用 `setCurrentWorkDir`）——消除冗余 setState。
+  //     没必要将 `auth.workDir` / `auth.session` 列入 deps。
+  //   - 初始 `setCurrentWorkDir` + `setCurrentSessionKey` 同步移出
+  //     该 effect，作为独立 mount-once 调用 + 监听器为权威路径
+  //     （每次 hashchange 重新调用）——消除冗余 setState。
   useEffect(() => {
-    // Mount-time mirror——原实现将“初始镜像”写在 effect 体内 `addEventListener`
-    // 之后；现拆为独立调用（块状语句上下文变为 mount-only 主体），含义一致。
-    client.setCurrentWorkDir(readAuth().workDir);
+    // Mount-time mirror——初始镜像写在 mount-once 主体中。
+    const initial = readAuth();
+    client.setCurrentWorkDir(initial.workDir);
+    client.setCurrentSessionKey(initial.session);
     const onHashChange = () => {
       const next = readAuth();
       setAuth(next);
       // 监听器为权威路径：每次 hashchange 都重写镜像，
       // 不再依赖 effect deps 重跑来 sync。
       client.setCurrentWorkDir(next.workDir);
+      client.setCurrentSessionKey(next.session);
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
@@ -131,6 +157,62 @@ export function App() {
       client.disconnect();
     };
   }, [client, auth.token]);
+
+  // M4 task 08 — stem refilled watcher (钉子 5 / ChoicePage hook 点).
+  // When a session_state broadcast carries a real session stem (i.e.
+  // not the literal 'new' and not 'm3-legacy') while the URL hash's
+  // `session` is still 'new', the bridge has completed the pending
+  // → real-stem migration (钉子 2 — see
+  // `docs/tasks/m4/06-bridge-session-layer.md` §1.5). The web refills
+  // the hash so the URL reflects the real stem, and fires a
+  // session_list re-query so ChoicePage level=2's mirror catches up
+  // (钉子 5 — stem 回填后重查). The re-query is fired even though
+  // the user is in ChatView at the moment: ChoicePage level=2's
+  // mount would also fire a fresh query, but firing now means a
+  // back-then-forward navigation sees the new session immediately
+  // without waiting for the mount effect.
+  //
+  // The watcher is registered on the WsClient's 'session_state' type
+  // listener; the handler fires on EVERY session_state broadcast
+  // but only acts when the URL is in the 'new' state and the
+  // inbound session is a real stem.
+  useEffect(() => {
+    if (auth.session !== 'new') return;
+    if (auth.workDir === null || auth.token === null) return;
+    const unsub = client.on('session_state', (envelope) => {
+      if (envelope.kind !== 'control' || envelope.type !== 'session_state') return;
+      const newSession = envelope.session;
+      // The literal 'new' is the bridge's pending marker (钉子 2
+      // internal key `new:<work_dir>`); it's also a legitimate
+      // outbound `envelope.session` value while a pending manager
+      // is alive. Skip it. The M3_LEGACY key is the M3-compat
+      // bucket; we never refill the URL to point at it. A real
+      // session stem is anything else (a `<timestamp>_<uuid>`
+      // shaped string, but we don't validate the shape — the
+      // bridge's broadcast is authoritative).
+      if (
+        newSession === undefined ||
+        newSession === 'new' ||
+        newSession === M3_LEGACY_KEY
+      ) {
+        return;
+      }
+      // Refill the hash. We use `selectSessionHash` to compose the
+      // three-field URL the same way the rest of the app does
+      // (token + work_dir + session) — this preserves any other
+      // hash state the user might have added (none today, but
+      // future-proof). The `window.location.hash` setter triggers
+      // the `hashchange` listener above which re-derives `auth` +
+      // the WsClient store mirrors. We then fire a session_list
+      // re-query for the current work_dir so ChoicePage level=2
+      // (when the user later navigates back) sees the new session.
+      window.location.hash = selectSessionHash(auth.token!, auth.workDir!, newSession);
+      if (auth.workDir !== null) {
+        client.sendSessionList(auth.workDir);
+      }
+    });
+    return unsub;
+  }, [client, auth.session, auth.workDir, auth.token]);
 
   const view = decideView(auth);
 
@@ -167,60 +249,115 @@ export function App() {
   }
 
   // Token + work_dir + session → render the M3 chat surface via the
-  // dual-query recovery gate (task 07). The gate is created once per
-  // mount and torn down on unmount; its lifecycle is independent of
-  // the WsClient's connection state (reconnects are WsClient-internal;
-  // a mid-recovery drop shows up as a `both_failed` after the
-  // 5s timer fires, and the user can retry). The token is non-null at
-  // this branch (`decideView` already proved it).
+  // per-session dual-query recovery gate (task 08). The gate map is
+  // created once per mount and persisted in `RecoveryShell`; its
+  // lifecycle is independent of the WsClient's connection state
+  // (reconnects are WsClient-internal; a mid-recovery drop shows
+  // up as a `both_failed` after the 5s timer fires, and the user
+  // can retry). The token / session are non-null at this branch
+  // (`decideView` already proved them).
+  //
+  // M3-compat: the `decideView` M3 branch (token only) routes
+  // here too. In that case `auth.session === null` and we use
+  // `M3_LEGACY_KEY` as the gate / bucket key — same constant as
+  // the WsClient uses for session-less inbound routing. ChatView
+  // (pinned to the M3_LEGACY bucket via `useBucketField(null, …)`)
+  // renders the M3 single-bucket state. The M3_LEGACY retire
+  // evaluation is in the task 08 report.
+  const sessionForGate = auth.session ?? M3_LEGACY_KEY;
   return (
     <WsClientProvider client={client}>
       <main className="app-shell">
         <h1>RemotePi</h1>
         <StatusBar />
-        <RecoveryShell token={auth.token!} />
+        <RecoveryShell
+          token={auth.token!}
+          session={sessionForGate}
+          workDir={auth.workDir ?? ''}
+          client={client}
+        />
       </main>
     </WsClientProvider>
   );
 }
 
 // ---------------------------------------------------------------------------
-// RecoveryShell — owns the single RecoveryGate per mount and renders the
-// appropriate view based on its state.
+// RecoveryShell — owns the per-session RecoveryGate map.
 // ---------------------------------------------------------------------------
 
-/** Wire-level entry: one `RecoveryGate` per component instance.
- *  Pulled out of `<App />` so the gate instance survives any future
- *  re-renders triggered by hash changes / context consumers below it.
- *  The component is intentionally small —
- *  the real gating logic lives in the gate object (`recovery.ts`)
- *  and the renderer (`RecoveryView`) below. */
-function RecoveryShell({ token }: { token: string }) {
-  const client = useWsClient();
-  // `useRef` keeps one gate per component instance under StrictMode
-  // dev's double-invoke; the gate is intentionally not disposed by
-  // effect cleanup (see RecoveryShell).
-  const gateRef = useGateRef(client);
-  // The gate follows this component instance's lifetime. Do not dispose
-  // it from effect cleanup: StrictMode uses cleanup as a simulated
-  // teardown before the second setup, and disposal is irreversible.
-  return <RecoveryView gate={gateRef} token={token} />;
+/** Wire-level entry: a `Map<sessionKey, RecoveryGate>` per mount.
+ *  Pulled out of `<App />` so the gate map survives any future
+ *  re-renders triggered by hash changes / context consumers below
+ *  it. The map is keyed by session; we expose
+ *  `gateForSession(session)` so `RecoveryView` can read the gate
+ *  for the current session without re-creating it.
+ *
+ *  `session === 'new'` (pending marker) is treated like any
+ *  other session key — its gate fires the dual-query ceremony
+ *  with `session: 'new'` and the bridge's pending-key path
+ *  routes the request. When the bridge broadcasts
+ *  session_state{session:<realStem>}, the URL hash's `session`
+ *  flips to the real stem (via the App-level `useStemRefilled`
+ *  effect); the new stem's gate is created on the next render
+ *  via the create-on-miss pattern in `gateForSession`. The
+ *  pending gate's reply-resolvers and timers are naturally
+ *  torn down by the gate's own `cancelActive` on `retry()` /
+ *  on the success path — see `recovery.ts` for the lifecycle.
+ */
+function RecoveryShell({
+  token,
+  session,
+  workDir,
+  client,
+}: {
+  token: string;
+  session: string;
+  workDir: string;
+  client: WsClient;
+}) {
+  // `useRef` keeps the gate map stable per mount; the factory
+  // closes over the client from the current render. Token /
+  // session changes don't re-create the map — see `RecoveryView`
+  // for the auto-start contract that re-fires the ceremony on
+  // session change.
+  const gateMapRef = useRecoveryGateMap();
+  const gate = gateForSession(gateMapRef.current, session, client);
+  return <RecoveryView gate={gate} session={session} workDir={workDir} token={token} />;
 }
 
-/** Stable-per-mount gate factory: a real `useRef` (not `useMemo`)
- *  avoids the StrictMode-double-invoke trap — `useMemo`'s factory
- *  re-runs on every render, which would create two gates under
- *  StrictMode dev. `useRef`'s initial value is computed once and
- *  reused for the lifetime of the component instance. The factory
- *  closes over the client from the current render; token changes
- *  don't re-create the gate — see `RecoveryView` for the auto-start
- *  contract that re-fires the ceremony on token change. */
-function useGateRef(client: WsClient): RecoveryGate {
-  const ref = useRef<RecoveryGate | null>(null);
+/** Stable-per-mount `Map<sessionKey, RecoveryGate>`. We use
+ *  `useRef` (not `useMemo`) so StrictMode's dev double-invoke
+ *  doesn't create two maps and orphan the first one's gates
+ *  (the gates hold `setTimeout` handles and reply resolvers
+ *  that must persist). The map is created empty; the
+ *  `gateForSession` helper fills it on demand. */
+function useRecoveryGateMap(): { current: Map<string, RecoveryGate> } {
+  const ref = useRef<Map<string, RecoveryGate> | null>(null);
   if (ref.current === null) {
-    ref.current = initiateRecovery(client);
+    ref.current = new Map();
   }
-  return ref.current;
+  return { current: ref.current };
+}
+
+/** Look up (or create) the gate for a given session key. The
+ *  map is the per-mount `Map<sessionKey, RecoveryGate>` —
+ *  create-on-miss matches the lazy-bucket pattern the WsClient
+ *  uses for its store (so a brand-new session key that fires
+ *  the ceremony for the first time also gets a bucket). The
+ *  gate instance lives until the App unmounts — navigation
+ *  between sessions does NOT destroy other sessions' gates
+ *  (the M4 §4.2 "暂存" contract). */
+function gateForSession(
+  map: Map<string, RecoveryGate>,
+  session: string,
+  client: WsClient,
+): RecoveryGate {
+  let gate = map.get(session);
+  if (gate === undefined) {
+    gate = initiateRecovery(client);
+    map.set(session, gate);
+  }
+  return gate;
 }
 
 // ---------------------------------------------------------------------------
@@ -237,30 +374,36 @@ function useGateRef(client: WsClient): RecoveryGate {
  *  WsClient's `send` silently drops when the socket isn't open;
  *  deferring avoids an immediate 5s timer-fail on cold start).
  *
- *  `autoStartConsumedRef` records the token under which the
- *  auto-start has already fired. Token changes are a re-connect
- *  signal (the worker rooms are keyed by token; see architecture
- *  note below), so the effect re-fires the ceremony on each
- *  fresh-token → online transition — matching PRD §4.4's
- *  "every (re)connect fires the dual-query ceremony" contract.
- *  WsClient-internal reconnects (offline → connecting → online
- *  for the SAME token) are intentionally NOT re-fired: only a
- *  token change (or the user pressing retry / F5) restarts the
- *  ceremony. F5 is still the way to fully reset (which re-mounts
- *  everything and gets a fresh `autoStartConsumedRef`).
+ *  `autoStartConsumedRef` records the session under which the
+ *  auto-start has already fired. Session changes (the user
+ *  navigating from session A to session B) re-arm the guard so
+ *  a fresh session → online transition starts a new ceremony
+ *  (the M3 single-gate flow had a `token`-keyed guard; M4
+ *  generalises to `session`-keyed because the recovery gate is
+ *  per-session). WsClient-internal reconnects (offline →
+ *  connecting → online for the SAME session) are intentionally
+ *  NOT re-fired: only a session change (or the user pressing
+ *  retry / F5) restarts the ceremony. F5 is still the way to
+ *  fully reset (which re-mounts everything and gets a fresh
+ *  `autoStartConsumedRef`).
  *
- *  Architecture note: the worker DO rooms are keyed by token, so
- *  a token swap in the same tab logically hands off to a fresh
- *  bridge session — the old `get_messages` / `get_state` replies
- *  (if any were in flight from the previous session) belong to a
- *  different room and would never arrive on this socket anyway.
- *  Re-firing the ceremony on token change is the only correct
- *  behaviour; otherwise the gate would latch onto `error` from a
- *  stale 5s timer firing against a socket that's now serving a
- *  different room. `gate.retry()` itself calls `cancelActive()`,
- *  so any in-flight ceremony's timers + reply-resolvers are
- *  torn down before the fresh pair of dual queries goes out. */
-function RecoveryView({ gate, token }: { gate: RecoveryGate; token: string }) {
+ *  M4 §6.1 B 方案补充：`bridgeStatus.online === false` 守门——离线
+ *  立即判 `bridge_offline`。`null` 不触发（冷启动误杀防护）。
+ *  bridge 重新上线后**不**自动重燃（autoStartConsumedRef 已锁住
+ *  当前 session）——用户须手动 retry / F5 / 换 session 重试。
+ *  PRD §6 仅要求"bridge 离线 → 秒失败"，不要求"恢复在线 →
+ *  自动重燃"——超规格承诺显式剔除。 */
+function RecoveryView({
+  gate,
+  session,
+  workDir,
+  token: _token,
+}: {
+  gate: RecoveryGate;
+  session: string;
+  workDir: string;
+  token: string;
+}) {
   const connState = useConnState();
   // M4 tasks/m4/01 B 方案补充：订阅 `bridgeStatus` 使 auto-start
   // effect 能感知 bridge 离线（`null` 不触发——冷启动误杀防护）。
@@ -268,57 +411,43 @@ function RecoveryView({ gate, token }: { gate: RecoveryGate; token: string }) {
   // 走 `StatusBar`，避免重复渲染。
   const bridgeStatus = useBridgeStatus();
   // M4 tasks/m4/01 §6.1 UI：`RecoveryInFlight` 接 `phase` prop 显示
-  // 阶段文案。phase 从 `useSessionPhase()` 读取（WebState 镜像）。
+  // 阶段文案。phase 从 `useSessionPhase()` 读取（WebState 镜像
+  // ——`bucketFor(currentSessionKey).sessionPhase`）。M4 多会话下
+  // phase 跟随当前 session 桶的 phase（用户切会话后 ChatView 立即
+  // 显示新桶的 phase）。
   const phase = useSessionPhase();
   // `gate.subscribe` and `gate.getSnapshot` are arrow fields on the
   // gate object (stable per mount, see `RecoveryGate` JSDoc) — pass
   // them through verbatim. Inline arrows here would re-create the
   // function identity on every render; React's `useSyncExternalStore`
-  // tolerates that but would re-validate / re-subscribe each time. The
-  // critical bug being guarded against is `gate.getSnapshot` returning
-  // a freshly constructed `{ ready, error }` on every call — the
-  // gate now returns the cached snapshot reference, so React's
-  // referential-equality check sees identity-stable output across
-  // no-op transitions and skips re-render (fixes the
-  // `Maximum update depth exceeded` crash on page load).
+  // tolerates that but would re-validate / re-subscribe each time.
   const view = useSyncExternalStore(gate.subscribe, gate.getSnapshot);
   // Render-stable ref so the auto-start effect doesn't re-run on
   // every gate transition (the gate instance is stable for the
   // mount lifetime).
   const gateRef = useMemo(() => ({ current: gate }), [gate]);
-  // Records the token under which the auto-start ceremony has
+  // Records the session under which the auto-start ceremony has
   // already fired. `null` on first render (no ceremony yet); set
-  // to the token string once we fire. On token change the effect
-  // detects the mismatch and re-fires — the gate's `retry()`
-  // handles the cancel-and-restart of any in-flight ceremony.
+  // to the session string once we fire. On session change the
+  // effect detects the mismatch and re-fires — the gate's
+  // `retry()` handles the cancel-and-restart of any in-flight
+  // ceremony.
   const autoStartConsumedRef = useRef<string | null>(null);
 
-  // First attempt per token: wait for the WebSocket to be open so
-  // the dual queries actually go out. Token changes re-arm the
-  // guard so a fresh token → online transition starts a new
-  // ceremony. M4 B 方案补充 `bridgeStatus?.online === false`
-  // 守门：仪式启动瞬间若已知 bridge 离线（worker 握手后同步补发
-  // 的 `bridge_status` 显示 offline），不要发仪式；仪式仅由
-  // retry 按钮 / hash 变化（token 变化）重新发起——bridge 重新
-  // 上线后**不**自动重燃仪式（`autoStartConsumedRef` 已锁住当前
-  // token，bridgeStatus 由 false 翻 true 触发 effect 重跑时守门
-  // 仍命中 `current === token` → no-op）。PRD §6 仅要求"bridge
-  // 离线 → 秒失败"，不要求"恢复在线 → 自动重燃"——超规格承诺
-  // 显式剔除，用户须手动 retry / F5 / 换 token 才能重试。
-  // `null` 不触发——冷启动期间 `bridge_status` 未补发是常态，
-  // 避免误杀。 The retry button (and F5) drive subsequent
-  // attempts manually — the WsClient drops `send()` if the socket
-  // is closed and the 5s timer will catch the no-reply case.
+  // First attempt per session: wait for the WebSocket to be open so
+  // the dual queries actually go out. Session changes re-arm the
+  // guard so a fresh session → online transition starts a new
+  // ceremony. M4 B 方案补充 `bridgeStatus?.online === false` 守门。
   useEffect(() => {
     if (connState !== 'online') return;
     if (bridgeStatus !== null && bridgeStatus.online === false) return;
-    if (autoStartConsumedRef.current === token) return;
-    autoStartConsumedRef.current = token;
+    if (autoStartConsumedRef.current === session) return;
+    autoStartConsumedRef.current = session;
     gateRef.current.retry();
-  }, [connState, bridgeStatus, gateRef, token]);
+  }, [connState, bridgeStatus, gateRef, session]);
 
   if (view.ready) {
-    return <ChatView />;
+    return <ChatView session={session} workDir={workDir} />;
   }
   if (view.error !== null) {
     return <RecoveryErrorCard error={view.error} onRetry={() => gate.retry()} />;
@@ -335,13 +464,12 @@ function RecoveryView({ gate, token }: { gate: RecoveryGate; token: string }) {
  *  - `phase === 'spawning'` → "正在启动会话…"（pi 冷启动中）
  *  - `phase` ∈ `'ready' | 'running' | 'idle'` → "正在加载历史…"（manager 已
  *    完成握手，等待 get_messages 拉快照）
+ *  - `phase === 'exited'` → "正在加载历史…"（`spawn → ready` 链路中
+ *    exited 作为起始相位也是 bridge 内存视角的有效相位，不应误导用户）
  *  - `phase === null` → "5 秒未收到进度…"（5s 兑底未到前已可见——
  *    UX 上该变量即刻呈现，不等兑底命中。仪式在 5s 内见到 phase 变化
  *    后会重启 snapshot 定时器 15s 窗口。）
- *
- *  `'exited'` 单独处理：视为"正在加载历史…"——`spawn → ready` 链路中
- *  exited 作为起始相位也是 bridge 内存视角的有效相位，不应误导用户。
- *  其他未知值（`null`）不匹配任何分支 → 走默认提示。 */
+ */
 function RecoveryInFlight({ connState, phase }: { connState: ConnState; phase: SessionPhase | null }) {
   const phaseText = ((): string => {
     if (phase === 'spawning') return '正在启动会话…';

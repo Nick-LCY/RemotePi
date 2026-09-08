@@ -157,6 +157,14 @@ test.describe('scenario (b) — F5 reload recovery', () => {
     const state = await readRunState();
     const { token, baseUrl, fakeLlmUrl } = state;
 
+    // M4 task 08: M3 token-only URL — see the same comment in
+    // 01-first-turn.spec.ts for why the M3 path is what the E2E
+    // uses (M3_LEGACY bucket; the bridge's `new:<work_dir>`
+    // pending-key events are session-less at the web boundary
+    // and would route wrong). Task 10's M4-native E2E migration
+    // will flip these to the full M4 hash once the bridge injects
+    // session on event envelopes too.
+    //
     // Step 1: load the chat, send two prompts, wait for both
     // terminal rows to land. The LLM scripts are pre-installed
     // so the assistant replies are deterministic.

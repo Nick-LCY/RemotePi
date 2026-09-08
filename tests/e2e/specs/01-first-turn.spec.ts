@@ -110,6 +110,19 @@ test.describe('scenario (a) — first-turn streaming render', () => {
     const state = await readRunState();
     const { token, baseUrl, fakeLlmUrl } = state;
 
+    // M4 task 08: still on the M3 token-only URL — the bridge's
+    // outbound wrapper (task 06) only injects the session field
+    // on `session_state` envelopes, not on events / snapshots.
+    // That means a `&session=new` outbound would create a
+    // `new:<work_dir>` map key on the bridge whose events arrive
+    // session-less at the web and get routed to the M3_LEGACY
+    // bucket — not the `new` bucket ChatView is reading. M3
+    // token-only URL goes through the M3_LEGACY manager whose
+    // events DO arrive in the M3_LEGACY bucket, so ChatView (now
+    // pinned to the M3_LEGACY bucket when currentSessionKey is
+    // null) renders correctly. This is the same M3-compat path
+    // task 10's spec acknowledges and will eventually retire. See
+    // the task 08 report for the M3_LEGACY retirement evaluation.
     await page.goto(`${baseUrl}/#${token}`);
     await waitForChatViewOrRecovery(page);
 

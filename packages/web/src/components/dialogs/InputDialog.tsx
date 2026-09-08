@@ -11,6 +11,8 @@ import type { BlockedOnEntryPayload } from '@remotepi/shared';
 
 export interface InputDialogProps {
   entry: Extract<BlockedOnEntryPayload, { method: 'input' }>;
+  /** M4 §4.5 (tasks/m4/08): see `ConfirmDialog` JSDoc. */
+  enqueuedAt: number;
   pending: boolean;
   errorMessage: string | null;
   onSubmit: (payload: { request_id: string; cancelled: false; value: string }) => void;
@@ -20,6 +22,7 @@ export interface InputDialogProps {
 
 export function InputDialog({
   entry,
+  enqueuedAt,
   pending,
   errorMessage,
   onSubmit,
@@ -60,6 +63,7 @@ export function InputDialog({
         id={`input-title-${entry.id}`}
         title={entry.title}
         timeoutMs={entry.timeout}
+        enqueuedAt={enqueuedAt}
         onTimeout={onTimeout}
       />
       {errorMessage !== null ? (

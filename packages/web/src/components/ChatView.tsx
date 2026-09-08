@@ -1,4 +1,5 @@
-// ChatView — M3 main chat surface (PRD §4.3).
+// ChatView — M3 main chat surface (PRD §4.3), made per-session in M4
+// task 08 (PRD §4.6).
 //
 // Composition:
 //   <PhaseIndicator />   — StatusBar-below row showing current phase.
@@ -12,20 +13,29 @@
 //   <InputBar />         — Text input + send + abort.
 //   <DialogHost />       — Layered dialog renderer over the chat.
 //
-// State source: WsClient. ChatView reads exclusively from useWsState
-// hooks (no local state that could drift from the protocol) — the
-// only React state local to this subtree is the controlled-input
-// value in InputBar.
+// M4 task 08 (PRD §4.6): ChatView now takes a `session` prop and
+// reads/writes exclusively from the per-session bucket via
+// `bucketFor(session)`. The previous M3 single-bucket reads
+// (client.messages, client.sessionPhase, etc.) are still available
+// as back-compat getters — they resolve to the current session's
+// bucket — but ChatView's internal hooks pin the session so
+// background sessions can't accidentally leak into the foreground
+// UI.
+//
+// State source: WsClient per-session bucket. ChatView reads via
+// `useXxxFor(session)` hooks (no local state that could drift from
+// the protocol) — the only React state local to this subtree is
+// the controlled-input value in InputBar.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
 
 import {
   useCommandErrorSubscription,
-  useMessages,
-  useQueue,
-  useSessionPhase,
-  useStreamingDraft,
+  useMessagesFor,
+  useQueueFor,
+  useSessionPhaseFor,
+  useStreamingDraftFor,
   useWsClient,
 } from '../ws/WsClientContext.js';
 import { DialogHost } from './dialogs/DialogHost.js';
@@ -34,13 +44,19 @@ import { DialogHost } from './dialogs/DialogHost.js';
 // ChatView
 // ---------------------------------------------------------------------------
 
-export function ChatView() {
+/** M4 task 08 per-session entry. The `session` prop pins the
+ *  bucket — all reads/writes inside this subtree go through
+ *  `useXxxFor(session)`. `workDir` is plumbed through so the
+ *  InputBar's `session: 'new'` prompt auto-fill can include
+ *  `payload.work_dir` (裁定 A 方案 A — only the new-session
+ *  prompt carries the work_dir field). */
+export function ChatView({ session, workDir }: { session: string; workDir: string }) {
   return (
-    <div className="chat-view" data-testid="chat-view">
-      <PhaseIndicator />
-      <MessageList />
-      <QueueIndicator />
-      <InputBar />
+    <div className="chat-view" data-testid="chat-view" data-session={session}>
+      <PhaseIndicator session={session} />
+      <MessageList session={session} />
+      <QueueIndicator session={session} />
+      <InputBar session={session} workDir={workDir} />
       <DialogHost />
     </div>
   );
@@ -51,16 +67,16 @@ export function ChatView() {
 // ---------------------------------------------------------------------------
 
 /** Small row below the StatusBar showing the current pi subprocess
- *  phase. The 5-value enum maps to 5 distinct visual states so the
- *  user can spot the transition between "agent thinking" and
- *  "ready for input" at a glance.
+ *  phase for the per-session bucket. The 5-value enum maps to 5
+ *  distinct visual states so the user can spot the transition
+ *  between "agent thinking" and "ready for input" at a glance.
  *
  *  `work_dir` is intentionally NOT shown: the v1 wire surface does
  *  not carry bridge-side configuration to the web client, and the
  *  task brief authorises the phase-only fallback ("若无来源则以
  *  phase 为准并在汇报中说明"). The dev report covers this gap. */
-function PhaseIndicator() {
-  const phase = useSessionPhase();
+function PhaseIndicator({ session }: { session: string }) {
+  const phase = useSessionPhaseFor(session);
   const label = phase ?? 'unknown';
   const hint = phaseHint(phase);
   return (
@@ -71,7 +87,7 @@ function PhaseIndicator() {
   );
 }
 
-function phaseHint(phase: ReturnType<typeof useSessionPhase>): string | null {
+function phaseHint(phase: ReturnType<typeof useSessionPhaseFor>): string | null {
   switch (phase) {
     case 'spawning':
       return 'spawning pi…';
@@ -104,9 +120,9 @@ function phaseHint(phase: ReturnType<typeof useSessionPhase>): string | null {
  *  doesn't match the renderer pattern falls back to a
  *  `<pre>{JSON.stringify(...)}</pre>` so the user can still see what
  *  pi emitted (the shared package treats messages as opaque). */
-function MessageList() {
-  const messages = useMessages();
-  const draft = useStreamingDraft();
+function MessageList({ session }: { session: string }) {
+  const messages = useMessagesFor(session);
+  const draft = useStreamingDraftFor(session);
 
   // No virtualization for now — the MESSAGES_CAP of 1k keeps the DOM
   // small enough that simple flex layout outperforms virtualized lists
@@ -300,8 +316,8 @@ function extractJson(value: unknown): string {
 /** Tiny footer showing the steering + follow_up queue depths. Hidden
  *  when both queues are empty to keep the chat surface uncluttered
  *  (most of the time the queues are empty). */
-function QueueIndicator() {
-  const queue = useQueue();
+function QueueIndicator({ session }: { session: string }) {
+  const queue = useQueueFor(session);
   const total = queue.steering.length + queue.followUp.length;
   if (total === 0) return null;
   return (
@@ -357,9 +373,9 @@ function QueueIndicator() {
  *  matches one we sent), show a temporary error banner and DO NOT
  *  retry. The banner auto-hides after 5s and the user can correct
  *  the input manually. */
-function InputBar() {
+function InputBar({ session, workDir }: { session: string; workDir: string }) {
   const client = useWsClient();
-  const phase = useSessionPhase();
+  const phase = useSessionPhaseFor(session);
   const [value, setValue] = useState('');
   // Tracks the most recent agent_settled timestamp so we can show the
   // "agent settled" hint for a few seconds after each turn (PRD §4.3
@@ -372,6 +388,13 @@ function InputBar() {
   // failures resets the 5s window rather than overlapping.
   const [commandError, setCommandError] = useState<string | null>(null);
   const commandErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // M4 task 08: `session === 'new'` requires the prompt to carry
+  // `payload.work_dir` (裁定 A 方案 A — only `session: 'new'` carries
+  // the work_dir field; the bridge rejects `session: 'new'` without
+  // it as `invalid_envelope`). The InputBar routes through a small
+  // helper that splits the wire shape between new-session and
+  // in-session sends.
+  const isNewSession = session === 'new';
 
   // Subscribe to pi/event envelopes for the agent_settled hint. We
   // can't put this in a top-level ChatView effect because agent_settled
@@ -446,11 +469,55 @@ function InputBar() {
    *  `event as unknown as FormEvent<...>` cast that the previous
    *  version needed because onKeyDown synthesised a fake form-event
    *  to call onSubmit. Now both call sites just pass a plain string
-   *  — no synthetic events, no casts. */
+   *  — no synthetic events, no casts.
+   *
+   *  M4 task 08 (裁定 A 方案 A): when `session === 'new'`, the
+   *  prompt payload carries `work_dir` so the bridge can spawn the
+   *  new manager with the right cwd. We use `client.send` (the
+   *  low-level escape hatch on `WsClient`) to construct the
+   *  envelope with the optional `work_dir` field — the high-level
+   *  `sendPrompt` shape is intentionally narrow to in-session
+   *  prompts. The bridge rejects `session: 'new'` without
+   *  work_dir (钉子 2 边界) so the InputBar is the only place this
+   *  is enforced. */
   const submitText = (text: string): void => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    client.sendPrompt(trimmed);
+    if (isNewSession) {
+      // The web outbound encloses `session: 'new'` (auto-filled
+      // by the WsClient from currentSessionKey) plus
+      // `payload.work_dir`. Both fields are required for the
+      // bridge's pending-key path (PRD §1.2). `workDir` is the
+      // URL-hash `work_dir` plumbed down from App.tsx; if the
+      // hash is missing work_dir (defensive — decideView
+      // guarantees level=2 with work_dir present at this
+      // branch), we fall back to the store's currentWorkDir
+      // mirror.
+      const effectiveWorkDir = workDir !== '' ? workDir : client.currentWorkDir;
+      if (effectiveWorkDir === null) {
+        // Defensive — should never happen because the URL hash
+        // gates ChatView on `&work_dir=...`. If it does, surface
+        // an inline error rather than firing a doomed request.
+        setCommandError('命令失败（invalid_envelope）：session=new 必带 work_dir');
+        return;
+      }
+      // Construct the envelope by hand so the `work_dir` field
+      // can ride along. The shared `PiPromptPayload` type does
+      // not pin `work_dir` (it is an additive optional field per
+      // envelope evolution rule (a)) so a plain object cast is
+      // sufficient — the bridge's own Zod schema validates the
+      // full shape on receipt.
+      client.send({
+        v: 1,
+        kind: 'pi',
+        type: 'prompt',
+        id: crypto.randomUUID(),
+        session: 'new',
+        payload: { content: trimmed, work_dir: effectiveWorkDir },
+      } as unknown as Parameters<typeof client.send>[0]);
+    } else {
+      client.sendPrompt(trimmed);
+    }
     setValue('');
   };
 
