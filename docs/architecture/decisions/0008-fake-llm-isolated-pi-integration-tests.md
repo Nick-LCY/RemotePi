@@ -12,7 +12,7 @@
 
   本 ADR 是 M3 集成测试基建落地的设计决策——承接用户 2026-09-07 裁定（暂不实施、先落文档；假 server 走 Anthropic Messages API 而非 OpenAI 格式），固化 2026-09-08 实际实施的两笔 commit（`3c6656d` 主体 + `bb6293b` review 修复）背后的设计要点，让"假 LLM + 真 pi + 隔离 agent-dir"成为可重复、可断言、可升级的回归资产。
 
-  浏览器层 E2E（Playwright 驱动 wrangler dev + bridge + 真 pi + 假 LLM fixture，验证 ChatView 渲染 / F5 仪式 / 双 tab 先答者胜）超出本 ADR 范围，将另立 ADR 承载；本套件仅覆盖 bridge wire 层。
+  浏览器层 E2E（Playwright 驱动 wrangler dev + bridge + 真 pi + 假 LLM fixture，验证 ChatView 渲染 / F5 仪式 / 双 tab 先答者胜）超出本 ADR 范围，已另立 [[architecture/decisions/0009-headless-browser-e2e.md|ADR-0009]] 承载；本套件仅覆盖 bridge wire 层。
 
 - 决策：
 
@@ -38,7 +38,7 @@
   - **采用** in-process 驱动：测试 case 直接 `new PiProcessManager({ ... })` → 调 `start()` / `handleEnvelope()` / `cleanup()`，断言基于 manager 暴露的 outbox / phase / blocked_on 等回调。
   - 既有 `PiProcessManager` seam（`baseEnv` / `idleTimeoutMs` / `sigkillDelayMs` / `onOutboundEnvelope` 5 个回调）已包含测试需要的所有扩展点（任务 04 / 05 review 时即考虑过测试场景），**`packages/*` 零改动**即印证"seam 已就绪"的设计有效。
   - **否决**"真 bridge 进程 + 假 WSS worker" harness：成本高（要起 bridge CLI 子进程 + 假 worker WSS 帧层 + 端口编排）、收益低（WSS 层已有 client 单测覆盖），且本套件目标是 bridge→pi 翻译层回归而非 WSS 端到端。
-  - **浏览器层 E2E 将另立 ADR**——本 ADR 仅覆盖 bridge wire 层；Playwright 驱动 wrangler dev + bridge + 真 pi + 假 LLM fixture 验证 ChatView 渲染 / F5 仪式 / 双 tab 先答者胜属浏览器 UI 层断言，超出本套件范围。
+  - **浏览器层 E2E 已另立 [[architecture/decisions/0009-headless-browser-e2e.md|ADR-0009]]**——本 ADR 仅覆盖 bridge wire 层；Playwright 驱动 wrangler dev + bridge + 真 pi + 假 LLM fixture 验证 ChatView 渲染 / F5 仪式 / 双 tab 先答者胜属浏览器 UI 层断言，超出本套件范围。
 
   ### 3. 位置 `tests/integration/` 顶层 + 独立 `vitest.integration.config.js` + 根脚本 `pnpm test:integration` / `typecheck:integration`
 
@@ -143,7 +143,7 @@
   - **OpenAI Completions 格式**：用户 2026-09-07 裁定改 Anthropic（pi 0.85.1 默认走 anthropic-messages contract，与 pi 自身使用的 provider 一致；改 OpenAI 等于在 pi 和 LLM 之间插入翻译层）。
   - **无测试基建维持手测**：M3 联调 12 问题中 8 笔源于"bridge 假设 vs pi 实物"已证伪"手测能兜住所有问题"的假设。
   - **真 bridge 进程 + 假 WSS worker harness**：成本高（CLI 子进程 + WSS 帧编排 + 端口编排）、收益低（WSS 层已有 client 单测覆盖），否决。
-  - **Playwright 浏览器层 E2E（超出本 ADR 范围）**：将另立 ADR 承载——浏览器 UI 层断言（ChatView 渲染 / F5 仪式 / 双 tab 先答者胜）超出本套件范围。
+  - **Playwright 浏览器层 E2E（超出本 ADR 范围）**：已另立 [[architecture/decisions/0009-headless-browser-e2e.md|ADR-0009]] 承载——浏览器 UI 层断言（ChatView 渲染 / F5 仪式 / 双 tab 先答者胜）超出本套件范围。
 
 - 参考：
   - 任务 [[tasks/m3/10-integration-test-infra.md|10]] —— 本套件的事后补录任务文件（done）。
@@ -153,4 +153,4 @@
   - [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]] —— extension UI 4 类弹窗；本套件的 `04-extension-dialogs` 6 条 it 钉死 4 类入列 + cancel 5 类消化的端到端真形。
   - [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] —— bridge 复用宿主机 pi agent 目录；本套件用 `PI_CODING_AGENT_DIR` env 高级覆盖，宿主共享目录不参与。
   - [[architecture/protocol/pi.md|architecture/protocol/pi.md]] —— pi RPC 协议细节（事件名 / 命令 schema），本套件所有断言以该协议为契约。
-  - 原 `testing` 规划文档（2026-09-07 用户裁定建，2026-09-08 拆解：§2 + §4 承接至本 ADR；§3 无头浏览器 E2E 仍挂账、待另立 ADR）。
+  - 原 `testing` 规划文档（2026-09-07 用户裁定建，2026-09-08 拆解：§2 + §4 承接至本 ADR；§3 无头浏览器 E2E 由 [[architecture/decisions/0009-headless-browser-e2e.md|ADR-0009]] 承载，已接受、待实施）。

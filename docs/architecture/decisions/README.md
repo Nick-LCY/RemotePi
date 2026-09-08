@@ -26,3 +26,4 @@
 | [[architecture/decisions/0006-protocol-v1-get-state-unlock.md\|0006]] | 协议 v1 control 家族破锁：新增 `get_state` | 已接受 | 2026-09-05 |
 | [[architecture/decisions/0007-host-shared-pi-agent-dir.md\|0007]] | Bridge 复用宿主机 pi agent 目录 | 已接受 | 2026-09-05 |
 | [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md\|0008]] | 假 LLM server + 隔离 pi 集成测试（bridge wire 层回归套件） | 已接受 | 2026-09-08 |
+| [[architecture/decisions/0009-headless-browser-e2e.md\|0009]] | 无头浏览器 E2E（Playwright 全栈本地链路 UI 回归套件） | 已接受·待实施 | 2026-09-08 |

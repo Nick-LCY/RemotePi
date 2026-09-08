@@ -69,5 +69,5 @@ status: done
 
 ## 后续挂账（移交任务 08 + 路线图）
 
-- **无头浏览器 E2E**（原 `testing` §3，2026-09-08 拆解时挂账于 [[current-state.md]] TODO）仍未实施——本套件覆盖 bridge wire 层，浏览器 UI 层断言（ChatView 渲染、F5 仪式、双 tab 先答者胜）仍需用户手测验收。**任务 08 注记**：脚本化触发基建已就绪（bridge wire 层，由 ADR-0008 §1.4 钉死），web UI 层仍需手测。
+- **无头浏览器 E2E**（原 `testing` §3，2026-09-08 拆解时挂账于 [[current-state.md]] TODO）已立项——见 [[architecture/decisions/0009-headless-browser-e2e.md|ADR-0009]]（已接受·待实施，2026-09-08，与本 ADR 同日成对）。本套件覆盖 bridge wire 层；浏览器 UI 层（ChatView 渲染、F5 仪式、双 tab 先答者胜）实施任务待排期。**任务 08 注记**：脚本化触发基建已就绪（bridge wire 层，由 ADR-0008 §1.4 钉死），web UI 层仍需手测验收直至 ADR-0009 实施完成。
 - **pi 升级体检仪式**（原 `testing` §4，2026-09-08 承接至 [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md#升级体检仪式pi-升级时真实形状比对|ADR-0008 §升级体检仪式]]）——本套件即"体检清单的回归化"：未来 pi 升级时跑 `pnpm test:integration`，**任一 it 红即等价于体检清单 6 项偏差**，§升级体检仪式流程落地更彻底。
