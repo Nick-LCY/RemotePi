@@ -65,6 +65,7 @@ status: todo
 - [ ] `packages/web/src/recovery.ts`：RecoveryGate per-session（Map<sessionKey, RecoveryGate>）；进入该 session 时创建；离开不销毁（暂存以备切回）
 - [ ] `packages/web/src/DialogHost.tsx`：按 session 分桶 `Record<sessionKey, BlockedOnEntryPayload[]>`；切到后台时 UI 不显示但入桶；切回时恢复显示 + 倒计时（按 `Date.now() - enqueuedAt - timeout` 计算）；enqueuedAt 时间戳记录到 session_state 入桶时
 - [ ] **任务 06 C2 移交义务（详见下方）**——web M4 流程的所有 pi 命令与 `get_state` **必须携带 session 字段**；任务 08 落地后评估 `M3_LEGACY_KEY` auto-spawn 路径退役
+- [ ] **任务 07 W2 移交（详见下方）**——`WsClient.sendSessionList` 出站补 `envelope.session` 字段（来自 `currentSessionKey`）；JSDoc 「W2 注记」段从「task 08 必须在此补」改写为「已补」备忘；测试 1.6 追加 `session` 断言 + 新增 1.6b 镜像按 session 分桶隔离；`sessionList` 镜像由全局字段改为按当前 sessionKey 分桶
 - [ ] **测试**（PRD §9.5）：store 按 session 分桶（多 session 并行各自 phase / messages / blockedOn 独立）/ 切会话 dialog 归属切换 / enqueuedAt 倒计时计算 / RecoveryGate per-session 创建 + 暂存 / 出站自动带 session + work_dir / 入站按 session 路由
 - [ ] 既有 M3 web 测试零回归（任务 06/07 行为不被破坏）
 - [ ] `pnpm --filter @remotepi/web build` / `pnpm run lint` / `pnpm run typecheck` / `pnpm run test` 全绿
@@ -111,3 +112,34 @@ status: todo
 - **任务 06 完成情况**——「C2 移交义务」段已写明本评估点与退役路径。
 - **任务 09 docs-sync**——任务 06 review C2 文档化要求 `M3_LEGACY_KEY` JSDoc 互引，但**无需修改**任务 02 协议层 / ADR-0010（协议层不受 M3-compat 影响）；任务 09 只需校对 envelope.md / control.md / pi.md 是否需补「M3-compat 路径退役评估」段落——按任务 06 完成情况结论，若退役则补、若保留则不补。
 - **任务 10 E2E 扩展**——`(d) 目录浏览` / `(e) 多端各看各的` / `(f) 跨会话 blocked_on 隔离` / `(g) 钉子 3 work_dir_remove 活会话` / `(h) 钉子 2 pending 键控` 5 新场景需带 `session` 字段——任务 08 web 落地后 E2E spec 默认带 session 字段，**不**依赖 `M3_LEGACY_KEY` 路径；任务 10 完成时统一交代 M3-compat 评估结论（退役 / 保留挂账）。
+
+## 任务 07 W2 移交
+
+**义务来源**：任务 [[tasks/m4/07-web-choice-page.md|07]] review 修复轮 W2 注记（commit `df22eef`）——`WsClient.sendSessionList()` JSDoc 钉死「task 08 必须在此补 `session` envelope 字段」，代码注记位置 `packages/web/src/ws/WsClient.ts` `sendSessionList` JSDoc 块已链 `docs/tasks/m4/08-web-multi-session-store.md#任务-07-w2-移交` 锚点（即本段）。
+
+**移交内容**：M4 ChoicePage 阶段命令为 control 族，`session_list` 在 bridge 端自答（不经 manager 路由），任务 07 实施期**省略** `envelope.session` 字段当前安全——无 manager 歧义、无 stem 路由问题。但任务 08 落地后 web store 按 session 分桶 + 出站自动从 `currentSessionKey` 填 `session` 字段后，`session_list` 必须**同步**补该字段（否则与「所有 pi 命令与 `get_state` 必须携带 session 字段」的强制约束不一致，破坏控制族命令与会话归属的语义一致性）。
+
+**实施点**（任务 08 完成标准新增一条）：
+
+1. `WsClient.sendSessionList(workDir)` 出站组装逻辑改为：
+   ```ts
+   sendSessionList(workDir: string): string {
+     const id = this.makeId();
+     this.sendRaw({
+       v: PROTOCOL_VERSION,
+       kind: 'control' as const,
+       type: 'session_list' as const,
+       id,
+       session: this.currentSessionKey, // 任务 08 新增——与既有「出站自动从 currentSessionKey 填 session」约定一致
+       payload: { work_dir: workDir },
+     });
+     this._lastSessionListId = id;
+     return id;
+   }
+   ```
+2. JSDoc 顶部「Review 修复轮 W2 注记」段从「task 08 必须在此补」改写为「task 08 落地后已补 session 字段，与同段「出站自动带 session」约定一致」——注记段保留作为设计历程备忘。
+3. 既有任务 08「入站分发按 `envelope.session` 路由」段已覆盖 `session_list` 回执按 session 分桶的镜像更新路径（`sessionList` 字段写入对应 session 桶而非全局字段，**仅当 `currentSessionKey === envelope.session` 时更新**——任务 07 实施期 `sessionList` 是全局字段，任务 08 需调整为按当前 session 镜像，避免跨 session 误路由）。
+4. 测试：`__tests__/ws-client-choice-page.test.ts` 1.6「sendSessionList(work_dir) → payload.work_dir set（裁定 A 操作惯例）」用例追加断言 `envelope.session === currentSessionKey`；新增测试 1.6b「sendSessionList 后 web store sessionList 镜像按当前 sessionKey 分桶，跨 session 隔离」。
+5. 与 [[tasks/m4/07-web-choice-page.md#完成情况|任务 07 完成情况]]「与任务 08 边界」段呼应：任务 07 实施期 `WsClient` 已留 stem 回填 stub（pending → 真实 stem 时触发 level2 重查）；任务 08 消费该 stub 时一并消费本段「按 session 分桶的镜像更新」语义。
+
+**边界澄清**：本移交**不**覆盖 `list_directories` / `work_dir_*` / `get_state` 等其他出站命令——它们在任务 08「出站组装」段已有约定（自动从 `currentSessionKey` 填 session 字段，本任务一并落地），仅 `session_list` 因任务 07 实施期安全省略需 W2 移交明确。其他命令的 session 字段补齐在任务 08 任务清单本身，本段不重复定义。
