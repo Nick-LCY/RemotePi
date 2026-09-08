@@ -31,20 +31,32 @@
 
 import {
   Envelope,
+  ListDirectoriesResultSchema,
   PROTOCOL_VERSION,
+  SessionListResultSchema,
   SessionStatePayloadSchema,
+  WorkDirListResultSchema,
   type AbortPayload,
   type BlockedOnEntryPayload,
   type Envelope as EnvelopeType,
   type ExtensionUIResponsePayload,
   type FollowUpPayload,
   type GetMessagesPayload,
+  type ListDirectoriesPayload,
+  type ListDirectoriesResult,
   type PingPayload,
   type PongPayload,
   type PromptPayload,
+  type SessionListEntry,
+  type SessionListPayload,
+  type SessionListResult,
   type SessionPhase,
   type SessionStatePayload,
   type SteerPayload,
+  type WorkDirAddPayload,
+  type WorkDirListPayload,
+  type WorkDirListResult,
+  type WorkDirRemovePayload,
 } from '@remotepi/shared';
 
 // ---------------------------------------------------------------------------
@@ -226,6 +238,55 @@ export class WsClient {
   private _sessionPhase: SessionPhase | null = null;
   private _blockedOn: BlockedOnEntryPayload[] = [];
 
+  // M4 choice-page state (tasks/m4/07) ---------------------------------------
+  /** Mirror of `bridge/state.json` `work_dirs` array — the user-saved
+   *  work directory list. Refreshed on every `work_dir_list` reply
+   *  (and after every `work_dir_add` / `work_dir_remove` mutation;
+   *  those operations invalidate the snapshot, so the
+   *  ChoicePage refreshes by re-issuing `work_dir_list` immediately
+   *  after a mutation). The web does not persist this list itself —
+   *  bridge is the source of truth. */
+  private _workDirs: string[] = [];
+  /** Mirror of the URL hash's `work_dir` component (钉子 1 / §4.1).
+   *  Maintained by `setCurrentWorkDir()` — App.tsx calls it on every
+   *  `hashchange` so the ChoicePage's "create new session" button can
+   *  resolve which `work_dir` to send on the next outbound `pi/prompt`
+   *  (the ChoicePage uses it for navigation but does not auto-fill
+   *  outbound pi commands — task 08 wires that. Today the value
+   *  flows into `session_list` outbound automation: web always sets
+   *  `payload.work_dir` to this value when querying the session list
+   *  per 裁定 A 操作惯例. */
+  private _currentWorkDir: string | null = null;
+  /** Latest `session_list` reply — the sessions under the current
+   *  `work_dir`. ChoicePage level=2 reads this directly. Empty array
+   *  before the first query lands; replaced wholesale on every reply
+   *  (the bridge sends the full filtered list each time, not a delta).
+   *  `null` distinguishes "not yet queried" from "queried and empty"
+   *  so the ChoicePage can show a placeholder vs an empty list. */
+  private _sessionList: SessionListEntry[] | null = null;
+  /** Transient cache for `list_directories` replies — keyed by outbound
+   *  envelope id (the bridge echoes `reply_to`, which equals our
+   *  outbound id). ChoicePage's DirectoryBrowser uses this to render
+   *  the entries list after the user navigates. NOT part of the
+   *  useSyncExternalStore state — components consume via the type
+   *  listener (`wsClient.on('list_directories', handler)` in M3
+   *  fashion) or via the inline `onEntries` callback we expose.
+   *  Kept in a Map (rather than a single field) so two concurrent
+   *  browser navigations don't shadow each other; entries are
+   *  one-shot — the DirectoryBrowser reads them once and we drop the
+   *  map entry on consumption. */
+  private readonly listDirResults = new Map<string, { entries: Array<{ name: string; path: string }> }>();
+  /** Transient `work_dir_list` / `work_dir_add` / `work_dir_remove`
+   *  outcome cache — keyed by outbound id. ChoicePage's
+   *  DirectoryBrowser "选择" button waits for the
+   *  `work_dir_add` result to decide whether to advance. We keep
+   *  both success (`ok: true`) and failure (`ok: false` + `error`)
+   *  outcomes so error UI can render the bridge-side message. */
+  private readonly workDirResults = new Map<
+    string,
+    { ok: boolean; error?: { code: string; message: string } }
+  >();
+
   // Heartbeat bookkeeping ----------------------------------------------------
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   /** Outstanding outbound nonces and the timeout awaiting their pong. */
@@ -319,6 +380,28 @@ export class WsClient {
 
   get blockedOn(): readonly BlockedOnEntryPayload[] {
     return this._blockedOn;
+  }
+
+  // ---- M4 choice-page state (tasks/m4/07) ----------------------------------
+
+  /** Latest `work_dir_list` snapshot — the user-saved work directories
+   *  (mirror of `bridge/state.json`). Empty array until the first
+   *  query lands. */
+  get workDirs(): readonly string[] {
+    return this._workDirs;
+  }
+
+  /** Mirror of the hash's `work_dir` component (钉子 1 / PRD §4.1).
+   *  `null` when the hash has no `work_dir` (ChoicePage level=1). */
+  get currentWorkDir(): string | null {
+    return this._currentWorkDir;
+  }
+
+  /** Latest `session_list` reply — the sessions under the current
+   *  `work_dir`. `null` until the first query lands (so ChoicePage
+   *  level=2 can show a "loading" placeholder vs an empty list). */
+  get sessionList(): readonly SessionListEntry[] | null {
+    return this._sessionList;
   }
 
   // ---- Subscriptions -------------------------------------------------------
@@ -464,6 +547,20 @@ export class WsClient {
     this.emitStateChange();
   }
 
+  // ---- M4 choice-page state setters (tasks/m4/07) --------------------------
+
+  /** Mirror the URL hash's `work_dir` component into the store.
+   *  App.tsx calls this on every `hashchange` (in addition to its
+   *  normal `setToken` re-derivation) so the ChoicePage's "create
+   *  new session" button can read the current directory off the
+   *  store instead of re-parsing the hash. `null` when the hash has
+   *  no `work_dir`. */
+  setCurrentWorkDir(workDir: string | null): void {
+    if (this._currentWorkDir === workDir) return;
+    this._currentWorkDir = workDir;
+    this.emitStateChange();
+  }
+
   // ---- Outbound ------------------------------------------------------------
 
   /**
@@ -514,6 +611,108 @@ export class WsClient {
    *  'request_expired'}` for the late-submission path. */
   sendExtensionUIResponse(payload: ExtensionUIResponsePayload): string {
     return this.sendPiCommand<ExtensionUIResponsePayload>('extension_ui_response', payload, null);
+  }
+
+  // ---- M4 control-family commands (tasks/m4/07) ----------------------------
+  //
+  // These five commands form the ChoicePage's outbound surface; the
+  // bridge handles each in its own `control/<type>` handler. Replies
+  // arrive as `control/result` with `reply_to` = outbound id — the
+  // central `case 'result':` handler updates `_workDirs`,
+  // `_sessionList`, and the transient result maps below.
+
+  /** Send `control/list_directories` — DirectoryBrowser navigation
+   *  command. `path` optional (缺省 = bridge 列 $HOME). Reply lands
+   *  as a `control/result` carrying `data = { entries: [{ name,
+   *  path }, …] }`; the result is cached in `listDirResults` keyed
+   *  by the returned id so the DirectoryBrowser can read it after
+   *  `await sendListDirectories()`. */
+  sendListDirectories(path?: string): string {
+    const id = this.makeId();
+    const payload: ListDirectoriesPayload = path !== undefined ? { path } : {};
+    this.sendRaw({
+      v: PROTOCOL_VERSION,
+      kind: 'control' as const,
+      type: 'list_directories' as const,
+      id,
+      payload,
+    });
+    return id;
+  }
+
+  /** Send `control/work_dir_list` — query the user's saved work
+   *  directory list. Reply populates `_workDirs` and is also cached
+   *  by id for callers that want to await a specific query (e.g.
+   *  ChoicePage refresh after add/remove). */
+  sendWorkDirList(): string {
+    const id = this.makeId();
+    const payload: WorkDirListPayload = {};
+    this.sendRaw({
+      v: PROTOCOL_VERSION,
+      kind: 'control' as const,
+      type: 'work_dir_list' as const,
+      id,
+      payload,
+    });
+    return id;
+  }
+
+  /** Send `control/work_dir_add` — add a path to the user's saved
+   *  list. Returns the outbound id so the DirectoryBrowser can
+   *  await the result and decide whether to advance to level=2.
+   *  The bridge performs the canonical M3 three-piece check
+   *  (exists + is directory + readable); failures land as
+   *  `result.ok = false` + `error.code` and surface via
+   *  `takeWorkDirResult(id)`. */
+  sendWorkDirAdd(path: string): string {
+    const id = this.makeId();
+    const payload: WorkDirAddPayload = { path };
+    this.sendRaw({
+      v: PROTOCOL_VERSION,
+      kind: 'control' as const,
+      type: 'work_dir_add' as const,
+      id,
+      payload,
+    });
+    return id;
+  }
+
+  /** Send `control/work_dir_remove` — remove a path from the saved
+   *  list. Per PRD §钉子 3 the bridge does NOT kill any active
+   *  PiProcessManager rooted in this directory; removal only makes
+   *  the directory unreachable from ChoicePage level=2. */
+  sendWorkDirRemove(path: string): string {
+    const id = this.makeId();
+    const payload: WorkDirRemovePayload = { path };
+    this.sendRaw({
+      v: PROTOCOL_VERSION,
+      kind: 'control' as const,
+      type: 'work_dir_remove' as const,
+      id,
+      payload,
+    });
+    return id;
+  }
+
+  /** Send `control/session_list` — query the session list for one
+   *  work directory (裁定 A 操作惯例 — `payload.work_dir` 必带).
+   *  `session: <work_dir>` envelope-field convention is NOT applied
+   *  here (task 07 scope per the brief — `ChoicePage 阶段命令为
+   *  control 族，session_list 带 payload.work_dir（裁定 A）`);
+   *  the per-session envelope field lands in task 08 when the
+   *  store buckets per-session. Reply populates `_sessionList`
+   *  (replaced wholesale on every reply). Returns the outbound id. */
+  sendSessionList(workDir: string): string {
+    const id = this.makeId();
+    const payload: SessionListPayload = { work_dir: workDir };
+    this.sendRaw({
+      v: PROTOCOL_VERSION,
+      kind: 'control' as const,
+      type: 'session_list' as const,
+      id,
+      payload,
+    });
+    return id;
   }
 
   // ---- Internals: socket lifecycle ----------------------------------------
@@ -662,16 +861,71 @@ export class WsClient {
         break;
       case 'result': {
         // `control/result` is the unified reply for session_list
-        // (M2) and get_state (M3). The only consumer shape we know
-        // is `SessionStatePayloadSchema` (the get_state reply: phase
-        // + blocked_on?). We revalidate `data` defensively and only
-        // mutate store state when the shape matches — other callers
-        // (session_list) carry a different `data` shape and are
-        // silently dropped. The decode is shared with the recovery
-        // ceremony via `tryDecodeGetStateData` so the schema lives
-        // in one place. Reply-to resolvers (the recovery ceremony)
-        // still fire regardless so the gate can mark itself ready /
-        // error based on the actual envelope.
+        // (M2), get_state (M3), and the four M4 work-dir /
+        // directory-browsing commands. Each command's reply carries
+        // a different `data` shape — we revalidate `data`
+        // defensively against each schema and only mutate store
+        // state when the shape matches; other callers are silently
+        // dropped at the type-narrowing step (the schema check
+        // fails). The decode for `get_state` is shared with the
+        // recovery ceremony via `tryDecodeGetStateData` so the
+        // schema lives in one place.
+        //
+        // M4 choice-page commands also cache their outcome in
+        // `workDirResults` (work_dir_list/add/remove success/failure
+        // surface) and `listDirResults` (list_directories entries),
+        // so the ChoicePage's DirectoryBrowser can await a specific
+        // outbound id without re-routing the whole store. Reply-to
+        // resolvers (the recovery ceremony) still fire regardless
+        // so the gate can mark itself ready / error based on the
+        // actual envelope.
+        const replyTo = envelope.reply_to;
+        // Dispatch by `data` shape — each schema is a one-shot
+        // narrowing that returns the parsed payload on success and
+        // `null` on mismatch. The four-way chain covers
+        // work_dir_list / list_directories / session_list;
+        // `work_dir_add` / `work_dir_remove` reply with no `data`
+        // (success) or `result.ok = false` (failure), which the
+        // generic fallback below handles.
+        const workDirList = tryDecodeWorkDirListResult(envelope);
+        const listDir = workDirList === null ? tryDecodeListDirectoriesResult(envelope) : null;
+        const sessions =
+          workDirList === null && listDir === null
+            ? tryDecodeSessionListResult(envelope)
+            : null;
+        if (workDirList !== null) {
+          this.setWorkDirs(workDirList.work_dirs);
+          if (replyTo !== undefined && replyTo.length > 0) {
+            this.workDirResults.set(replyTo, { ok: true });
+          }
+        } else if (listDir !== null) {
+          if (replyTo !== undefined && replyTo.length > 0) {
+            this.listDirResults.set(replyTo, { entries: listDir.entries });
+          }
+        } else if (sessions !== null) {
+          this.setSessionList(sessions.sessions);
+        } else if (
+          replyTo !== undefined &&
+          replyTo.length > 0 &&
+          // work_dir_add / work_dir_remove success carries no
+          // `data`; we cache the success so the DirectoryBrowser
+          // can advance. Failures carry `error.code` + `error.message`
+          // and land in the same cache with `ok: false`.
+          (envelope.payload.ok === false || envelope.payload.ok === true)
+        ) {
+          this.workDirResults.set(replyTo, {
+            ok: envelope.payload.ok,
+            ...(envelope.payload.ok === false && envelope.payload.error !== undefined
+              ? {
+                  error: {
+                    code: envelope.payload.error.code,
+                    message: envelope.payload.error.message,
+                  },
+                }
+              : {}),
+          });
+        }
+        // get_state reply — phase + blocked_on mirror (M3 §4.1)
         const state = tryDecodeGetStateData(envelope);
         if (state !== null) {
           this.setSessionPhase(state.phase);
@@ -1286,6 +1540,36 @@ export class WsClient {
     this.emitStateChange();
   }
 
+  // ---- M4 setters (tasks/m4/07) -------------------------------------------
+
+  /** Replace the in-memory `work_dirs` mirror with a fresh snapshot
+   *  from the bridge (reply of `work_dir_list`). Called from the
+   *  central `case 'result'` handler; the ChoicePage subscribes
+   *  via `useWorkDirs()`. Identity-stable guard: replacing with the
+   *  same array (length + element-wise equality) is a no-op so
+   *  React skips the re-render. */
+  private setWorkDirs(dirs: readonly string[]): void {
+    const current = this._workDirs;
+    if (
+      current.length === dirs.length &&
+      current.every((d, idx) => d === dirs[idx])
+    ) {
+      return;
+    }
+    this._workDirs = dirs.slice();
+    this.emitStateChange();
+  }
+
+  /** Replace the in-memory session list mirror with a fresh reply
+   *  from the bridge (reply of `session_list`). `null` is reserved
+   *  for "not yet queried" (so ChoicePage can render a loading
+   *  state); the bridge never sends `null` itself — it sends
+   *  `[]` for "no sessions". */
+  private setSessionList(entries: readonly SessionListEntry[]): void {
+    this._sessionList = entries.slice();
+    this.emitStateChange();
+  }
+
   private notifyDialogExpired(notice: DialogExpiredNotice): void {
     for (const listener of this.dialogExpiredListeners) {
       try {
@@ -1331,7 +1615,37 @@ export class WsClient {
     }
   }
 
-  // ---- Internals: id / nonce helpers --------------------------------------
+  // ---- M4 result consumers (tasks/m4/07) -----------------------------------
+
+  /** Consume a cached `list_directories` reply by outbound id.
+   *  Returns the entries array or `null` if no reply has arrived
+   *  yet. One-shot — the cache entry is removed after the read so a
+   *  second `takeListDirResult(id)` returns `null` (mirrors the
+   *  WsClient's one-shot reply-resolver pattern). The
+   *  DirectoryBrowser awaits the reply with a short-lived
+   *  `registerReplyResolver`-style polling loop on this surface;
+   *  task 08 will replace the manual await with a typed Promise
+   *  (out of scope here — the brief pins task 07 to the ChoicePage
+   *  + DirectoryBrowser + hash plumbing; full async command plumbing
+   *  is task 08). */
+  takeListDirResult(id: string): Array<{ name: string; path: string }> | null {
+    const cached = this.listDirResults.get(id);
+    if (cached === undefined) return null;
+    this.listDirResults.delete(id);
+    return cached.entries.slice();
+  }
+
+  /** Consume a cached `work_dir_list` / `work_dir_add` /
+   *  `work_dir_remove` outcome by outbound id. One-shot semantics
+   *  match `takeListDirResult`. Returns `{ ok: true }` on success
+   *  (no data shape), `{ ok: false, error: { code, message } }` on
+   *  failure. `null` if no reply has arrived yet. */
+  takeWorkDirResult(id: string): { ok: boolean; error?: { code: string; message: string } } | null {
+    const cached = this.workDirResults.get(id);
+    if (cached === undefined) return null;
+    this.workDirResults.delete(id);
+    return cached;
+  }
 
   private makeId(): string {
     return crypto.randomUUID();
@@ -1370,6 +1684,66 @@ export function tryDecodeGetStateData(envelope: EnvelopeType): SessionStatePaylo
   if (envelope.payload.ok !== true) return null;
   if (envelope.payload.data === undefined) return null;
   const validation = SessionStatePayloadSchema.safeParse(envelope.payload.data);
+  if (!validation.success) return null;
+  return validation.data;
+}
+
+// ---------------------------------------------------------------------------
+// M4 result-data decoders (tasks/m4/07)
+// ---------------------------------------------------------------------------
+//
+// Each decoder narrows `data` against one of the three result schemas
+// (`WorkDirListResult` / `ListDirectoriesResult` / `SessionListResult`)
+// introduced in M4 (control.md §6.6 / §6.5 / §7). The central
+// `case 'result'` handler in `handleControlFrame` chains them so a
+// single inbound reply maps to exactly one cache update. The order
+// is arbitrary — each decoder inspects only the envelope's `data`
+// field and returns `null` on shape mismatch; the next decoder gets a
+// fresh shot. The schemas live in `@remotepi/shared` (`work-dirs.ts` /
+// `session-list.ts`) so adding a new result-data shape there ripples
+// through automatically.
+
+/** Try to decode a `control/result` reply as a `work_dir_list`
+ *  payload (`data: { work_dirs: string[] }`). The WsClient's central
+ *  `case 'result'` handler feeds successful decodes into `setWorkDirs`. */
+export function tryDecodeWorkDirListResult(
+  envelope: EnvelopeType,
+): WorkDirListResult | null {
+  if (envelope.kind !== 'control' || envelope.type !== 'result') return null;
+  if (envelope.payload.ok !== true) return null;
+  if (envelope.payload.data === undefined) return null;
+  const validation = WorkDirListResultSchema.safeParse(envelope.payload.data);
+  if (!validation.success) return null;
+  return validation.data;
+}
+
+/** Try to decode a `control/result` reply as a `list_directories`
+ *  payload (`data: { entries: { name, path }[] }`). Successful
+ *  decodes populate the transient `listDirResults` cache keyed by
+ *  outbound id (the DirectoryBrowser awaits the reply via
+ *  `takeListDirResult(id)`). */
+export function tryDecodeListDirectoriesResult(
+  envelope: EnvelopeType,
+): ListDirectoriesResult | null {
+  if (envelope.kind !== 'control' || envelope.type !== 'result') return null;
+  if (envelope.payload.ok !== true) return null;
+  if (envelope.payload.data === undefined) return null;
+  const validation = ListDirectoriesResultSchema.safeParse(envelope.payload.data);
+  if (!validation.success) return null;
+  return validation.data;
+}
+
+/** Try to decode a `control/result` reply as a `session_list`
+ *  payload (`data: { sessions: SessionListEntry[] }`). Successful
+ *  decodes populate `_sessionList` (ChoicePage level=2 reads this
+ *  directly). The schema lives in `@remotepi/shared`/`session-list.ts`. */
+export function tryDecodeSessionListResult(
+  envelope: EnvelopeType,
+): SessionListResult | null {
+  if (envelope.kind !== 'control' || envelope.type !== 'result') return null;
+  if (envelope.payload.ok !== true) return null;
+  if (envelope.payload.data === undefined) return null;
+  const validation = SessionListResultSchema.safeParse(envelope.payload.data);
   if (!validation.success) return null;
   return validation.data;
 }

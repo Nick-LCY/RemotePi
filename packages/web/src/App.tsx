@@ -1,7 +1,10 @@
 // App root — owns:
 //   1. The single WsClient instance (memoized for StrictMode safety).
-//   2. The hash → token derivation. URL convention is `#<token>`; when no
-//      token is present we render the TokenPrompt, otherwise the live UI.
+//   2. The hash → three-field derivation (`token` + `work_dir` +
+//      `session`, M4 钉子 1). URL convention is
+//      `#<token>&work_dir=<encoded>&session=<key|new>`; missing
+//      fields are tolerated (`#<token>` is the M3 legacy shape and
+//      is treated as "no work_dir, no session" → level=1).
 //   3. The connect/disconnect lifecycle tied to token presence.
 //   4. The M3 dual-query recovery gate between token-present and the
 //      chat surface (task 07 — PRD §4.4).
@@ -9,13 +12,15 @@
 //      合体）：RecoveryInFlight 三态文案 + RecoveryErrorCard 4 类错误
 //      文案（新增 `bridge_offline`） + auto-start 补 bridgeStatus
 //      offline 守门。bridge / worker 零改动。
+//   6. M4 task 07 — ChoicePage 三态分派（钉子 6 决策表）：no token
+//      → TokenPrompt; token + no work_dir → ChoicePage level=1;
+//      token + work_dir + no session → ChoicePage level=2;
+//      token + work_dir + session → RecoveryView/ChatView.
 //
-// The URL hash is the single source of truth for the token. The TokenPrompt
-// writes `window.location.hash` and triggers a `hashchange` event which
-// re-derives `token`. On token change we call `client.connect(newToken)`,
-// which internally closes the existing socket and opens a fresh one — so
-// swapping tokens (or pasting a wrong one and then the right one) Just
-// Works without leaking two parallel sockets.
+// The URL hash is the single source of truth. The TokenPrompt /
+// ChoicePage / DirectoryBrowser all write `window.location.hash` and
+// the `hashchange` listener re-derives the three-field model via
+// `readAuthFromHash()`. `decideView()` then picks the render branch.
 //
 // M3 routing (task 06 + task 07):
 //   - token absent → TokenPrompt.
@@ -28,6 +33,16 @@
 //     dual queries. F5 takes the same path — a fresh mount
 //     builds a fresh gate, runs the ceremony once, and only
 //     renders ChatView on success.
+//
+// M4 three-state dispatch (task 07 / PRD §4.2 / 钉子 6):
+//   - no token → TokenPrompt (M3 path, preserved)
+//   - token + no work_dir → ChoicePage level=1 (work_dirs list +
+//     DirectoryBrowser entry point)
+//   - token + work_dir + no session → ChoicePage level=2
+//     (session list + "新建会话" button + "更换目录" button)
+//   - token + work_dir + session → RecoveryView → ChatView
+//     (`session: 'new'` falls through here; task 08 wires the
+//     pending-state stem refilling).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncExternalStore } from 'react';
@@ -35,9 +50,11 @@ import { useSyncExternalStore } from 'react';
 import type { SessionPhase } from '@remotepi/shared';
 
 import { ChatView } from './components/ChatView.js';
+import { ChoicePage } from './components/ChoicePage.js';
 import { StatusBar } from './components/StatusBar.js';
 import { TokenPrompt } from './components/TokenPrompt.js';
 import { errorHint } from './components/error-hint.js';
+import { decideView, readAuthFromHash, type AuthFromHash } from './hash.js';
 import { WsClient, type ConnState } from './ws/WsClient.js';
 import { useBridgeStatus, useConnState, useSessionPhase, useWsClient, WsClientProvider } from './ws/WsClientContext.js';
 import { initiateRecovery, type RecoveryError, type RecoveryGate } from './ws/recovery.js';
@@ -45,47 +62,64 @@ import { resolveWssUrl } from './ws/config.js';
 
 export { errorHint };
 
-function readTokenFromHash(): string | null {
-  const raw = window.location.hash;
-  if (!raw) return null;
-  // Strip the leading '#' and any whitespace the user might have pasted.
-  const stripped = raw.startsWith('#') ? raw.slice(1) : raw;
-  const token = stripped.trim();
-  return token.length > 0 ? token : null;
+/** Read the three-field hash model (`token` + `work_dir` + `session`)
+ *  via the M4 parser. App.tsx calls this on every `hashchange` (and
+ *  on first mount) so the render dispatch can pick the right branch
+ *  per 钉子 6 决策表. The M3 single-token `readTokenFromHash()`
+ *  helper is removed — `readAuthFromHash()` covers its job (token
+ *  first, no key) and the new `decideView()` maps the model onto the
+ *  render branches. */
+function readAuth(): AuthFromHash {
+  return readAuthFromHash(window.location.hash);
 }
 
 export function App() {
-  const [token, setToken] = useState<string | null>(() => readTokenFromHash());
-
-  // Hash is the source of truth — listen for both programmatic writes
-  // (TokenPrompt submitting) and back/forward navigation. The listener is
-  // stable and only depends on `setToken`, which is itself stable.
-  useEffect(() => {
-    const onHashChange = () => setToken(readTokenFromHash());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
+  const [auth, setAuth] = useState<AuthFromHash>(() => readAuth());
 
   // One WsClient per mount. Memoized so React StrictMode's double-invoke
   // in dev returns the same instance and we don't end up with two parallel
   // sockets during the probe render.
   const client = useMemo(() => new WsClient(resolveWssUrl()), []);
 
+  // Hash is the single source of truth — listen for both programmatic
+  // writes (TokenPrompt / ChoicePage / DirectoryBrowser) and
+  // back/forward navigation. The listener is stable and only depends
+  // on `setAuth`, which is itself stable. We also mirror the parsed
+  // `work_dir` into the WsClient store so the ChoicePage's outbound
+  // commands (session_list + future pi commands) can read it off the
+  // store without re-parsing the URL.
+  useEffect(() => {
+    const onHashChange = () => {
+      const next = readAuth();
+      setAuth(next);
+      client.setCurrentWorkDir(next.workDir);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    // Mirror the initial work_dir into the store so the ChoicePage's
+    // outbound commands can read it without re-parsing the hash.
+    client.setCurrentWorkDir(auth.workDir);
+    return () => window.removeEventListener('hashchange', onHashChange);
+    // client is stable for the lifetime of the component (memoized
+    // above); auth.workDir triggers a mirror update when the hash changes.
+  }, [auth.workDir, client]);
+
   // Drive connect/disconnect from token presence. Cleanup also disconnects
   // so StrictMode's mount → unmount → mount cycle doesn't leak an orphan
   // socket between the two mounts.
   useEffect(() => {
-    if (token) {
-      client.connect(token);
+    if (auth.token) {
+      client.connect(auth.token);
     } else {
       client.disconnect();
     }
     return () => {
       client.disconnect();
     };
-  }, [client, token]);
+  }, [client, auth.token]);
 
-  if (!token) {
+  const view = decideView(auth);
+
+  if (view === 'tokenPrompt') {
     return (
       <WsClientProvider client={client}>
         <TokenPrompt />
@@ -93,18 +127,43 @@ export function App() {
     );
   }
 
-  // Token present → render the M3 chat surface via the dual-query
-  // recovery gate (task 07). The gate is created once per mount and
-  // torn down on unmount; its lifecycle is independent of the
-  // WsClient's connection state (reconnects are WsClient-internal;
+  if (view === 'choiceLevel1') {
+    return (
+      <WsClientProvider client={client}>
+        <main className="app-shell">
+          <h1>RemotePi</h1>
+          <StatusBar />
+          <ChoicePage level={1} token={auth.token!} />
+        </main>
+      </WsClientProvider>
+    );
+  }
+
+  if (view === 'choiceLevel2') {
+    return (
+      <WsClientProvider client={client}>
+        <main className="app-shell">
+          <h1>RemotePi</h1>
+          <StatusBar />
+          <ChoicePage level={2} token={auth.token!} workDir={auth.workDir!} />
+        </main>
+      </WsClientProvider>
+    );
+  }
+
+  // Token + work_dir + session → render the M3 chat surface via the
+  // dual-query recovery gate (task 07). The gate is created once per
+  // mount and torn down on unmount; its lifecycle is independent of
+  // the WsClient's connection state (reconnects are WsClient-internal;
   // a mid-recovery drop shows up as a `both_failed` after the
-  // 5s timer fires, and the user can retry).
+  // 5s timer fires, and the user can retry). The token is non-null at
+  // this branch (`decideView` already proved it).
   return (
     <WsClientProvider client={client}>
       <main className="app-shell">
         <h1>RemotePi</h1>
         <StatusBar />
-        <RecoveryShell token={token} />
+        <RecoveryShell token={auth.token!} />
       </main>
     </WsClientProvider>
   );

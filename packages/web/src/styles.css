@@ -689,3 +689,248 @@ td code {
   white-space: nowrap;
   border: 0;
 }
+
+/* ---- ChoicePage (M4 tasks/m4/07) --------------------------------------- */
+
+.choice-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.choice-page-hint {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.choice-page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.choice-page-header > h2 {
+  flex: 1 1 auto;
+}
+
+.choice-page-current-work-dir {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--muted);
+  flex-basis: 100%;
+}
+
+.choice-page-header-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.choice-page-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.choice-page-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.choice-page-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  padding: 0.4rem 0.55rem;
+}
+
+.choice-page-row-button {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  padding: 0.2rem 0.3rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.choice-page-row-button:hover {
+  background: rgba(44, 92, 255, 0.06);
+}
+
+.choice-page-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.choice-page-row-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.choice-page-row-status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  color: white;
+  background: var(--state-connecting);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.choice-page-row-status.status-running {
+  background: #e69138;
+}
+
+.choice-page-row-status.status-idle {
+  background: var(--state-online);
+}
+
+.choice-page-row-status.status-spawning {
+  background: var(--state-connecting);
+}
+
+.choice-page-row-status.status-exited {
+  background: var(--state-offline);
+}
+
+.choice-page-row-status.status-unknown {
+  background: var(--muted);
+}
+
+.choice-page-row-first {
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+
+.choice-page-row-remove {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+  font-size: 0.85rem;
+  padding: 0.35rem 0.7rem;
+}
+
+.choice-page-error {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--state-offline);
+  background: rgba(192, 57, 43, 0.08);
+  border-radius: 6px;
+}
+
+.choice-page-empty,
+.choice-page-loading {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+/* ---- DirectoryBrowser (M4 tasks/m4/07) ---------------------------------- */
+
+.directory-browser {
+  border-style: dashed;
+}
+
+.directory-browser-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.directory-browser-header > h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.directory-browser-path {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.directory-browser-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.directory-browser-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.directory-browser-entry {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.directory-browser-entry-name {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.directory-browser-entry-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.directory-browser-entry-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.directory-browser-entry-actions button {
+  font-size: 0.82rem;
+  padding: 0.3rem 0.65rem;
+}
+
+.directory-browser-entry-actions button[data-testid='dir-entry-open'] {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.directory-browser-error {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--state-offline);
+  background: rgba(192, 57, 43, 0.08);
+  border-radius: 6px;
+}
+
+.directory-browser-loading,
+.directory-browser-empty {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--muted);
+}

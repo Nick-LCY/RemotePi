@@ -13,7 +13,7 @@
 
 import { useCallback, useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import { createContext } from 'react';
-import type { BlockedOnEntryPayload, SessionPhase } from '@remotepi/shared';
+import type { BlockedOnEntryPayload, SessionListEntry, SessionPhase } from '@remotepi/shared';
 
 import {
   WsClient,
@@ -116,6 +116,30 @@ export function useStreamingDraft(): StreamingDraft | null {
 /** Authoritative message list (history). */
 export function useMessages(): readonly unknown[] {
   return useWsState((c) => c.messages);
+}
+
+// ---- M4 choice-page hooks (tasks/m4/07) ------------------------------------
+
+/** User-saved work directories — mirror of `bridge/state.json`
+ *  `work_dirs[]`. Empty array until the first `work_dir_list` reply
+ *  lands (ChoicePage level=1 fires the initial query on mount). */
+export function useWorkDirs(): readonly string[] {
+  return useWsState((c) => c.workDirs);
+}
+
+/** Current URL hash `work_dir` (钉子 1). Mirrors the hash so the
+ *  ChoicePage's outbound commands can read it off the store instead
+ *  of re-parsing the URL. `null` when the hash has no `work_dir`. */
+export function useCurrentWorkDir(): string | null {
+  return useWsState((c) => c.currentWorkDir);
+}
+
+/** Sessions under the current `work_dir` (ChoicePage level=2 list).
+ *  `null` until the first `session_list` reply arrives (so the
+ *  ChoicePage can show a loading state vs an empty list). The
+ *  array is replaced wholesale on every reply. */
+export function useSessionList(): readonly SessionListEntry[] | null {
+  return useWsState((c) => c.sessionList);
 }
 
 /** Subscribe to dialog-expired notices (command_result with
