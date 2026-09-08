@@ -201,7 +201,7 @@ export function DialogHost() {
   // sibling — it lives in the same overlay container so it's
   // visible above the chat surface and below the dialog stack.
   return (
-    <div className="dialog-host" aria-label="Pending dialogs">
+    <div className="dialog-host" aria-label="Pending dialogs" data-testid="dialog-host">
       {entries.map((entry) => {
         const state = local.get(entry.id) ?? {
           status: 'open',
@@ -227,7 +227,7 @@ export function DialogHost() {
         );
       })}
       {timeoutToast !== null ? (
-        <div className="dialog-host-toast" role="status" aria-live="polite">
+        <div className="dialog-host-toast" role="status" aria-live="polite" data-testid="dialog-toast">
           {timeoutToast}
         </div>
       ) : null}

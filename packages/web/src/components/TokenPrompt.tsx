@@ -40,13 +40,14 @@ export function TokenPrompt() {
         <input
           id="token-input"
           type="password"
+          data-testid="token-input"
           autoComplete="off"
           spellCheck={false}
           placeholder="paste token"
           value={value}
           onChange={(e) => setValue(e.target.value)}
         />
-        <button type="submit" disabled={value.trim().length === 0}>
+        <button type="submit" data-testid="token-submit" disabled={value.trim().length === 0}>
           Connect
         </button>
       </form>

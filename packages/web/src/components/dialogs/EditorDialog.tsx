@@ -60,18 +60,24 @@ export function EditorDialog({
   const submitDisabled = pending || errorMessage !== null;
 
   return (
-    <dialog className="dialog dialog-editor" open aria-labelledby={`editor-title-${entry.id}`}>
+    <dialog
+      className="dialog dialog-editor"
+      open
+      aria-labelledby={`editor-title-${entry.id}`}
+      data-testid="dialog-editor"
+    >
       {/* Editor never carries a timeout — the prop is undefined and
           DialogHeader renders the title-only variant. */}
       <DialogHeader id={`editor-title-${entry.id}`} title={entry.title} onTimeout={onTimeout} />
       {errorMessage !== null ? (
-        <p className="dialog-error" role="alert">
+        <p className="dialog-error" role="alert" data-testid="dialog-error">
           {errorMessage}
         </p>
       ) : null}
       <form onSubmit={handleSubmit} className="dialog-body">
         <textarea
           className="dialog-editor-field"
+          data-testid="dialog-editor-field"
           value={value}
           onChange={handleChange}
           rows={10}

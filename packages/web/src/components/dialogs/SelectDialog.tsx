@@ -73,7 +73,12 @@ export function SelectDialog({
   };
 
   return (
-    <dialog className="dialog dialog-select" open aria-labelledby={`select-title-${entry.id}`}>
+    <dialog
+      className="dialog dialog-select"
+      open
+      aria-labelledby={`select-title-${entry.id}`}
+      data-testid="dialog-select"
+    >
       <DialogHeader
         id={`select-title-${entry.id}`}
         title={entry.title}
@@ -81,7 +86,7 @@ export function SelectDialog({
         onTimeout={onTimeout}
       />
       {errorMessage !== null ? (
-        <p className="dialog-error" role="alert">
+        <p className="dialog-error" role="alert" data-testid="dialog-error">
           {errorMessage}
         </p>
       ) : null}
@@ -91,7 +96,12 @@ export function SelectDialog({
           {entry.options.map((option, idx) => {
             const id = `select-${entry.id}-${idx}`;
             return (
-              <label key={option} htmlFor={id} className="dialog-select-option">
+              <label
+                key={option}
+                htmlFor={id}
+                className="dialog-select-option"
+                data-testid="dialog-select-option"
+              >
                 <input
                   id={id}
                   type="radio"
@@ -169,13 +179,19 @@ export interface DialogFooterProps {
 export function DialogFooter({ onCancel, submitLabel, submitDisabled }: DialogFooterProps) {
   return (
     <div className="dialog-footer">
-      <button type="button" onClick={onCancel} className="dialog-button dialog-button-cancel">
+      <button
+        type="button"
+        onClick={onCancel}
+        className="dialog-button dialog-button-cancel"
+        data-testid="dialog-cancel"
+      >
         Cancel
       </button>
       <button
         type="submit"
         disabled={submitDisabled}
         className="dialog-button dialog-button-submit"
+        data-testid="dialog-confirm-yes"
       >
         {submitLabel}
       </button>

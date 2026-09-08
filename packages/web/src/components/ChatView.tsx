@@ -130,15 +130,16 @@ function MessageList() {
   }, [messages, draft]);
 
   return (
-    <section className="card message-list" aria-label="Conversation">
+    <section className="card message-list" aria-label="Conversation" data-testid="message-list">
       {items.length === 0 ? (
-        <p className="empty">No messages yet — send a prompt to start.</p>
+        <p className="empty" data-testid="message-list-empty">No messages yet — send a prompt to start.</p>
       ) : (
         <ol className="message-list-items">
           {items.map((item) => (
             <li
               key={item.key}
               className={`message-row message-role-${item.role}${item.isDraft ? ' message-draft' : ''}`}
+              data-testid={item.isDraft ? 'message-draft' : 'message-row'}
             >
               <div className="message-role">{item.role}</div>
               <div className="message-body">
@@ -304,14 +305,21 @@ function QueueIndicator() {
   const total = queue.steering.length + queue.followUp.length;
   if (total === 0) return null;
   return (
-    <div className="queue-indicator" role="status" aria-live="polite">
+    <div className="queue-indicator" role="status" aria-live="polite" data-testid="queue-indicator">
       <span
         className="queue-pill"
         title="Messages currently steering the running turn (mid-run inserts)"
+        data-testid="queue-indicator-steering"
+        data-count={queue.steering.length}
       >
         steering: <strong>{queue.steering.length}</strong>
       </span>
-      <span className="queue-pill" title="Messages queued for after the current turn settles">
+      <span
+        className="queue-pill"
+        title="Messages queued for after the current turn settles"
+        data-testid="queue-indicator-follow-up"
+        data-count={queue.followUp.length}
+      >
         follow-up: <strong>{queue.followUp.length}</strong>
       </span>
     </div>
@@ -472,6 +480,7 @@ function InputBar() {
     <form className="input-bar" onSubmit={onSubmit} aria-label="Send a prompt">
       <input
         className="input-bar-field"
+        data-testid="input-field"
         type="text"
         placeholder={
           inputDisabled
@@ -488,11 +497,12 @@ function InputBar() {
         autoComplete="off"
         spellCheck={false}
       />
-      <button type="submit" disabled={inputDisabled || value.trim().length === 0}>
+      <button type="submit" data-testid="input-send" disabled={inputDisabled || value.trim().length === 0}>
         Send
       </button>
       <button
         type="button"
+        data-testid="input-abort"
         className={abortLive ? 'abort-button abort-live' : 'abort-button'}
         onClick={onAbort}
         disabled={!abortLive}
@@ -510,7 +520,7 @@ function InputBar() {
         <p className="input-bar-hint">agent settled — 5 minutes until auto-shutdown</p>
       ) : null}
       {commandError !== null ? (
-        <p className="input-bar-error" role="alert">
+        <p className="input-bar-error" role="alert" data-testid="input-error">
           {commandError}
         </p>
       ) : null}

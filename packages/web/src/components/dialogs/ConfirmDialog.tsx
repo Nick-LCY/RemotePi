@@ -59,7 +59,12 @@ export function ConfirmDialog({
   const buttonsDisabled = pending || errorMessage !== null;
 
   return (
-    <dialog className="dialog dialog-confirm" open aria-labelledby={`confirm-title-${entry.id}`}>
+    <dialog
+      className="dialog dialog-confirm"
+      open
+      aria-labelledby={`confirm-title-${entry.id}`}
+      data-testid="dialog-confirm"
+    >
       <DialogHeader
         id={`confirm-title-${entry.id}`}
         title={entry.title}
@@ -67,7 +72,7 @@ export function ConfirmDialog({
         onTimeout={onTimeout}
       />
       {errorMessage !== null ? (
-        <p className="dialog-error" role="alert">
+        <p className="dialog-error" role="alert" data-testid="dialog-error">
           {errorMessage}
         </p>
       ) : null}
@@ -79,6 +84,7 @@ export function ConfirmDialog({
             onClick={handleCancel}
             disabled={pending}
             className="dialog-button dialog-button-cancel"
+            data-testid="dialog-cancel"
           >
             Cancel
           </button>
@@ -87,6 +93,7 @@ export function ConfirmDialog({
             onClick={handleDecline}
             disabled={buttonsDisabled}
             className="dialog-button dialog-button-decline"
+            data-testid="dialog-decline"
           >
             No
           </button>
@@ -95,6 +102,7 @@ export function ConfirmDialog({
             onClick={handleConfirm}
             disabled={buttonsDisabled}
             className="dialog-button dialog-button-submit"
+            data-testid="dialog-confirm-yes"
           >
             Yes
           </button>

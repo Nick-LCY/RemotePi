@@ -233,7 +233,12 @@ function RecoveryView({ gate, token }: { gate: RecoveryGate; token: string }) {
 
 function RecoveryInFlight({ connState }: { connState: ConnState }) {
   return (
-    <section className="card recovery-in-flight" aria-busy="true" aria-live="polite">
+    <section
+      className="card recovery-in-flight"
+      aria-busy="true"
+      aria-live="polite"
+      data-testid="recovery-in-flight"
+    >
       <h2>恢复中…</h2>
       <p>
         正在拉取会话状态与历史消息（5 秒超时）。
@@ -252,10 +257,10 @@ function RecoveryInFlight({ connState }: { connState: ConnState }) {
 
 function RecoveryErrorCard({ error, onRetry }: { error: RecoveryError; onRetry: () => void }) {
   return (
-    <section className="card recovery-error" role="alert" data-error={error}>
+    <section className="card recovery-error" role="alert" data-error={error} data-testid="recovery-error">
       <h2>恢复失败</h2>
       <p>{errorHint(error)}</p>
-      <button type="button" onClick={onRetry}>
+      <button type="button" onClick={onRetry} data-testid="recovery-retry">
         重试
       </button>
     </section>

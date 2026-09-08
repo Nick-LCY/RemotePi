@@ -23,7 +23,7 @@ export function StatusBar() {
   const bridge = useBridgeStatus();
 
   return (
-    <header className="status-bar" aria-label="Connection status">
+    <header className="status-bar" aria-label="Connection status" data-testid="bridge-status">
       <span className={`badge badge-${state}`} data-state={state}>
         {STATE_LABEL[state]}
       </span>

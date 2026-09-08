@@ -50,7 +50,12 @@ export function InputDialog({
   const submitDisabled = pending || errorMessage !== null;
 
   return (
-    <dialog className="dialog dialog-input" open aria-labelledby={`input-title-${entry.id}`}>
+    <dialog
+      className="dialog dialog-input"
+      open
+      aria-labelledby={`input-title-${entry.id}`}
+      data-testid="dialog-input"
+    >
       <DialogHeader
         id={`input-title-${entry.id}`}
         title={entry.title}
@@ -58,7 +63,7 @@ export function InputDialog({
         onTimeout={onTimeout}
       />
       {errorMessage !== null ? (
-        <p className="dialog-error" role="alert">
+        <p className="dialog-error" role="alert" data-testid="dialog-error">
           {errorMessage}
         </p>
       ) : null}
@@ -66,6 +71,7 @@ export function InputDialog({
         <input
           type="text"
           className="dialog-input-field"
+          data-testid="dialog-input-field"
           value={value}
           onChange={handleChange}
           placeholder={entry.placeholder ?? ''}
