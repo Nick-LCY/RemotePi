@@ -384,4 +384,141 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
       expect(result.success, `kind=pi, type=${type} must fail`).toBe(false);
     }
   });
+
+  // ----- M4 envelope (a) extension: `prompt.payload.work_dir?` (cases 20–22) -----
+  //
+  // ADR-0010 §决策.2 + pi.ts JSDoc on `PromptPayloadSchema`: the M4 unlock
+  // adds `work_dir?` to the `prompt` payload so the bridge knows which
+  // directory to spawn under when the web emits a `session: 'new'` prompt.
+  // The schema is intentionally additive-only (no lock bump) and the
+  // "session:'new' only" rule is a bridge-side convention — the schema
+  // does NOT enforce the `session` correlation. See PRD §裁定 A 方案 A.
+  //
+  // Note: payload-shape-only checks live in `work-dirs.test.ts` cases 18 /
+  // 19. Cases 20 / 21 here focus on the envelope-level round-trip and the
+  // comment-mandated semantics, plus a steer / follow_up contrast (case 22)
+  // to pin down that the `work_dir?` field is unique to `prompt`.
+
+  it('20. accepts a `prompt` envelope with `work_dir` omitted (default empty under envelope evolution rule (a))', () => {
+    // Envelope evolution rule (a) — absence is equivalent to the default
+    // empty value. M3 single-session mode never set `work_dir`; absence
+    // is the wire-compatible form that M4 sends whenever the prompt is
+    // targeting an existing session (not `session: 'new'`).
+    const result = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'pi-020',
+      payload: { content: 'continue the conversation' },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const env = narrow<PromptEnvelope>(result.data, 'prompt');
+    expect(env.payload.content).toBe('continue the conversation');
+    expect(env.payload.work_dir).toBeUndefined();
+  });
+
+  it('21. accepts a `prompt` envelope with `work_dir` set (the `session:"new"` path — schema does NOT enforce correlation)', () => {
+    // Wire contract (ADR-0010 §决策.2 + pi.ts JSDoc): `work_dir` MAY only
+    // be carried by prompts whose envelope `session === 'new'`. The
+    // shared schema enforces ONLY the optional-side of the contract
+    // (presence is allowed; absence is allowed). The "new only" rule is
+    // a bridge-side convention that the web is responsible for
+    // honouring — the schema deliberately stays silent on it so the
+    // schema stays small and forward-compatible.
+    //
+    // We assert presence-legality below by emitting the canonical M4
+    // `session: 'new'` frame and confirming the schema round-trips it.
+    const result = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'pi-021',
+      session: 'new',
+      payload: {
+        content: 'start a new session here',
+        work_dir: '/home/user/proj-new',
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const env = narrow<PromptEnvelope>(result.data, 'prompt');
+    expect(env.session).toBe('new');
+    expect(env.payload.work_dir).toBe('/home/user/proj-new');
+    expect(env.payload.content).toBe('start a new session here');
+
+    // Comment-mandated semantics check: the schema does NOT reject
+    // `work_dir` on a non-`new` session. A future bridge hardening pass
+    // could add that gate, but the schema intentionally stays silent.
+    // We assert the actual permissive behaviour here so a future
+    // tightening is a deliberate wire-breaking change, not a silent
+    // drift.
+    const nonNewWithWorkDir = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'pi-021-bypass',
+      session: 'sess-real-stem',
+      payload: {
+        content: 'carry on',
+        work_dir: '/home/user/proj-ignored-by-bridge',
+      },
+    });
+    expect(
+      nonNewWithWorkDir.success,
+      'schema does NOT enforce the session correlation — bridge discards work_dir on non-new',
+    ).toBe(true);
+  });
+
+  it('22. accepts a `steer` / `follow_up` envelope with `work_dir` silently stripped (only `prompt` carries it)', () => {
+    // Comment-mandated semantics check: only the `prompt` payload
+    // declares `work_dir?` (per pi.ts JSDoc). `steer` and `follow_up`
+    // are mid-run inserts that already target an existing session —
+    // the bridge translates `content` → `message` at the bridge→pi
+    // boundary (see `translateToPiWire`). Adding `work_dir` to those
+    // payloads has no wire effect because their schemas do not declare
+    // the field; zod's default policy silently strips it.
+    //
+    // This test pins that contract: an accidental future addition of
+    // `work_dir?` to `SteerPayloadSchema` / `FollowUpPayloadSchema`
+    // would surface as a `payload.work_dir !== undefined` failure
+    // below, not as a silent drift.
+    for (const type of ['steer', 'follow_up'] as const) {
+      // Build the candidate input as `Record<string, unknown>` so the
+      // extra `work_dir` doesn't trip the type checker — the type-level
+      // signature of `SteerPayload` / `FollowUpPayload` deliberately
+      // does not declare `work_dir` (that's the whole point of this
+      // test). The extra key would be stripped by zod's default policy
+      // at parse time; this test pins that contract.
+      const candidatePayload: Record<string, unknown> = {
+        content: 'do this instead',
+        work_dir: '/home/user/proj-irrelevant',
+      };
+      const result = parseEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type,
+        id: `pi-022-${type}`,
+        payload: candidatePayload,
+      });
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+
+      // The stripped payload must NOT carry `work_dir` on the parsed
+      // result. If a future schema adds the field, this assertion
+      // becomes the gate for that wire change. We cast through unknown
+      // because the per-type payload types (SteerPayload /
+      // FollowUpPayload) do NOT declare `work_dir` — that's the
+      // invariant under test.
+      const parsed = result.data as unknown as {
+        type: string;
+        payload: Record<string, unknown>;
+      };
+      expect(
+        parsed.payload.work_dir,
+        `\`${type}\` payload must not carry work_dir after parse (zod strips unknown keys)`,
+      ).toBeUndefined();
+      expect(parsed.payload.content).toBe('do this instead');
+    }
+  });
 });

@@ -29,10 +29,7 @@
 // the per-payload spot checks). Mirrors the M2 envelope.test.ts pattern.
 
 import { describe, expect, it } from 'vitest';
-import {
-  BLOCK_ON_METHODS,
-  BlockedOnEntryPayloadSchema,
-} from '../block-on.js';
+import { BLOCK_ON_METHODS, BlockedOnEntryPayloadSchema } from '../block-on.js';
 import { SessionStatePayloadSchema } from '../control.js';
 import { Envelope, PROTOCOL_VERSION, SESSION_PHASES } from '../envelope.js';
 import type { SessionStateEnvelope } from '../control.js';
@@ -147,9 +144,7 @@ describe('SessionState envelopes (M3 PRD §6.1 — 11 cases)', () => {
     expect(env.payload.blocked_on).toBeUndefined();
 
     // Schema-level spot check — same outcome.
-    expect(SessionStatePayloadSchema.safeParse({ phase: 'ready' }).success).toBe(
-      true,
-    );
+    expect(SessionStatePayloadSchema.safeParse({ phase: 'ready' }).success).toBe(true);
   });
 
   it('7. accepts a `session_state` envelope with an explicit empty `blocked_on: []`', () => {
@@ -207,9 +202,7 @@ describe('SessionState envelopes (M3 PRD §6.1 — 11 cases)', () => {
     // And every method in BLOCK_ON_METHODS is represented at least once.
     const methods = new Set(blocked_on.map((e) => e.method));
     for (const method of BLOCK_ON_METHODS) {
-      expect(methods.has(method), `method=${method} missing from sweep`).toBe(
-        true,
-      );
+      expect(methods.has(method), `method=${method} missing from sweep`).toBe(true);
     }
   });
 
@@ -242,9 +235,7 @@ describe('SessionState envelopes (M3 PRD §6.1 — 11 cases)', () => {
       id: 'ss-010',
       payload: {
         phase: 'running',
-        blocked_on: [
-          { method: 'notify', id: 'ff-1', title: 'should-not-enter-queue' },
-        ],
+        blocked_on: [{ method: 'notify', id: 'ff-1', title: 'should-not-enter-queue' }],
       },
     });
     expect(result.success).toBe(false);
@@ -262,9 +253,80 @@ describe('SessionState envelopes (M3 PRD §6.1 — 11 cases)', () => {
     expect(result.success).toBe(false);
 
     // Schema-level spot check — same outcome.
-    expect(SessionStatePayloadSchema.safeParse({ phase: 'foo' }).success).toBe(
-      false,
-    );
+    expect(SessionStatePayloadSchema.safeParse({ phase: 'foo' }).success).toBe(false);
+  });
+});
+
+// ----- M4 envelope (a) extension: `payload.work_dir?` (cases 12–14) -----
+//
+// ADR-0010 §决策.2 adds `work_dir?` to `session_state.payload` as an
+// additive optional field — every broadcast carries its session's
+// work_dir so the web ChoicePage (任务 07) can render work_dir per row
+// without an extra `session_list` query. Absence is legal (M3 single-
+// session mode never set it; M4 broadcasts that have not yet learned a
+// work_dir are still honoured). Presence must round-trip verbatim.
+//
+// The schema is intentionally additive-only — no lock bump.
+
+describe('SessionState envelopes (M4 work_dir envelope (a) extension — 3 cases)', () => {
+  it('12. accepts a `session_state` envelope that omits `work_dir` (M3 compatibility)', () => {
+    // M3 single-session mode never set `work_dir`. Absence is the
+    // "default empty" form under envelope evolution rule (a) and must
+    // parse through both the envelope and the payload schema.
+    const result = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'session_state',
+      id: 'ss-012',
+      payload: { phase: 'ready' },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const env = narrow<SessionStateEnvelope>(result.data, 'session_state');
+    expect(env.payload.phase).toBe('ready');
+    expect(env.payload.work_dir).toBeUndefined();
+
+    // Schema-level spot check — same outcome.
+    expect(SessionStatePayloadSchema.safeParse({ phase: 'ready' }).success).toBe(true);
+  });
+
+  it('13. accepts a `session_state` envelope with explicit `work_dir` (M4 multi-session mode)', () => {
+    // M4 broadcasts always carry their session's work_dir so the web
+    // `ChoicePage level=2` can render work_dir per row without an extra
+    // `session_list` query. Presence must round-trip verbatim.
+    const result = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'session_state',
+      id: 'ss-013',
+      payload: { phase: 'running', work_dir: '/home/user/proj' },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const env = narrow<SessionStateEnvelope>(result.data, 'session_state');
+    expect(env.payload.phase).toBe('running');
+    expect(env.payload.work_dir).toBe('/home/user/proj');
+
+    // Schema-level spot check — same outcome in isolation.
+    expect(
+      SessionStatePayloadSchema.safeParse({
+        phase: 'running',
+        work_dir: '/home/user/proj',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('14. rejects a `session_state` envelope whose `work_dir` is not a string', () => {
+    // Optional but typed — non-string values trip the type guard. The
+    // `phase` field is also required (existing behaviour), so a bare
+    // `{ phase: 'ready', work_dir: <bad> }` must be refused.
+    for (const work_dir of [42, true, { absolute: true }, null]) {
+      const result = SessionStatePayloadSchema.safeParse({
+        phase: 'ready',
+        work_dir,
+      });
+      expect(result.success, `work_dir=${JSON.stringify(work_dir)} should be rejected`).toBe(false);
+    }
   });
 });
 

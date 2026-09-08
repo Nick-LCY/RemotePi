@@ -508,6 +508,167 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
   });
 });
 
+// ----- M4 lock-version guard (cases 20–21) -----
+//
+// The M4 unlock touches 4 control types and 3 envelope (a) fields but
+// MUST NOT change the lock-version surface: the envelope `session`
+// field must remain optional, and M2 envelope-level guard cases (12
+// for `type` validity, 13 for `kind: pi` rejection, 14 for `kind`
+// gating, 15 for `id: min(1)`) must continue to pass unchanged.
+//
+// Cases 20 / 21 lock the `session` lockdown contract. Case 16 already
+// proves `session` is optional for a control `handshake`; cases 20 / 21
+// sweep one M3 + one M4 envelope variant to confirm the M4 unlock did
+// not silently make `session` required on any family member.
+
+describe('Envelope session lock-version guard (M4 PRD §9.1 — 2 cases)', () => {
+  it('20. M3 `session_list` envelope still parses whether `session` is present or omitted', () => {
+    // M4 `session_list.payload` gains `work_dir?` (envelope evolution
+    // rule (a) — additive optional). The envelope-level `session`
+    // field is a separate concern: it MUST stay optional across the
+    // M4 unlock (multi-session mode under envelope evolution rule (b)
+    // populates it, single-session mode does not; the schema does not
+    // flip the wire contract).
+    //
+    // M3 compatibility — `session` omitted:
+    const omitted = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'session_list',
+      id: 'lvg-020a',
+      payload: {},
+    });
+    expect(omitted.success).toBe(true);
+    if (omitted.success) {
+      expect(omitted.data.session).toBeUndefined();
+    }
+
+    // M4 multi-session — `session` populated, work_dir set:
+    const present = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'session_list',
+      id: 'lvg-020b',
+      session: 'sess-A',
+      payload: { work_dir: '/home/user/proj' },
+    });
+    expect(present.success).toBe(true);
+    if (present.success) {
+      expect(present.data.session).toBe('sess-A');
+    }
+  });
+
+  it('21. M4 `list_directories` envelope still parses whether `session` is present or omitted', () => {
+    // Pin the same lock-version contract on a newly added M4 control
+    // type. The M4 unlock is additive — even the 4 new control types
+    // must keep `session` optional so the schema does not silently
+    // force multi-session semantics on any single-session peer.
+    const omitted = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'list_directories',
+      id: 'lvg-021a',
+      payload: {},
+    });
+    expect(omitted.success).toBe(true);
+    if (omitted.success) {
+      expect(omitted.data.session).toBeUndefined();
+    }
+
+    const present = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'list_directories',
+      id: 'lvg-021b',
+      session: 'sess-X',
+      payload: { path: '/home/user' },
+    });
+    expect(present.success).toBe(true);
+    if (present.success) {
+      expect(present.data.session).toBe('sess-X');
+      expect(present.data.payload).toEqual({ path: '/home/user' });
+    }
+  });
+});
+
+// ----- M4 new types envelope safeParse round-trip (4 cases) -----
+//
+// Each of the 4 new control types added by the M4 unlock (ADR-0010)
+// gets one full envelope-level round-trip here: `kind: 'control'` +
+// `type` + `id` + `payload` (and `reply_to` for the result-only flow
+// when relevant). These complement the per-payload cases in
+// `work-dirs.test.ts` by exercising the full `Envelope` union path.
+
+describe('M4 new control envelopes round-trip (4 cases)', () => {
+  it('22. `list_directories` envelope round-trips through `Envelope.safeParse`', () => {
+    const result = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'list_directories',
+      id: 'rt-022',
+      payload: { path: '/home/user' },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    // Narrowing — the inner ControlBranch discriminated union collapses
+    // the union to ListDirectoriesEnvelope. We assert the discriminator
+    // and the round-tripped payload shape here without importing the
+    // specific envelope type (mirrors the M2 case 1 pattern).
+    expect(result.data.type).toBe('list_directories');
+    expect(result.data.kind).toBe('control');
+    expect(result.data.id).toBe('rt-022');
+    expect(result.data.payload).toEqual({ path: '/home/user' });
+  });
+
+  it('23. `work_dir_list` envelope round-trips through `Envelope.safeParse`', () => {
+    const result = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'work_dir_list',
+      id: 'rt-023',
+      payload: {},
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.type).toBe('work_dir_list');
+    expect(result.data.kind).toBe('control');
+    expect(result.data.id).toBe('rt-023');
+    expect(result.data.payload).toEqual({});
+  });
+
+  it('24. `work_dir_add` envelope round-trips through `Envelope.safeParse`', () => {
+    const result = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'work_dir_add',
+      id: 'rt-024',
+      payload: { path: '/home/user/proj-new' },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.type).toBe('work_dir_add');
+    expect(result.data.kind).toBe('control');
+    expect(result.data.id).toBe('rt-024');
+    expect(result.data.payload).toEqual({ path: '/home/user/proj-new' });
+  });
+
+  it('25. `work_dir_remove` envelope round-trips through `Envelope.safeParse`', () => {
+    const result = parseEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'work_dir_remove',
+      id: 'rt-025',
+      payload: { path: '/tmp/old-proj' },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.type).toBe('work_dir_remove');
+    expect(result.data.kind).toBe('control');
+    expect(result.data.id).toBe('rt-025');
+    expect(result.data.payload).toEqual({ path: '/tmp/old-proj' });
+  });
+});
+
 // Sanity sweep: every legal role / reason / error code parses at the payload
 // schema level. These are not numbered PRD cases but guard against future enum
 // drift between CONTROL_TYPES / ROLES / BRIDGE_STATUS_REASONS / ERROR_CODES and
