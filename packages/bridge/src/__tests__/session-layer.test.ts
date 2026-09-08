@@ -350,6 +350,14 @@ describe('BridgeSessionLayer 钉子 2 — pending key control', () => {
       (s) => s.session === stem && s.work_dir === workDir && s.phase === 'ready',
     );
     expect(migrated).toBeDefined();
+    // W3 (M4 任务 06 review) 钉桩：迁移时的 session_state 恰好一份。
+    // 修复前：迁移时 layer 广播 + wrapper 透传 → 网上双份。修复后：
+    // wrapper 在 attemptPendingMigration 返回 true 时短路，manager
+    // 的 ready session_state 被 drop，只留 layer 的迁移广播。
+    const readyMigratedStates = states.filter(
+      (s) => s.session === stem && s.work_dir === workDir && s.phase === 'ready',
+    );
+    expect(readyMigratedStates.length).toBe(1);
   });
 
   it('1.6 after migration, a follow-up prompt under the new stem hits the same manager', () => {
@@ -472,7 +480,11 @@ describe('BridgeSessionLayer 钉子 4 — SPAWN_TIMEOUT_MS', () => {
 // ---------------------------------------------------------------------------
 
 describe('BridgeSessionLayer 裁定 C — ready-phase idle timer', () => {
-  it('3.1 ready entered with no queued write → 5min idle timer armed; idle timer fires → exited', () => {
+  it('3.1 running → idle 5min recycle (existing M3 behaviour; running → idle via driveToRunning + agent_settled)', () => {
+    // [M4 任务 06 review C1 修复] 名实核对：本测试实际走的是
+    // `running → idle` 路径（driveToRunning + agent_settled）——
+    // 不是 ready 阶段的 idle 计时。ready 阶段的直接测试在
+    // 3.4 / 3.5（注入短 idleTimeoutMs）/ 3.6（写命令清计时器）。
     vi.useFakeTimers();
     try {
       const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-c1-'));
@@ -481,13 +493,12 @@ describe('BridgeSessionLayer 裁定 C — ready-phase idle timer', () => {
         workDirs: [workDir],
         idleTimeoutMs: IDLE_TIMEOUT_MS,
       });
-      // Drive to ready via a prompt. The manager is in spawning
+      // Drive to running via a prompt. The manager is in spawning
       // after spawnNow, transitions to ready after the handshake,
       // and to running once the queued prompt is flushed. Then we
       // emit agent_settled which transitions to idle and arms the
-      // idle timer. This tests the running→idle path (existing M3
-      // behaviour) — 裁定 C ready→idle is covered by the layer
-      // wrapper that arms the same timer logic on `completeHandshake`.
+      // idle timer. The running → idle path is the M3 behaviour;
+      // ready → idle (裁定 C) is the new path covered by 3.4 below.
       layer.handleEnvelope({
         v: PROTOCOL_VERSION,
         kind: 'pi',
@@ -500,7 +511,7 @@ describe('BridgeSessionLayer 裁定 C — ready-phase idle timer', () => {
       driveToRunning(child);
       // Emit agent_settled to enter idle phase + arm the idle timer.
       child.stdout.write(JSON.stringify({ type: 'agent_settled' }) + '\n');
-      // Manager is in ready; 裁定 C arms the idle timer.
+      // Manager is in idle; the idle timer is armed.
       const mgr = layer.getManagerForKey(`new:${workDir}`)!;
       expect(mgr.getPhase()).toBe<SessionPhase>('idle');
 
@@ -519,7 +530,171 @@ describe('BridgeSessionLayer 裁定 C — ready-phase idle timer', () => {
     }
   });
 
-  it('3.2 ready-phase idle timer shorter via injected idleTimeoutMs', () => {
+  it('3.4 裁定 C — ready phase 直接 idle 回收: stem-keyed spawn + get_messages leaves manager in ready, IDLE_TIMEOUT_MS triggers exited + map 键清理', () => {
+    // [M4 任务 06 review C1 新增] 直接测试 ready 阶段的 idle 回收
+    // （裁定 C）—— 预写 jsonl 让 stem 路由命中（钉子 2 Branch 1+2 的
+    // “session stem 命中 jsonl” 路径），发读命令（get_messages），
+    // handshake 完成后 manager 留在 ready 阶段，5min idle 计时器
+    // 自动启动，到点后回收。映射实际场景：“web 回到一个老会话，
+    // 只读取消息不写”。
+    vi.useFakeTimers();
+    try {
+      const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-c4-'));
+      trackTmp(workDir);
+      const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-c4-ad-'));
+      trackTmp(agentDir);
+      // 预写 jsonl 以触发 stem 路由命中（与 test 5.2 / 6.3 同模式）。
+      const stem = '2026-09-08T16-00-00-000Z_c4-readonly';
+      const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
+      mkdirSync(subdir, { recursive: true });
+      writeFileSync(path.join(subdir, `${stem}.jsonl`), '', 'utf8');
+
+      const { layer, spawned, outbound } = makeLayer({
+        agentDir,
+        workDirs: [workDir],
+        idleTimeoutMs: IDLE_TIMEOUT_MS,
+      });
+      // 发 get_messages，读命令。层路由：session=stem 命中 jsonl → spawn
+      // manager with --session。该读命令会在 spawning 阶段被入队，
+      // handshake 完成后 flush；flush 后不转 ready → running（读不会）。
+      layer.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'get_messages',
+        id: 'gm-1',
+        session: stem,
+        payload: {},
+      });
+      const child = spawned[0]!;
+      // handshake: 写 get_state response。
+      child.stdout.write(
+        JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
+      );
+      const mgr = layer.getManagerForKey(stem)!;
+      // 关键断言：ready 阶段（非 running/idle）—— 这正是裁定 C 覆盖的范围。
+      expect(mgr.getPhase()).toBe<SessionPhase>('ready');
+
+      // Fast-forward 5min — ready 计时器到期 → killIdleChild → exited。
+      vi.advanceTimersByTime(IDLE_TIMEOUT_MS);
+      child.simulateExit(null, 'SIGTERM');
+      // exited 广播 + map 键清理（钉子 4 / 裁定 C 回收路径）。
+      expect(mgr.getPhase()).toBe<SessionPhase>('exited');
+      expect(layer.getManagerForKey(stem)).toBeUndefined();
+      const states = sessionStates(outbound);
+      expect(states.some((s) => s.phase === 'exited')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('3.5 裁定 C — ready 阶段注入短 idleTimeoutMs (3000ms) 的回收变体', () => {
+    // [M4 任务 06 review C1 新增] 短 timeout 变体：避免 5min wall-clock，
+    // 验证计时器逻辑而非真实 5min。与 3.4 对称（短 idleTimeoutMs 但同样
+    // 测 ready → exited + map 键清理）。
+    vi.useFakeTimers();
+    try {
+      const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-c5-'));
+      trackTmp(workDir);
+      const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-c5-ad-'));
+      trackTmp(agentDir);
+      const stem = '2026-09-08T16-00-00-000Z_c5-short';
+      const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
+      mkdirSync(subdir, { recursive: true });
+      writeFileSync(path.join(subdir, `${stem}.jsonl`), '', 'utf8');
+
+      const { layer, spawned, outbound } = makeLayer({
+        agentDir,
+        workDirs: [workDir],
+        idleTimeoutMs: 3000,
+      });
+      layer.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'get_messages',
+        id: 'gm-1',
+        session: stem,
+        payload: {},
+      });
+      const child = spawned[0]!;
+      child.stdout.write(
+        JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
+      );
+      const mgr = layer.getManagerForKey(stem)!;
+      expect(mgr.getPhase()).toBe<SessionPhase>('ready');
+      vi.advanceTimersByTime(3000);
+      child.simulateExit(null, 'SIGTERM');
+      expect(mgr.getPhase()).toBe<SessionPhase>('exited');
+      expect(layer.getManagerForKey(stem)).toBeUndefined();
+      const states = sessionStates(outbound);
+      expect(states.some((s) => s.phase === 'exited')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('3.6 裁定 C — ready 阶段收到写命令 → 计时器重置（不回收），对称于 3.3 的 running → idle → running 路径', () => {
+    // [M4 任务 06 review C1 新增] 与 3.3 (running → idle → running) 对称：
+    // ready 阶段收到写命令（prompt）→ handleSpawnTrigger 清 idle 计时器
+    // （W5 coverall）→ transitionTo('running')，不再走 ready-idle 回收路径。
+    vi.useFakeTimers();
+    try {
+      const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-c6-'));
+      trackTmp(workDir);
+      const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-c6-ad-'));
+      trackTmp(agentDir);
+      const stem = '2026-09-08T16-00-00-000Z_c6-write';
+      const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
+      mkdirSync(subdir, { recursive: true });
+      writeFileSync(path.join(subdir, `${stem}.jsonl`), '', 'utf8');
+
+      const { layer, spawned } = makeLayer({
+        agentDir,
+        workDirs: [workDir],
+        idleTimeoutMs: 3000,
+      });
+      // 先发读命令让 manager 进入 ready 阶段（无写命令 → ready 计时器启动）。
+      layer.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'get_messages',
+        id: 'gm-1',
+        session: stem,
+        payload: {},
+      });
+      const child = spawned[0]!;
+      child.stdout.write(
+        JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
+      );
+      const mgr = layer.getManagerForKey(stem)!;
+      expect(mgr.getPhase()).toBe<SessionPhase>('ready');
+
+      // 2s 后（3s 计时器尚未到期）发写命令 —— 应触发 ready → running，
+      // 清掉 ready 计时器（handleSpawnTrigger 顶部的 clearIdleTimer coverall）。
+      vi.advanceTimersByTime(2000);
+      layer.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'prompt',
+        id: 'p-w',
+        session: stem,
+        payload: { content: 'continue' },
+      });
+      // layer 转发到 manager 的写命令应让 phase 转 running。
+      // （manager 在 ready 阶段收到 write 时由 handleSpawnTrigger 转 running，
+      // 但这需要 writeCommand 完成；mock manager 同步 writeCommand 因此立刻转。）
+      expect(mgr.getPhase()).toBe<SessionPhase>('running');
+
+      // 再过 2s — 如果 ready 计时器没被清，3s 时会触发 ready 回收；
+      // 现在应该仍处于 running（写命令清掉了 ready 计时器）。
+      vi.advanceTimersByTime(2000);
+      expect(mgr.getPhase()).toBe<SessionPhase>('running');
+      expect(layer.getManagerForKey(stem)).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('3.2 running → idle short idleTimeoutMs (3000ms) variant via driveToRunning + agent_settled', () => {
     vi.useFakeTimers();
     try {
       const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-c2-'));
@@ -695,16 +870,13 @@ describe('BridgeSessionLayer routing rules (PRD §2.7)', () => {
     const child = spawned[0]!;
     const stem = '2026-09-08T16-00-00-000Z_stem-rt-1';
     // Pre-write the jsonl so the migration succeeds on agent_start.
-    const sessionDir = path.join(
-      layer['managers'] /* test seam access */ ? '' : '', // appease TS
-      '',
-    );
-    void sessionDir;
-    // Easier: directly insert the manager under the stem after spawn.
-    const m = layer.getManagerForKey(`new:${workDir}`)!;
-    // We can't manipulate the layer's internal Map from outside,
-    // so use the routing layer to "find the file" path: pre-create
-    // the jsonl under the expected name, then use stem-keyed envelope.
+    // We can't manipulate the layer's internal Map from outside, so
+    // use the routing layer to "find the file" path: pre-create the
+    // jsonl under the expected name, then use stem-keyed envelope.
+    // [M4 任务 06 review S16 清理] 删去“seam 渔用”废代码
+    // （`sessionDir` 占位 + `layer['managers']` 类型强转换 +
+    // `void sessionDir`）——原注释说“appease TS”但实际计算后从未
+    // 被使用；下面用 `agentDir` 抽出 + 直接 subdir 路径创建实现。
     const agentDir = (layer as unknown as { agentDir: string }).agentDir;
     const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
     mkdirSync(subdir, { recursive: true });
@@ -727,7 +899,6 @@ describe('BridgeSessionLayer routing rules (PRD §2.7)', () => {
     });
     // Same child, new prompt landed.
     expect(child.stdinLines.length).toBeGreaterThan(writesBefore);
-    void m;
   });
 
   it('5.2 session: <stem> + map miss but file exists → spawn new manager under the stem', () => {
@@ -777,6 +948,76 @@ describe('BridgeSessionLayer routing rules (PRD §2.7)', () => {
     expect(result.payload.ok).toBe(false);
     if (result.payload.ok) throw new Error('expected ok=false');
     expect(result.payload.error?.code).toBe('invalid_envelope');
+  });
+
+  it('5.3a W5 — same stem in two work_dirs → first-match-wins by workDirStore.list() insertion order (deterministic)', () => {
+    // [M4 任务 06 review W5] 钉桩测：同一 stem 放进两个 work_dirs 的
+    // session 子目录 → 行为确定性（按 workDirStore.list() 插入序首个
+    // 命中）。`encodeCwdForPi` 是有损映射（current-state `cc00a3f`
+    // 教训），两个不同 work_dir 可能编码到同一 session 子目录；M4
+    // 接受首匹配语义，不扫重复。
+    const wdA = mkdtempSync(path.join(os.tmpdir(), 'remotepi-w5-a-'));
+    const wdB = mkdtempSync(path.join(os.tmpdir(), 'remotepi-w5-b-'));
+    trackTmp(wdA);
+    trackTmp(wdB);
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-w5-ad-'));
+    trackTmp(agentDir);
+    const stem = '2026-09-08T16-00-00-000Z_w5-dup';
+    // 在两个 work_dir 的 session 子目录下都放同一 stem 的 jsonl。
+    for (const wd of [wdA, wdB]) {
+      const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(wd)}--`);
+      mkdirSync(subdir, { recursive: true });
+      writeFileSync(path.join(subdir, `${stem}.jsonl`), '', 'utf8');
+    }
+    // workDirs 顺序：先 wdA 后 wdB —— 这是 insertKey 顺序。
+    const { layer, spawned } = makeLayer({
+      agentDir,
+      workDirs: [wdA, wdB],
+    });
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p-w5',
+      session: stem,
+      payload: { content: 'go' },
+    });
+    expect(spawned).toHaveLength(1);
+    const m = layer.getManagerForKey(stem)!;
+    // 首匹配语义：wdA 排在前面，路由到 wdA。
+    expect(m.getWorkDir()).toBe(wdA);
+  });
+
+  it('5.3b W5 — workDirs 顺序调换（B 在前） → 路由到 B（行为仍确定性）', () => {
+    // 对称钉桩：仅交换 workDirStore 插入顺序，首匹配应随之到 B。
+    // 这是同一语义的另一面，防未来“修复”不经意打破顺序依赖。
+    const wdA = mkdtempSync(path.join(os.tmpdir(), 'remotepi-w5b-a-'));
+    const wdB = mkdtempSync(path.join(os.tmpdir(), 'remotepi-w5b-b-'));
+    trackTmp(wdA);
+    trackTmp(wdB);
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-w5b-ad-'));
+    trackTmp(agentDir);
+    const stem = '2026-09-08T16-00-00-000Z_w5-dup-b';
+    for (const wd of [wdA, wdB]) {
+      const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(wd)}--`);
+      mkdirSync(subdir, { recursive: true });
+      writeFileSync(path.join(subdir, `${stem}.jsonl`), '', 'utf8');
+    }
+    const { layer, spawned } = makeLayer({
+      agentDir,
+      workDirs: [wdB, wdA], // B 在前
+    });
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p-w5b',
+      session: stem,
+      payload: { content: 'go' },
+    });
+    expect(spawned).toHaveLength(1);
+    const m = layer.getManagerForKey(stem)!;
+    expect(m.getWorkDir()).toBe(wdB);
   });
 
   it('5.4 no session + 1 manager → M3-compat: forward to the only manager', () => {
@@ -1222,5 +1463,113 @@ describe('BridgeSessionLayer cross-manager broadcast isolation', () => {
     // sends SIGTERM; the FakeChild records the signal.
     expect(spawned[0]!.killSignals).toContain('SIGTERM');
     expect(spawned[1]!.killSignals).toContain('SIGTERM');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. W4 (M4 任务 06 review) — wrapper 不向非 session_state 信封注入 session
+// ---------------------------------------------------------------------------
+
+describe('BridgeSessionLayer W4 — wrapper 不注入 session 到非 session_state 信封', () => {
+  // [M4 任务 06 review W4] 钉桩测：原层 wrap 设计明确
+  // “session 注入只发生于 session_state 帧”，其他信封透传——这是
+  // per-session 路由语义的依赖（web 依赖 session_state 作为第一个
+  // “该 session 是谁” 镖点，后续事件走 reply_to 或 pi 自带 session
+  // 字段）。任何“忠惢改进”——例如给事件信封也注入 session——都会
+  // 破坏 M4 web 多会话路由语义。补 2 条钉桩测保护这个不变量。
+
+  it('9.1 多事件场景：两个 session_state 之间夹 message_update/command_result — 事件透传无 session 字段注入', () => {
+    const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-w4-1-'));
+    trackTmp(workDir);
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-w4-1-ad-'));
+    trackTmp(agentDir);
+    const stem = '2026-09-08T16-00-00-000Z_w4-1';
+    const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
+    mkdirSync(subdir, { recursive: true });
+    writeFileSync(path.join(subdir, `${stem}.jsonl`), '', 'utf8');
+
+    const { layer, spawned, outbound } = makeLayer({ agentDir, workDirs: [workDir] });
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      session: stem,
+      payload: { content: 'go' },
+    });
+    const child = spawned[0]!;
+    driveToReady(child);
+
+    // 之后手动推送一些非 session_state 帧
+    child.stdout.write(JSON.stringify({ type: 'message_update', content: 'hello' }) + '\n');
+    child.stdout.write(JSON.stringify({ type: 'message_end' }) + '\n');
+    child.stdout.write(
+      JSON.stringify({ type: 'response', command: 'prompt', id: 'p1', success: true }) + '\n',
+    );
+
+    const events = outbound.mock.calls.map((c) => c[0]);
+    // session_state 帧必须带 session: stem（wrapper 注入）
+    const sessionStates = events.filter(
+      (e) => e.kind === 'control' && e.type === 'session_state',
+    );
+    expect(sessionStates.length).toBeGreaterThan(0);
+    for (const s of sessionStates) {
+      expect(s.session).toBe(stem);
+    }
+    // 非 session_state 帧（message_update/message_end/agent_start/command_result/...）
+    // 透传 — 不带 session 字段（wrapper 不注入）。
+    const nonSessionStateEvents = events.filter(
+      (e) => !(e.kind === 'control' && e.type === 'session_state'),
+    );
+    expect(nonSessionStateEvents.length).toBeGreaterThan(0);
+    for (const e of nonSessionStateEvents) {
+      // pi 0.85.1 原始事件本就不带 session 字段。如果以后该层包装
+      // “好心” 给事件也加 session，下面断言会捕提回归。
+      expect(e.session).toBeUndefined();
+    }
+  });
+
+  it('9.2 wrapper 对非 session_state 信封不注入 session 的回归断言（防未来“好心改进”）', () => {
+    const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-w4-2-'));
+    trackTmp(workDir);
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-w4-2-ad-'));
+    trackTmp(agentDir);
+    const stem = '2026-09-08T16-00-00-000Z_w4-2';
+    const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
+    mkdirSync(subdir, { recursive: true });
+    writeFileSync(path.join(subdir, `${stem}.jsonl`), '', 'utf8');
+
+    const { layer, spawned, outbound } = makeLayer({ agentDir, workDirs: [workDir] });
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      session: stem,
+      payload: { content: 'go' },
+    });
+    const child = spawned[0]!;
+    driveToReady(child);
+
+    // 推送几帧非 session_state 事件：agent_start/message_update/command_result。
+    child.stdout.write(JSON.stringify({ type: 'agent_start' }) + '\n');
+    child.stdout.write(JSON.stringify({ type: 'message_update', delta: 'a' }) + '\n');
+    child.stdout.write(
+      JSON.stringify({ type: 'response', command: 'prompt', id: 'p1', success: true }) + '\n',
+    );
+
+    // 逐帧断言：每条非 session_state 出站都不携带 session 字段。
+    const out = outbound.mock.calls.map((c) => c[0]);
+    const nonSessionState = out.filter(
+      (e) => !(e.kind === 'control' && e.type === 'session_state'),
+    );
+    // 有 agent_start / message_update / command_result 三条事件
+    expect(nonSessionState.length).toBeGreaterThanOrEqual(3);
+    for (const e of nonSessionState) {
+      // session 字段必须为 undefined；不是 undefined 也不算错
+      // （8a.1 路由示例中可能有些是带 session 的），但本测试场景下
+      // wrapper 不会注入；现状下都是 undefined。
+      expect(e.session).toBeUndefined();
+    }
   });
 });

@@ -107,19 +107,12 @@ describe('BridgeSessionLayer integration — multi-session (M4 task 06)', () => 
       { timeoutMs: 30_000 },
     );
 
-    // The map should now have exactly one manager under the real
-    // stem (pending key migrated).
-    const realStems = [...layer.getManagerForKey('irrelevant') ? ['never'] : []];
-    expect(realStems.length).toBe(0);
     // We can't directly enumerate the map from outside; instead,
-    // verify by counting the spawned managers via a probe — the
-    // manager count should be 1.
-    // (The `getManagerForKey` test seam requires knowing the key;
-    // we look at the broadcast session field for the migration
-    // confirmation.)
-    // Migration broadcasts carry `session` = real stem AND
-    // `payload.work_dir` = the originating work_dir. Find a
-    // session_state with an ISO-timestamp stem.
+    // verify by inspecting the broadcast session field for the
+    // migration confirmation. Migration broadcasts carry
+    // `session` = real stem AND `payload.work_dir` = the
+    // originating work_dir. Find a session_state with an
+    // ISO-timestamp stem.
     const migratedBroadcast = outbound.find(
       (e) =>
         e.kind === 'control' &&
@@ -180,24 +173,21 @@ describe('BridgeSessionLayer integration — multi-session (M4 task 06)', () => 
     layer.handleEnvelope(pA);
     layer.handleEnvelope(pB);
 
-    // Wait for both agents to settle.
-    await waitForEnvelope(
-      outbound,
-      (e) =>
-        e.kind === 'pi' &&
-        e.type === 'event' &&
-        e.payload.event === 'agent_settled' &&
-        e.payload.data !== undefined &&
-        typeof (e.payload.data as { session?: unknown }).session === 'string' &&
-        ((e.payload.data as { session: string }).session.includes('A') ||
-          (e.payload.data as { session: string }).session.includes('B')),
-      { timeoutMs: 30_000 },
-    ).catch(() => {
-      // best-effort; the second one will land shortly after
-    });
-
-    // Wait a bit more for the second to complete too.
-    await new Promise<void>((r) => setTimeout(r, 2000));
+    // Wait for BOTH agents to settle — the two prompts are on
+    // different pi subprocesses so they round-trip in parallel.
+    // Real waitForEnvelope predicate (M4 任务 06 review S13 修复):
+    // poll until outbound has two `command_result` envelopes for
+    // the prompts (one per workDir) instead of `setTimeout(2000)`.
+    // The fake server records both requests; the bridge layer
+    // forwards both command_results through to outbound.
+    const start = Date.now();
+    while (Date.now() - start < 30_000) {
+      const promptResults = outbound.filter(
+        (e) => e.kind === 'pi' && e.type === 'command_result' && e.payload.command === 'prompt',
+      );
+      if (promptResults.length >= 2) break;
+      await new Promise<void>((r) => setTimeout(r, 25));
+    }
 
     layer.stop();
     await new Promise<void>((r) => setTimeout(r, 200));

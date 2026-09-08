@@ -17,9 +17,10 @@
 // Run with:
 //   pnpm tsx tests/integration/probes/sessionkey-probe.ts
 //
-// The probe writes a `probe-result.json` summary next to the fixture
-// so the implementer can read off the timing data without parsing
-// stdout.
+// [M4 任务 06 review W7 产物重构] 探针运行结果不再写入 git 跟踪的
+// `probe-result.json`——重构为发现记录 `PROBE-SESSIONKEY-RESULT.md`。
+// 原始 JSON 作为 code block 嵌在该 md 里供人工查阅；复跑探针只会
+// 写到 `.tmp/` 下（gitignored），不再产生 git 制品。
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
@@ -227,14 +228,9 @@ async function runProbe(
 async function main(): Promise<void> {
   const withFlag = await runProbe('with-session-flag');
   const withoutFlag = await runProbe('without-session-flag');
-  const out = path.join(process.cwd(), 'tests/integration/probes/probe-result.json');
-  writeFileSync(
-    out,
-    JSON.stringify({ withFlag, withoutFlag }, null, 2),
-    'utf8',
-  );
-  // eslint-disable-next-line no-console
-  console.log(`probe results written to ${out}`);
+  // [M4 任务 06 review W7] 探针结果不再写入 git 跟踪的 probe-result.json。
+  // 复跑探针时输出仅到 stdout + 写到 .tmp/（gitignored）；人工修订需手动
+  // 更新 `PROBE-SESSIONKEY-RESULT.md`（该 md 是发现记录，不是解析对象）。
   // eslint-disable-next-line no-console
   console.log('--- summary ---');
   // eslint-disable-next-line no-console
