@@ -24,5 +24,6 @@
 ```
 
 ## 清单
-- [[prds/m1-infrastructure.md|M1 基础设施基座]] — 已定稿（2026-09-04）；任务已拆至 [[tasks/m1/01-monorepo-scaffold.md|tasks/m1/]]（5 个，按依赖链 01→02→03→04→05 推进）。
-- [[prds/m3-single-session.md|M3 单 session 闭环]] — 已定稿（2026-09-05）；任务已拆至 `tasks/m3/`（8 个，01 根任务，03/04/05 与 06/07 两条并行链，08 收尾）。
+- [[prds/m1-infrastructure.md|M1 基础设施基座]] — 已定稿（2026-09-04），已完成（2026-09-05 CI 双绿 + 真实环境闭环）；任务已拆至 [[tasks/m1/01-monorepo-scaffold.md|tasks/m1/]]（5 个，按依赖链 01→02→03→04→05 推进，全部 done）。
+- [[prds/m2-tunnel.md|M2 通路]] — 已定稿（2026-09-05），已完成（2026-09-05 线上验收通过：主域合并 + Worker Static Assets + CD 自动部署）；任务已拆至 [[tasks/m2/01-shared-envelope-v1.md|tasks/m2/]]（6 个，03/04/05 可并行，01/02 同线，全部 done）。
+- [[prds/m3-single-session.md|M3 单 session 闭环]] — 已定稿（2026-09-05），已完成（2026-09-08 用户裁定关单任务 08，13 个任务全部 done）；任务已拆至 [[tasks/m3/01-shared-protocol-v2.md|tasks/m3/]]（13 个，01 根任务，03/04/05 与 06/07 两条并行链，08 文档收尾；09 裁定落盘；10 集成测试基建 + ADR-0008；11/12/13 无头浏览器 E2E + ADR-0009）。

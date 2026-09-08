@@ -1,6 +1,6 @@
 ---
 prd: prds/m3-single-session.md
-status: doing
+status: done
 ---
 # 任务：ADR-0003 / ADR-0004 补注 + current-state TODO + getting-started 修订 + 三端联调手测验收
 
@@ -124,3 +124,12 @@ wscat -c wss://remote-pi.sankabox.com/bridge -s "remotepi.v1,REPLACE_WITH_BRIDGE
 | 补 | worker 零代码改动验证（wscat） | ☐ | ☐ |  |
 
 > 全部勾完"通过"后，把本页结果贴回本任务文档 / [[current-state.md]] 最近变更 / 推 `git commit` → 用户手动 `git push origin main` 触发 Actions CD（沿用 M2 deploy.yml）。
+
+## 关单注记（2026-09-08）
+
+用户裁定（2026-09-08）按完成处理本任务，正式关单：
+
+- **三端联调手测验收 14 条清单未逐条验收**（包括 bridge `04-extension-dialogs` 之外的 wire/UI/线上部署等），按用户裁定关闭处理，不逐条勾选清单（保持事实原貌）。
+- **4 类弹窗 wire 层已由 [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md|ADR-0008]] 集成测试覆盖**——bridge `tests/integration/04-extension-dialogs` 6 条 it 钉死 4 类入列（select / confirm Yes·No / input / editor）+ 取消 5 类消化（notify / setStatus / setWidget / setTitle / set_editor_text）。
+- **web UI 层手测项**（abort / timeout 自答 / 多 web 端 / bridge 重启自愈 / 线上部署验证等）随用户裁定一并关闭；后续如有回归通过 [[architecture/decisions/0009-headless-browser-e2e.md|ADR-0009]] E2E 套件扩展（场景 (d) abort / (e) idle kill + bridge 重启 / (g) 4 类弹窗逐一交互）按需立项。
+- 文档部分早已落地：[[architecture/decisions/0003-session-lifecycle-and-history-source.md|ADR-0003]] / [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]] 末尾补注、getting-started §3.5 配置 JSON 字段说明、current-state 多次更新、grep 验证 `REMOTEPI_WORKER_URL` / `--worker-url` 零残留。
