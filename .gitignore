@@ -31,6 +31,10 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Integration test runtime artefacts (see docs/testing.md §2)
+tests/integration/.tmp/
+tests/integration/**/sessions/
+
 # Editor / OS
 .DS_Store
 .vscode/*

@@ -1,0 +1,19 @@
+{
+  "_comment": "Opt-in typecheck for tests/integration — NOT consumed by `pnpm -r typecheck` (which iterates the workspace packages). Trigger explicitly via `pnpm run typecheck:integration`. Extends the root base so module resolution / strictness / NodeNext line up with the rest of the repo. `baseUrl` + `paths` map the workspace package names to their source `.ts` files (instead of relying on workspace symlinks, which don't exist at `tests/integration/node_modules`).",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@remotepi/shared": ["../../packages/shared/src/index.ts"],
+      "@remotepi/shared/*": ["../../packages/shared/src/*"],
+      "@remotepi/bridge": ["../../packages/bridge/src/index.ts"],
+      "@remotepi/bridge/*": ["../../packages/bridge/src/*"]
+    }
+  },
+  "include": ["./**/*.ts", "./vitest.integration.config.js", "./**/*.js"],
+  "exclude": [".tmp/", "**/sessions/"]
+}

@@ -15,6 +15,8 @@
     "lint": "eslint .",
     "typecheck": "pnpm -r run typecheck",
     "test": "vitest run --passWithNoTests",
+    "test:integration": "vitest run --config tests/integration/vitest.integration.config.js",
+    "typecheck:integration": "tsc -p tests/integration/tsconfig.json",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
