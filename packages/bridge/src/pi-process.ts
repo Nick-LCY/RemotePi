@@ -69,6 +69,7 @@ import {
   type PiExtensionUIResponse,
   buildExtensionUIRequestEnvelope,
 } from './extension-ui.js';
+import { listDirectories, mapListDirectoriesDomainCodeToWire } from './list-directories.js';
 import { logger } from './logger.js';
 import {
   authJsonExists,
@@ -1532,6 +1533,18 @@ export class PiProcessManager {
         case 'get_state':
           this.handleGetState(env.id);
           break;
+        case 'list_directories':
+          // M4 task 05: directory-browser control command. Pure fs
+          // operation — does NOT need a pi process, NEVER triggers a
+          // spawn. Lives in the manager temporarily until task 06
+          // moves control-family commands into the dedicated
+          // BridgeSessionLayer (the same refactor will move
+          // work_dir_* and session_list). For now, it sits next to
+          // get_state because both are "answer without spawn" control
+          // types whose semantics are independent of the pi state
+          // machine.
+          this.handleListDirectories(env.id, env.payload.path, env.session);
+          break;
         // Other control types (`handshake`, `ping`, `pong`,
         // `session_state`, `session_list`, `result`, `error`) are
         // handled by BridgeClient — this manager does not act on
@@ -1586,6 +1599,61 @@ export class PiProcessManager {
       id: randomUUID(),
       reply_to: requestId,
       payload: { ok: true, data },
+    });
+  }
+
+  /** `control/list_directories` — M4 task 05 directory browser.
+   *  Pure fs operation; answer without spawn (PRD §2.7: never
+   *  trigger spawn for a read). Delegates to the pure function
+   *  in `list-directories.ts` and maps its domain-level outcome
+   *  to the wire-level `result` envelope.
+   *
+   *  ## Wire-level error code mapping (PRD §2.5 + ADR-0010 §决策.4)
+   *
+   *  All three "user-path-is-bad" cases (ENOENT / EACCES / ENOTDIR)
+   *  collapse to wire-level `invalid_envelope` — the path provided
+   *  in the envelope payload is invalid in the fs-semantic sense
+   *  even though its type-level shape is valid (schema accepts any
+   *  string). `internal` is reserved for non-fs-classified errors
+   *  (EIO / ELOOP / revalidation-failure).
+   *
+   *  See `list-directories.ts` header for the full mapping table
+   *  + rationale (each branch carries a domain-specific message so
+   *  the operator can grep their filesystem, while the wire-level
+   *  code is the closest existing 6-value set member). */
+  private handleListDirectories(requestId: string, path: string | undefined, session: string | undefined): void {
+    const outcome = listDirectories(path);
+    // M4 envelope field: `session` is the multi-session routing
+    // key. We propagate it verbatim on the reply envelope so the
+    // web can correlate by session — the dispatcher doesn't *use*
+    // it (list_directories is a global fs operation), but the
+    // reply still needs to carry it for the web to route the
+    // response into the correct session bucket.
+    const baseEnvelope = {
+      v: PROTOCOL_VERSION,
+      kind: 'control' as const,
+      type: 'result' as const,
+      id: randomUUID(),
+      reply_to: requestId,
+      ...(session !== undefined ? { session } : {}),
+    };
+    if (outcome.ok) {
+      this.onOutbound({
+        ...baseEnvelope,
+        payload: { ok: true, data: outcome.data },
+      });
+      return;
+    }
+    // Domain-level → wire-level mapping via the pure helper in
+    // list-directories.ts (single source of truth for the mapping
+    // table — see list-directories.ts header for rationale).
+    const wireCode = mapListDirectoriesDomainCodeToWire(outcome.code);
+    this.onOutbound({
+      ...baseEnvelope,
+      payload: {
+        ok: false,
+        error: { code: wireCode, message: outcome.message },
+      },
     });
   }
 
