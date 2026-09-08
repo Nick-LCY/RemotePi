@@ -129,6 +129,8 @@
 
   **2026-09-08 起可部分自动化**：`pnpm test:integration` 任一 it 红即拦截六项对应的回归；不再需要手工逐项走对照清单，但仍需"测试已修 + 全绿 + 收口记录到 [[current-state.md]] 最近变更"才视为体检通过。
 
+- **sessionKey 派生时机探针（pin pi 0.85.1，2026-09-08 任务 06 实施期新增）**——复跑命令：`pnpm tsx tests/integration/probes/sessionkey-probe.ts`；结果记录于同目录 `tests/integration/probes/PROBE-SESSIONKEY-RESULT.md`（pin 住 pi 版本 0.85.1 + 探针脚本写 `.tmp/` 而非 git 跟踪路径）。**升级体检比对清单**：(a) `agentStartAt` 与 `sessionFileFirstSeen` 的差值应在 0–100ms 内（否则派生点漂移——M4 任务 06 实现假设 `agent_start` 事件触发 + agent_dir 扫描双保险）；(b) 事件序列是否仍是 `agent_start → turn_start → message_start → ... → agent_settled`（无 `entry_appended` 事件穿插）；(c) `sessionFile` 字段是否仍携带（若消失，桥端 fallback 到 agent_dir 扫描仍工作，但性能略降）。**任一偏差即体检不通过**——回到任务 06 实施期改写派生点的同类处理路径（更新 `attemptPendingMigration` 实现 + 写新集成测试 case + 在 PROBE-SESSIONKEY-RESULT.md 追加新一节「YYYY-MM-DD pi X.Y.Z 复跑发现」+ current-state.md 最近变更追加体检条目）。
+
   **体检结果落到哪里**（流程保留）：
   - **通过** → [[current-state.md]] 最近变更追加一条"YYYY-MM-DD pi 升级至 X.Y.Z — `pnpm test:integration` 全绿 + 体检 6 项通过"。
   - **不通过** → 暂停升级，回到本套件扩展上：

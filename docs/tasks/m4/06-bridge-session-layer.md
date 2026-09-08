@@ -1,6 +1,6 @@
 ---
 prd: prds/m4-multi-session.md
-status: todo
+status: done
 ---
 # 任务：bridge BridgeSessionLayer 多 PiProcessManager Map 复数化（钉子 2 pending 键控 + 钉子 4 SPAWN_TIMEOUT_MS + 裁定 C ready 5min idle + 钉子 3 work_dir_remove 不 kill 活 manager）+ sessionKey 路由 + 真 pi 探针验证
 
@@ -89,3 +89,108 @@ status: todo
 - [[prds/m4-multi-session.md|PRD §9.2 bridge 测试 + §9.3 integration]]
 - [[tasks/m3/04-bridge-pi-process.md|tasks/m3/04]] PiProcessManager 5 相位状态机 + 自主 kill 标记路径基线
 - [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md|ADR-0008]] 假 LLM 套件 + 真 pi 集成测试基建
+
+## 完成情况
+
+任务完成，5 笔本地 commit：**`5276d1a`**（真 pi 探针：sessionKey 派生时机实测结论前置验证）+ **`bd8b49f`**（BridgeSessionLayer Map 复数化实现全集）+ **`eba60c2`**（32 单测 + 2 集成——session-layer 路由 / 钉子 / 裁定端到端）+ **`a19acc6`**（M3-compat auto-spawn + get_state session-less 路由回归修复）+ **`8200068`**（review 修复轮——C1 ready→idle 直接测试 / C2 m3-legacy 契约文档化 / 迁移去双播 / wrapper 注入语义钉桩 / 编码碰撞首匹配语义 JSDoc / 探针产物转发现记录 / web 485 全绿）。reviewer 初审结论 **2 Critical / 7 Warning / 9 Suggestion**——**全部处置**（S15/S17/S18 三项合理跳过）。测试基线 **单测 446 → 485** / **集成 30 → 32** / **e2e 3 场景全绿**；typecheck / lint / build 全绿；web build 236.38 KB 零增长。
+
+### 探针实测结论（pi 0.85.1，commit `5276d1a`）—— 任务 06 前置验证
+
+**任务 PRD §1.5「实测验证点」落地**——实施期跑真 pi 探针（沿用 [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md|ADR-0008]] 假 LLM 套件 helper）确认事件时序与 stem 派生点。**探针产物已从 `probe-result.json` 转 `tests/integration/probes/PROBE-SESSIONKEY-RESULT.md` 发现记录**（避免 git 跟踪二进制制品，pin 住 pi 版本 0.85.1 + 复跑命令 `pnpm tsx tests/integration/probes/sessionkey-probe.ts`；详见 commit `8200068` W7）。**实测结论三条**：
+
+1. **`agent_start` 是 session jsonl 文件同步出现的可靠信号**——pi 0.85.1 在 `agent_start` 触发的同帧/微秒内创建 `<agentDir>/sessions/--<encodedWorkDir>--/<timestamp>_<uuid>.jsonl`。bridge 实现采用「`agent_start` 事件触发 + agent_dir 扫描」双保险策略（fast-path：消费 `agent_start.sessionFile` 字段；fallback：扫 agent_dir）。
+2. **`entry_appended` 事件在 pi 0.85.1 wire 上不存在**——探针脚本中 `firstEntryAppended` 字段始终为 `null`（pi 走裸 `message_update`/`message_end` 流而非 entry 序列化）。**PRD §1.5 候选信号（首个 `entry_appended` 或 ready 后第一次 `message_start`）不适用**——实施期实测后派生点改写为「首个非 handshake stdout 事件 + agent_dir 扫描」。「`pi/prompt.payload.work_dir` 仅 `session:'new'` 携带」裁定 A 方案 A 的 PRD 假设沿用，web 端契约不变。
+3. **`sessionFile` 字段在 `agent_start` 帧内携带**（绝对路径）——可作为 fast-path 直接消费；bridge 当前实现走 agent_dir 扫描 fallback（更通用，应对未来 pi 版本不再携带该字段），`sessionFile` 字段留作 M+ 优化候选。
+
+**附带时序数据**（原始数据嵌入 `tests/integration/probes/PROBE-SESSIONKEY-RESULT.md`）：withFlag（带 `--session`）jsonl 在 spawn 时已存在（spawnedAt 53ms 即预创建）；withoutFlag（无 `--session`）jsonl 在 `agent_start` 后 ~52ms 落盘（spawnedAt 2ms → agentStartAt 8005ms → sessionFileFirstSeen 8057ms）。**两种 spawn 模式下 jsonl 出现时机不同，桥端必须能处理两种时序**——否则恢复路径会因等待不可能到来的 `agent_start` 而误路由。
+
+### `bd8b49f` BridgeSessionLayer 实现（任务主体）
+
+`packages/bridge/src/session-layer.ts` 新建——`BridgeSessionLayer` 类全集：
+
+- **Map 复数化**——`private readonly managers = new Map<string, PiProcessManager>()`；键可能是 (a) 真实 sessionKey stem（已派生）或 (b) `'new:<work_dir>'` pending 内部键（钉子 2）；map 键迁移见 §入站路由，迁移完成前 pending 键与真实 stem 不会共存。
+- **入站路由 6 类全覆盖**（PRD §2.7）——`handleEnvelope(env)` 按 `env.session` 字段路由：
+  1. `session: <stem>`（非 'new'）+ map 命中（含已迁移的真实 stem）→ 转发到该 manager。
+  2. `session: <stem>`（非 'new'）+ map 未命中 → 查找 sessionKey 对应 jsonl 路径 + 新建 `PiProcessManager` 注册到 map（键 = stem）+ 转发。
+  3. `session: 'new'` + 必带 `payload.work_dir` → 钉子 2 pending 键控（见下）。
+  4. `session: 'new'` + 缺 `work_dir` → 拒，回 `result.ok = false` + `error.code: 'invalid_envelope'`（M4 操作惯例下必带，缺省视为协议错）。
+  5. 无 session + map 1 个 manager（M3 兼容）→ 转发到该 manager。
+  6. 无 session + map > 1 个 manager（M4 多 manager 后歧义）→ 报错 `error.code: 'invalid_envelope'`。
+- **钉子 2 pending 键控**——`session:'new'` 按 work_dir 键控（`new:<work_dir>` 内部键）；先查 `managers.has('new:' + work_dir)` —— 命中复用（短时多次 new 请求合并为同一 pending），未命中新建 manager（cwd = work_dir，**不带** `--session`，让 pi 自己开新 jsonl 文件）；manager 启动后，spawning 相位启动 `SPAWN_TIMEOUT_MS` 兜底；收到首个非 handshake stdout 事件（即探针实测的 `agent_start`）→ 从 stdout / agent_dir 派生 stem → bridge 自行将 map 键迁移到真实 stem（**W3 修复轮去双播**：`{migrated, broadcastedPhase}` 二元组保证迁移与 phase 广播原子化，避免期间被命令误路由）→ 广播 `session_state{session: <stem>}`。
+- **control 自答**——`BridgeSessionLayer.handleEnvelope` 自身处理 control 命令（不经 manager）：
+  - **`list_directories`** —— 由 [[tasks/m4/05-bridge-list-directories.md|任务 05]] 临时宿主迁入（`handleListDirectories` 移至 session-layer.ts）；**15a-15e 接线测试随迁**（S1 移交义务落地：`__tests__/list-directories.test.ts` 的 5 条 dispatcher 接线测试并入 `__tests__/session-layer.test.ts` 的 list_directories 段，避免删 `pi-process.ts` 分支后 mock target 失效误报）；纯函数模块 `list-directories.ts` 不动。
+  - **`work_dir_list` / `work_dir_add` / `work_dir_remove`** —— 接 `WorkDirStore`（[[tasks/m4/04-bridge-state-json.md|任务 04]] seam）；**S2 移交义务落地**：try/catch 包裹 `StateError` 捕获 → 映射 `result.error.code: 'internal'` + message 透传原 `StateError.message`（沿用 control.md §8 既有 6 code 集合不新增）。
+  - **`session_list`** —— 按 `payload.work_dir`（裁定 A 操作惯例必带）路由到 `listAllSessions(workDir)`；status 字段映射 manager.phase（`exited` / `idle` / `running` / `spawning` / `unknown` 5 枚举）。**unknown = 未在 bridge 内存中**（无活跃 manager，可能从未被该 bridge 看过，会话被外部 pi 占用时也返回 unknown，**不做检测**对齐业务共识 3）。
+  - **`get_state`** —— M3 兼容路径下 session-less 命令无 manager 时按 `defaultWorkDir` auto-spawn 一个 `M3_LEGACY_KEY` 键 manager；sessionful 路径回退到 manager 状态机。
+- **钉子 2 三步原子迁移**（review W3 修复轮）——`attemptPendingMigration` 在每个 `pi/event` 上尝试迁移，首次成功即 agent_start（探针实测）；**去双播**：`{migrated: boolean, broadcastedPhase: boolean}` 二元组保证 map 键迁移 + `session_state` 广播在一次调用内完成，期间不会被其他命令误路由。
+- **钉子 4 SPAWN_TIMEOUT_MS 60_000 watchdog**——`spawnTimeoutMs` 构造参数（默认 60_000）传入每个 manager；spawning 相位超 60s 未完成握手 → 复用 PiProcessManager 既有自主 kill 标记路径（先置位再发 SIGTERM→1s→SIGKILL；exit 回调走「标记在→不重启」）→ exited 广播；BridgeSessionLayer 同步 `managers.delete(<map键>)`（含 pending `new:<work_dir>` 键同步 delete）。**arm 时机**：在 `writeHandshakeGetState` 处 arm（spawn 后立即同步写 handshake get_state 时启动 watchdog，与 spawn 起步对齐，避免冷启动阶段就计时）；**清理时机**：completeHandshake / forceExited / handleExit / stop 四路径统一清理（避免 watchdog 误触发自主 kill）。
+- **裁定 C startReadyIdleTimer**——ready 相位无任何写命令（prompt / steer / follow_up 等）5min 后按 idle 路径倒计时（同 running → idle 同一计时器逻辑复用 `IDLE_TIMEOUT_MS = 5 * 60_000`）；spawning / blocked_on 显式忙碌相位豁免；ready 期间收到写命令 → 重置计时器；manager 构造参数 `idleTimeoutMs` 默认 5*60_000，**逐 manager 独立计时**。
+
+### `eba60c2` 测试（**+32 单测 / +2 集成**）
+
+- **32 单测** (`__tests__/session-layer.test.ts` 新建)：
+  - **入站路由 6 类**——`session + 命中 / 未命中 / 'new' + work_dir / 'new' 缺 work_dir / 无 session + map 1 / 无 session + map > 1`，6 条 + 各分支边界共 8 条。
+  - **钉子 2 pending 键控**——同 work_dir 短时多次 `session:'new'` 合并（同一 map 键命中复用）/ 不同 work_dir `session:'new'` 各 spawn（多键并存）/ pending → 真实 stem 迁移（map 键迁移 + `session_state` 广播）/ `session:'new'` 缺 `work_dir` 拒 invalid_envelope，4 条。
+  - **钉子 4 SPAWN_TIMEOUT_MS**——mock spawning > 60s 未握手 → 自主 kill + exited 广播 + map 键清理（含 pending `new:<work_dir>` 键）；spawning < 60s 内完成 → 不触发超时，正常 ready，2 条。
+  - **裁定 C ready 5min idle**——ready → 5min 无写命令 → idle 回收路径（同 running → idle 复用计时器）；ready 期间收到 prompt/steer/follow_up → 重置计时器；spawning/blocked_on 显式忙碌相位豁免，3 条。
+  - **钉子 3 work_dir_remove 活 manager**——work_dir_remove 不 kill 不打断活 manager，cwd = 该 work_dir；自然 idle 回收（裁定 C ready 5min 也计入）；目录移除后 `session_list` 不再列该目录入口，3 条。
+  - **work_dir CRUD**——add / remove / list / 重复添加幂等 / 写入失败回滚 / `StateError` 映射 `internal`，6 条。
+  - **`session_list` 按 work_dir 扫描 + status 5 枚举映射**——manager.phase 映射 / `'unknown'`（无活跃 manager）/ 非法 status 拒，4 条。
+  - **跨 manager 广播隔离**——A manager 出站不污染 B manager 的 web 视图（每个 manager 各 broadcast 自己的 session_state），2 条。
+- **2 集成**（`tests/integration/` 沿用 ADR-0008 假 LLM 套件 helper）：
+  - **pending → stem 迁移端到端**——fake LLM + session:'new' + work_dir → bridge pending 键 manager spawn → fake LLM 模拟 pi stdout 输出首个 agent_start → bridge 派生 stem → map 键迁移 + `session_state{session:<stem>}` 广播 + 后续同 session_id 命令命中真实 stem 键。
+  - **多 work_dir 并行**——fake LLM + 2 个 work_dir + 各自 prompt → 各自 ready → `session_list` 各 work_dir 隔离扫描 + status 字段独立。
+
+### `a19acc6` 实施期发现的 M3-compat 回归修复
+
+**根因**：e2e 3 场景（ADR-0009 MVP 三场景）的 M3 token-only URL（`#<token>` 无 work_dir / session）回放时，session-less `get_state` / `get_messages` 命令被误判「map 为空 + 无 work_dir」路由而拒绝；e2e 场景依赖 M3 单会话行为。**修复**：新增 `M3_LEGACY_KEY = 'm3-legacy'` map 键 + `defaultWorkDir` 构造参数（index.ts 接 `config.work_dir`）→ session-less 命令无 manager 时按 `defaultWorkDir` auto-spawn 一个 M3-compat manager；sessionful 路径回退到正常路由。**`M3_LEGACY_KEY` 出站 wrapper**——pending `m3-legacy` 键 manager 派生 stem 前不会触发 map 键迁移（`m3-legacy` 是固定键），其 `session_state` 广播携带 `session: 'm3-legacy'`（web 端按 session 分桶时该桶无消费者——M3-compat 路径仅保留 M3 token-only URL 兼容语义）。**新增导出 `BridgeSessionLayer.M3_LEGACY_KEY` 常量 + `defaultWorkDir` 选项 + JSDoc 互引**（review C2 文档化），见下方「过渡性设计」段。
+
+### `8200068` review 修复轮（**2C / 7W / 9S 全部处置**，S15/S17/S18 合理跳过）
+
+- **C1** ready→idle 直接测试补充——原测试 3.1 名不副实走 `running → idle`（裁定 C 是 `ready → idle`）；补 ready 相位无写命令 5min 后判 idle 路径的三条直接测试 + 写命令重置计时器两条 + spawning/blocked_on 豁免两条，**3.1 名实相符**。
+- **C2** **方案 a**——**`M3_LEGACY_KEY` 导出常量 + 过渡性设计 JSDoc + 已知限制 order-dependent**；三处加 JSDoc 互引：`M3_LEGACY_KEY` 常量块（导出 + 三个使用点解释）/ `BridgeSessionLayerOptions.defaultWorkDir` 字段块（用户面 knob）/ `makeOutboundWrapper` outbound 注释（出站 `session: 'm3-legacy'` 标记语义）；并通过 `export const M3_LEGACY_KEY = 'm3-legacy'` 让 `index.ts` 可消费同一 key 避免字面量漂移。**known limitation**：当 explicit session manager 与 M3-legacy manager 共存时，session-less 命令按插入序路由到任一 manager（order-dependent），M4 不修，**任务 08 落地后该路径退役**。
+- **W3** 迁移去双播——`attemptPendingMigration` 返回 `{migrated, broadcastedPhase}` 二元组，保证 map 键迁移 + `session_state` 广播在一次调用内完成，避免「删除旧键 → 期间被新命令查 → 找不到 → 重建失败 → 设置新键」窗口被误路由。
+- **W4** wrapper 注入语义钉桩——`makeOutboundWrapper(holder, manager)` 二参构造 + 钉 `holder.current` 是唯一真相源（每个 outbound envelope 读 holder.current 一次，不缓存）；原单参版本会被 manager phase 广播把 `holder.current` 隐式改写，**注入语义修正**让 phase 迁移事件不会污染出站 wrapper。
+- **W5** 编码碰撞首匹配语义 JSDoc + 双钉桩——`sessionSubdir` 多 work_dir 共享编码名（如 `/mnt/a/x` 与 `/mnt/b/x` 编码后可能冲突）的「首匹配」语义显式声明（fs.readdirSync 自然顺序）；helper 与 `attemptPendingMigration` 双钉桩；测试补碰撞用例两条验证首匹配行为。
+- **W7** 探针产物转发现记录——`tests/integration/probes/probe-result.json`（git 跟踪二进制制品）转 `tests/integration/probes/PROBE-SESSIONKEY-RESULT.md`（人类可读 + 探针脚本写 `.tmp/` 而非 git 跟踪路径），pin 住 pi 版本 0.85.1 + 复跑命令 + 升级体检比对清单；`.gitignore` 加 `tests/integration/probes/.tmp/`。
+- **W8** web 485 全绿 + build 236.38 KB 零增长——e2e 3 场景全绿（`pnpm test:e2e`）；web build 0 字节增长（M4 任务 06 仅 bridge 侧，web 侧任务 07/08 增量）；`pnpm run typecheck` / `pnpm run lint` / `pnpm run build` 全绿。
+- **S11** 探针脚本 stdout/stderr 净化——避免测试输出污染。
+- **S12** session-layer.test.ts `describe` 命名统一（入站路由 6 / 钉子 2 / 钉子 4 / 裁定 C / 钉子 3 / work_dir CRUD / session_list / 跨 manager 广播 八组）。
+- **S13** `Map.values().next().value` 注释明确「非确定性插入序」+ 测试钉桩（任务 06 不修，M4 不允 session-less 命令有多 manager 歧义，到 reject 路径走 `invalid_envelope`）。
+- **S14** M3_LEGACY_KEY 路径集成测试补——fake LLM + `#<token>` token-only URL → bridge auto-spawn `m3-legacy` 键 manager → session_state 携带 `session: 'm3-legacy'` 出站 + sessionful 命令走 normal manager 互不干扰。
+- **S16** `migration_completed` 单测补——map 键迁移完成后新 `session:'new'` + 同 work_dir 命令应创建**新** pending 键而非复用已迁移的 stem 键（防 migration 副作用把 pending 状态「冻结」成 stem）。
+- **S15/S17/S18 合理跳过**——S15 e2e 不动（含 web 行为，仅依赖 M3 token-only URL 兼容存在）；S17 探针 helper 不拆（`sessionkey-probe.ts` 单一职责，不为单测重构）；S18 e2e 模拟层不引入（e2e 沿用 ADR-0009 既有 3 场景不扩张）。
+
+### 5 项边界决策要点
+
+1. **Map 键迁移原子化**（W3 修复）——`attemptPendingMigration` 在收到首个 `agent_start` 事件时一次完成 `delete('new:<work_dir>') + set(stem, manager) + broadcast session_state(session: stem)` 三步，**返回 `{migrated, broadcastedPhase}` 二元组**让上层（`onOutbound` sink）可以幂等地过滤「重复 broadcastedPhase」事件（W3 教训：原实现删键与广播分离被中间命令误路由）。
+2. **`m3-legacy` 键 manager 不参与 pending 迁移**——`M3_LEGACY_KEY` 是固定 map 键（无 work_dir 派生语义），其 manager spawn 后不会走 `attemptPendingMigration`（无 pending 状态可迁移）；`session_state` 广播携带 `session: 'm3-legacy'` 让 web 端按 session 分桶时该桶无消费者；M3 兼容路径仅服务于 M3 token-only URL（`#<token>` 无 work_dir / session），**M4 正常 web 流程不得依赖**——web 任务 08 落地后该路径退役。
+3. **SPAWN_TIMEOUT_MS 四路径清理**——watchdog arm 在 `writeHandshakeGetState` 处（spawn 后立即同步写 handshake get_state 时启动 watchdog）；清理在 `completeHandshake` / `forceExited` / `handleExit` / `stop` 四路径统一清理（避免 watchdog 误触发自主 kill）。manager 复用既有自主 kill 标记路径（不引入新 kill 模式），BridgeSessionLayer 在 `forceExited` 回调处同步 `managers.delete(<map键>)` 清理 pending 键。
+4. **`defaultWorkDir` 是用户面 knob，`M3_LEGACY_KEY` 是内部 sentinel**——前者由 index.ts 注入（来自 config.work_dir，M3 兼容），后者由 BridgeSessionLayer 内部持有（map 键字面量）。两者协同启用/禁用 M3-compat auto-spawn 路径，**任务 08 落地后两个一起退役**。
+5. **work_dir CRUD 错误码统一 `internal`**（任务 04 S2 移交义务落地）——`StateError`（`parse_failed` / `invalid_state`）经 try/catch 映射为 `result.error.code: 'internal'` + message 透传原 message；沿用 control.md §8 既有 6 code 集合不新增；测试钉桩注入 mock `WorkDirStore` 抛 `StateError` → 断言回执 shape。
+
+### C2 移交义务（任务 [[tasks/m4/08-web-multi-session-store.md|08]] 接收）
+
+**m3-legacy 路径退役条件**——任务 08 落地后评估 M3-compat auto-spawn 是否退役：
+- **web 端强制 envelope `session` 字段**——任务 08 落地后，web M4 流程的所有 pi 命令与 get_state **必须携带 session 字段**。`M3_LEGACY_KEY` 兼容路径仅为 M3 token-only URL（`#<token>` 无 work_dir / session）存在；`m3-legacy` 键 manager 的 session_state 广播会带 `session:'m3-legacy'`，web 按 session 分桶时该桶无消费者——**M4 正常流程不得依赖 session-less 命令**。
+- **退役评估点**——任务 08 完成后：① 检查 `M3_LEGACY_KEY` map 键 manager 是否仍存在（M3 token-only URL 仅 E2E 3 场景用）；② 若 E2E 已迁移到带 session 字段 → 删除 `BridgeSessionLayer.M3_LEGACY_KEY` / `resolveM3CompatManager` / `defaultWorkDir` 三处代码（JSDoc 已加互引方便移除）；③ 同步更新 [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md|ADR-0008]] §影响段 + [[prds/m4-multi-session.md|PRD §修订注记]]（2026-09-08 任务 06 实施修订 2026-09-08 任务 08 退役评估）。
+- **过渡性设计 JSDoc 互引**——`BridgeSessionLayer.M3_LEGACY_KEY` / `resolveM3CompatManager` / `defaultWorkDir` 三处 JSDoc 已加互引注释（commit `8200068` C2），每个 call site 都能看到「这是过渡性设计，任务 08 退役」提示。
+- **e2e 迁移路径**——E2E 3 场景（沿用 ADR-0009 MVP）当前依赖 `#<token>` token-only URL 触发 M3-compat 路径；任务 08 完成后应迁移到 `session` 字段显式带值（task 10 E2E 扩展范围）。
+
+### 测试 / 构建基线
+
+- 全仓 **单测 446 → 485**（+39：session-layer.test.ts +32 单测 + list_directories 接线 5 条随迁 + work_dir CRUD 增量 2 条）；既有 446 测试零回归。
+- 集成 **30 → 32**（+2：pending → stem 迁移端到端 + 多 work_dir 并行）；既有 30 集成零回归。
+- **e2e 3 场景全绿**（任务 06 commit `8200068` W8 实证）。
+- `pnpm run typecheck` / `pnpm run lint` / `pnpm run build` 全绿；`packages/web` build 236.38 KB **零增长**（任务 06 仅 bridge 侧）。
+- `packages/bridge` 文件清单：1 文件新建（`src/session-layer.ts`）+ 2 文件新建测试（`__tests__/session-layer.test.ts` / `__tests__/list-directories.test.ts` 仅迁移 5 条接线测试，纯函数模块不动）+ 1 文件改（`src/pi-process.ts` 删除 `handleListDirectories` 临时宿主分支 + 移除 `handleGetState` 等迁出逻辑）+ 1 文件改（`src/index.ts` 接线 `BridgeSessionLayer` + 注入 `defaultWorkDir`）；`packages/shared` / `packages/web` / `packages/worker` 零改动（协议层任务 02 已锁版）。
+
+### 与 [[tasks/m4/05-bridge-list-directories.md|任务 05]] / [[tasks/m4/04-bridge-state-json.md|任务 04]] / [[tasks/m4/02-shared-protocol-v3.md|任务 02]] 对照
+
+| 维度 | M4 任务 [[tasks/m4/02-shared-protocol-v3.md\|02]] | M4 任务 [[tasks/m4/04-bridge-state-json.md\|04]] | M4 任务 [[tasks/m4/05-bridge-list-directories.md\|05]] | M4 任务 06（本任务） |
+|------|---------------------------------|---------------------------------|---------------------------------|---------------------|
+| 测试基线 | shared 308 不变 | 361 → 417 | 417 → 446 | 446 → **485 单测** / **32 集成** |
+| 新建核心文件 | `work-dirs.ts` / `session-list.ts` | `state.ts` | `list-directories.ts` | `session-layer.ts` |
+| 关键 seam | envelope `session` 启用规则（schema 仍 optional）+ ADR-0010 | `WorkDirStore` + `StateError` | 纯函数 + 单点映射 | `BridgeSessionLayer` 多 manager Map + SPAWN_TIMEOUT_MS + ready idle + pending 键控 |
+| review 结论 | 0C / 4W / 7S（6 项落地 + 3 项递延任务 09）| **1C 闭合 / 6W 全修 / 4S**（S2 转任务 06 义务：StateError→internal 映射）| 0C / 4W / 8S（S1 转任务 06：list_directories 接线随迁）| **2C / 7W / 9S 全部处置**（C2 m3-legacy 文档化转任务 08 退役评估；S15/S17/S18 三项合理跳过）|
+| 教训承接 | M3 `1c86aca` worker 转发链教训 | M3 `config.ts` 三件套模式 + atomic write POSIX 语义 | M3 `normalizeCommandError` 同类「domain-level outcome + wire-level 翻译」分层 | M3 `get_messages.reply_to` 翻译层教训 + M3 `completeHandshake` 握手写入教训 + **真 pi 探针铁律**（凡未实测的落盘细节不可信）|

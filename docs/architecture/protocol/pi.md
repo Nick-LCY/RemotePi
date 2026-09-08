@@ -252,6 +252,8 @@ bridge 收到 `session:'new'` + `payload.work_dir`：
 - **边界**：`session:'new'` 但 payload 缺 `work_dir` → 拒，回 `result.ok = false` + `error.code: 'invalid_envelope'`（M4 操作惯例下必带，缺省视为协议错）。
 
 > **实测验证点（PRD 落盘前必做）**：(a) bridge 是否能在 pi 完成首次 jsonl 写入前读出文件名？答：不能——pi 是 lazy 创建文件的（首次 `agent_start` / 首次 stdout entry 写入后才落盘）。M4 必须接受这一窗口——spawning → ready 期间 web 命令的 `session: 'new'` 占位（map 内 pending 键 `'new:' + work_dir`），bridge 在收到首个 `entry_appended` 事件时（或 ready 后第一次 `message_start`）从 stdout / `--session-dir` 派生 stem 并广播 `session_state{session: <stem>}`。**凡未实测的落盘细节不可信**——任务 06 实施期跑真 pi 探针（沿用 tasks/m3/10 假 LLM 套件）确认事件时序与 stem 派生点。
+>
+> **2026-09-08 任务 06 实施修订**（探针实测 pi 0.85.1，PRD 修订注记有完整说明，详见 `tests/integration/probes/PROBE-SESSIONKEY-RESULT.md`）：**pi 0.85.1 无 `entry_appended` 事件**——探针 script 中 `firstEntryAppended` 字段始终为 `null`（pi 走裸 `message_update` / `message_end` 流而非 entry 序列化）。**实际派生点改写为「首个非 handshake stdout 事件 + agent_dir 扫描」**——实测为 `agent_start` 事件触发的同帧/微秒内 pi 创建 `<agentDir>/sessions/--<encodedWorkDir>--/<timestamp>_<uuid>.jsonl`；bridge 实现采用「`agent_start` 事件触发 + agent_dir 扫描」双保险策略。`sessionFile` 字段在 `agent_start` 帧内携带（绝对路径）——可作为 fast-path 直接消费；当前 bridge 实现走 agent_dir 扫描 fallback（更通用，应对未来 pi 版本不再携带该字段），`sessionFile` 字段留作 M+ 优化候选。PRD §1.5 候选信号「首个 `entry_appended` 或 ready 后第一次 `message_start`」**不适用**——实施期实测已替换。
 
 ### `pi/prompt.payload.work_dir` 仅 `session:'new'` 携带
 
