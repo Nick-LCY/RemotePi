@@ -33,6 +33,7 @@ import {
 import { logger } from './logger.js';
 import { resolvePiAgentDir } from './pi-cwd-encoder.js';
 import { PiProcessManager } from './pi-process.js';
+import { BridgeSessionLayer, type BridgeSessionLayerOptions } from './session-layer.js';
 import {
   resolveDefaultStatePath,
   StateError,
@@ -159,6 +160,8 @@ export interface StartOptions {
    *  When omitted, start() constructs a real `PiProcessManager`
    *  bound to the resolved config + isolation dir. */
   piProcessManager?: PiProcessManager;
+  sessionLayer?: BridgeSessionLayer;
+  sessionLayerOptions?: Partial<BridgeSessionLayerOptions>;
 }
 
 /** Friendly single-line stderr message for a `ConfigError`. We do NOT
@@ -187,7 +190,8 @@ export function start(options: StartOptions = {}): {
   shareUrl: string;
   client: BridgeClient;
   workerUrl: string;
-  manager: PiProcessManager;
+  manager: PiProcessManager | null;
+  sessionLayer: BridgeSessionLayer;
   workDirStore: WorkDirStore;
   statePath: string;
 } {
@@ -327,35 +331,78 @@ export function start(options: StartOptions = {}): {
   // sessions + auth.json to. Result: web sessions and the
   // operator's terminal sessions land in the same directory, so
   // web can pick up whichever was most recent on restart.
+  // M4 task 06: bridge routes inbound + outbound envelopes through
+  // a `BridgeSessionLayer` that owns a `Map<sessionKey, manager>`
+  // plus the control commands (work_dir_*, list_directories,
+  // session_list, get_state). The legacy single-manager path is
+  // preserved as a back-compat seam: when `options.piProcessManager`
+  // is provided, we wrap it in a synthetic layer that hands every
+  // envelope to that manager.
   const agentDir = resolvePiAgentDir();
-  const manager =
-    options.piProcessManager ??
-    new PiProcessManager({
+
+  let sessionLayer: BridgeSessionLayer;
+  if (options.sessionLayer !== undefined) {
+    sessionLayer = options.sessionLayer;
+  } else if (options.piProcessManager !== undefined) {
+    // Back-compat: a single injected manager means the layer has
+    // exactly one slot. We hand-wire it under a synthetic M3
+    // sentinel key (`m3-legacy`) so the layer's M3-compat branch
+    // (map.size === 1) forwards envelopes to the injected manager.
+    // Existing M3 tests that drove `result.manager.handleEnvelope(...)`
+    // keep working without rewriting.
+    sessionLayer = new BridgeSessionLayer({
       agentDir,
-      workDir: config.work_dir,
-      // Manager → WSS: every outbound envelope (session_state,
-      // result, command_result, snapshot, event) flows through the
-      // client's existing sendEnvelope path. Closed-over reference,
-      // so subsequent reconnects are picked up automatically (the
-      // client retains the same socket factory on its reconnects).
-      onOutboundEnvelope: (env) => client.sendEnvelope(env),
+      workDirStore,
+      onOutbound: (env) => client.sendEnvelope(env),
+      makeManager: () => options.piProcessManager!,
+      ...(options.sessionLayerOptions ?? {}),
     });
-  // WSS → manager: every envelope the client doesn't handle
+    sessionLayer.start();
+    type LayerInternals = {
+      spawnManager: (opts: { mapKey: string; workDir: string; sessionJsonlPath: string | null }) => unknown;
+    };
+    const internals = sessionLayer as unknown as LayerInternals;
+    internals.spawnManager({
+      mapKey: 'm3-legacy',
+      workDir: config.work_dir,
+      sessionJsonlPath: null,
+    });
+  } else {
+    sessionLayer = new BridgeSessionLayer({
+      agentDir,
+      workDirStore,
+      onOutbound: (env) => client.sendEnvelope(env),
+      ...(options.sessionLayerOptions ?? {}),
+    });
+    sessionLayer.start();
+  }
+
+  // WSS → session layer: every envelope the client doesn't handle
   // internally (everything except ping/pong/bridge_status/error/
-  // handshake) lands here. Manager routes by kind + type.
-  client.setEnvelopeSink(manager.handleEnvelope.bind(manager));
-  manager.start();
-  // Note: the manager only spawns pi on the first §2.7 spawn
-  // trigger (PRD §2.3 — "延迟到首任务触发, 不预热"). The bridge
-  // sitting at phase=`exited` with no child is the intended steady
-  // state.
+  // handshake) lands here. The layer routes by `kind` + `type` and
+  // hands the rest to the right per-session manager. → session layer: every envelope the client doesn't handle
+  // internally (everything except ping/pong/bridge_status/error/
+  // handshake) lands here. The layer routes by  +  and
+  // hands the rest to the right per-session manager.
+  client.setEnvelopeSink((env) => sessionLayer.handleEnvelope(env));
+  // Note: per-session managers only spawn pi on the first §2.7
+  // spawn trigger (PRD §2.3 — "延迟到首任务触发, 不预热"). The bridge
+  // sitting with an empty map is the intended steady state.
+
+  // `manager` is the legacy single-manager field. In M4 the layer
+  // owns the per-session managers; `manager` is null by default and
+  // only set when the caller injected a back-compat `piProcessManager`.
+  // Existing M3 tests that use `result.manager.handleEnvelope(...)`
+  // continue to work via the legacy layer wiring above.
+  const legacyManager = options.piProcessManager ?? null;
 
   return {
     token,
     shareUrl: shareLink,
     client,
     workerUrl,
-    manager,
+    manager: legacyManager,
+    sessionLayer,
     workDirStore,
     statePath,
   };

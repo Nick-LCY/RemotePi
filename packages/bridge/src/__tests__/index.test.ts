@@ -430,11 +430,14 @@ describe('start (config-driven entry)', () => {
     expect(sock).toBeDefined();
     expect(sock.sent.length).toBeGreaterThan(0);
 
-    // Drive the manager through its public handleEnvelope (the same
-    // path BridgeClient uses internally). The manager answers with a
-    // `result` envelope; that envelope should land on the socket via
-    // the outbound wiring.
-    result.manager.handleEnvelope({
+    // M4 task 06: drive the bridge through the session layer (the
+    // same path BridgeClient uses internally). The session layer's
+    // `handleEnvelope` routes to the right per-session manager; for
+    // a `get_state` without a session field, the M3-compat branch
+    // (map.size === 1) forwards to the single registered manager.
+    // The manager answers with a `result` envelope; that envelope
+    // should land on the socket via the outbound wiring.
+    result.sessionLayer.handleEnvelope({
       v: 1,
       kind: 'control',
       type: 'get_state',

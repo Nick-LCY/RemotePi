@@ -69,7 +69,6 @@ import {
   type PiExtensionUIResponse,
   buildExtensionUIRequestEnvelope,
 } from './extension-ui.js';
-import { listDirectories, mapListDirectoriesDomainCodeToWire } from './list-directories.js';
 import { logger } from './logger.js';
 import {
   authJsonExists,
@@ -85,6 +84,16 @@ import {
  *  timer; if it fires without a new prompt, the child is killed via
  *  SIGTERM → 1s → SIGKILL (PRD §2.3 / 已敲定决策 4 / ADR-0003). */
 export const IDLE_TIMEOUT_MS = 5 * 60_000;
+
+/** Spawning-phase watchdog — if `pi` fails to complete the
+ *  handshake within this window the manager force-exits (self-kill
+ *  → exited broadcast + map-key cleanup at the session layer). M4
+ *  钉子 4 — see [[tasks/m4/06-bridge-session-layer.md]] and
+ *  [[prds/m4-multi-session.md#§2-3-piprocessmanager-复数化map-sessionkey-manager-pending-键-spawn_timeout_ms-ready-idle|PRD §2.3]].
+ *  Default 60s comfortably covers P95 cold-start (实测: 真 pi 冷启动
+ *  ~300-1000ms 即可到达 spawning → ready；60s 上限钉死悬挂场景)。
+ *  Tests inject a smaller value via `spawnTimeoutMs`. */
+export const SPAWN_TIMEOUT_MS = 60_000;
 
 /** Grace period between SIGTERM and SIGKILL during the autonomous
  *  kill sequence (PRD §2.3 + roadmap §4.7). 1000ms matches the
@@ -411,6 +420,10 @@ export interface PiProcessOptions {
   idleTimeoutMs?: number;
   /** Override SIGKILL grace delay (test seam). */
   sigkillDelayMs?: number;
+  /** Override spawn-phase watchdog (钉子 4). Default: `SPAWN_TIMEOUT_MS`
+   *  (60s). Tests inject a smaller value to validate the kill path
+   *  without burning 60s per case. */
+  spawnTimeoutMs?: number;
   /** Override the env override passed to spawn (test seam — defaults to process.env).
    *  Test seam: override baseEnv to seal against host env state (see test 10.3a).
    *  When asserting "spawn env does NOT carry X", pass a baseEnv built from
@@ -484,6 +497,7 @@ export class PiProcessManager {
   private readonly clearTimer: typeof clearTimeout;
   private readonly idleTimeoutMs: number;
   private readonly sigkillDelayMs: number;
+  private readonly spawnTimeoutMs: number;
   private readonly baseEnv: NodeJS.ProcessEnv;
   private readonly onOutbound: (env: Envelope) => void;
   private readonly onStderr: (chunk: string) => void;
@@ -517,10 +531,20 @@ export class PiProcessManager {
    *  is in progress. Cleared once the child actually exits. */
   private sigkillTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** Handle for the idle timeout started when `agent_settled` arrives.
-   *  Cleared whenever a new command is sent (we transition back to
-   *  running) or the child exits. */
+  /** Handle for the idle timeout started when `agent_settled` arrives
+   *  OR when `ready` is entered (裁定 C — ready 5min no-write kills).
+   *  Cleared whenever a new write command is sent (transition back
+   *  to running) or the child exits. */
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Handle for the spawning-phase watchdog (钉子 4 — SPAWN_TIMEOUT_MS).
+   *  Armed in `writeHandshakeGetState` immediately after the spawn;
+   *  cleared by `completeHandshake` on the successful get_state reply.
+   *  If the timer fires before the handshake completes, the child is
+   *  force-exited (self-kill → exited broadcast); the session layer
+   *  watches for the exited transition and removes the map key
+   *  (including pending `new:WORK_DIR` keys). */
+  private spawnTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Commands received during `spawning` — held until the handshake
    *  completes. Drained in arrival order on `ready` transition. */
@@ -584,6 +608,7 @@ export class PiProcessManager {
     this.clearTimer = options.clearTimeout ?? clearTimeout;
     this.idleTimeoutMs = options.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
     this.sigkillDelayMs = options.sigkillDelayMs ?? SIGKILL_DELAY_MS;
+    this.spawnTimeoutMs = options.spawnTimeoutMs ?? SPAWN_TIMEOUT_MS;
     this.baseEnv = options.baseEnv ?? process.env;
     this.onOutbound = options.onOutboundEnvelope ?? (() => undefined);
     this.onStderr = options.onStderr ?? ((chunk) => logger.warn(`pi stderr: ${chunk.trimEnd()}`));
@@ -749,6 +774,7 @@ export class PiProcessManager {
     this.stopped = true;
     this.clearIdleTimer();
     this.clearSigkillTimer();
+    this.clearSpawnTimer();
     // W3: clear outstanding commands. Without this, late responses
     // from the dying child (e.g. one that flushes a queued reply
     // right before SIGTERM delivery) could still match a stale
@@ -902,6 +928,33 @@ export class PiProcessManager {
       bridgeInitiated: true,
     });
     logger.info(`handshake get_state written (id=${id})`);
+    // Arm the spawning-phase watchdog (钉子 4 — SPAWN_TIMEOUT_MS).
+    // If pi doesn't reply to the handshake before this fires, the
+    // child is force-exited (self-kill → exited broadcast). The
+    // session layer listens for the broadcast and removes the map
+    // key (including pending `new:WORK_DIR` keys).
+    this.armSpawnTimer();
+  }
+
+  /** Arm the spawning watchdog. Idempotent: a stale timer from a
+   *  previous spawn is cleared first so back-to-back spawns (e.g.
+   *  crash-restart path) never have two timers racing. */
+  private armSpawnTimer(): void {
+    this.clearSpawnTimer();
+    this.spawnTimer = this.setTimer(() => {
+      this.spawnTimer = null;
+      logger.warn(
+        `spawning exceeded ${this.spawnTimeoutMs}ms without handshake — force-exiting`,
+      );
+      this.forceExitedAfterSpawnFailure('spawn timeout');
+    }, this.spawnTimeoutMs);
+  }
+
+  private clearSpawnTimer(): void {
+    if (this.spawnTimer !== null) {
+      this.clearTimer(this.spawnTimer);
+      this.spawnTimer = null;
+    }
   }
 
   /** Translate a child 'error' event (spawn failure / broken pipe /
@@ -966,6 +1019,7 @@ export class PiProcessManager {
     this.flushStderr();
     this.child = null;
     this.clearSigkillTimer();
+    this.clearSpawnTimer();
     this.outstandingCommands.clear();
     this.extensionUIRouter.clearAll();
     if (droppedDeferred > 0) {
@@ -1274,8 +1328,17 @@ export class PiProcessManager {
   /** Move spawning → ready + drain the deferred command queue. A queued
    *  write command (prompt / steer / follow_up) causes ready → running;
    *  read-only commands such as get_messages leave the manager in ready
-   *  and must not emit a running broadcast. */
+   *  and must not emit a running broadcast.
+   *
+   *  裁定 C extension: when transitioning into `ready` WITHOUT a
+   *  queued write command (e.g. user landed on the screen but hasn't
+   *  typed yet), start the 5min idle timer — same code path that
+   *  arms on `running → idle` via `agent_settled`. A subsequent
+   *  write command clears it (see `handleSpawnTrigger`); pi emitting
+   *  `agent_settled` while still in `ready` is treated as out-of-spec
+   *  (per the existing `startIdleTimer` gate). */
   private completeHandshake(): void {
+    this.clearSpawnTimer();
     this.transitionTo('ready');
     const queued = this.deferredCommands;
     this.deferredCommands = [];
@@ -1284,7 +1347,37 @@ export class PiProcessManager {
     }
     if (queued.some((cmd) => isWriteCommand(cmd.type))) {
       this.transitionTo('running');
+    } else {
+      // 裁定 C — ready enters idle timer immediately on handshake
+      // completion when no write command is queued. This arms the
+      // same 5min `IDLE_TIMEOUT_MS` countdown that the running
+      // phase uses for `agent_settled`, so "user is sitting on a
+      // ChatView but hasn't typed" reaps the child identically to
+      // "user typed something and pi went idle". The `idle` phase
+      // is excluded from this gate (already running the timer);
+      // spawning/exited are also excluded (no live child).
+      this.startReadyIdleTimer();
     }
+  }
+
+  /** 裁定 C — start the 5min idle timer from the `ready` phase. Mirrors
+   *  `startIdleTimer` (which gates on `running`); here the gate is
+   *  `ready` instead. Any write command via `handleSpawnTrigger`
+   *  clears this timer on the `ready → running` transition. */
+  private startReadyIdleTimer(): void {
+    if (this.phase !== 'ready') {
+      // Out-of-spec arrival — log + bail without touching any
+      // active timer (mirrors the gate in `startIdleTimer`).
+      logger.info(
+        `startReadyIdleTimer ignored — phase=${this.phase} (only armed in 'ready' per 裁定 C)`,
+      );
+      return;
+    }
+    this.clearIdleTimer();
+    this.idleTimer = this.setTimer(() => this.killIdleChild(), this.idleTimeoutMs);
+    // No phase transition here — ready → idle is what the timer
+    // firing achieves via killIdleChild → exited.
+    logger.info(`ready-phase idle timer armed (${this.idleTimeoutMs}ms, 裁定 C)`);
   }
 
   /** (Removed — the old `handlePiEvent` assumed pi 0.85.1 wrapped events
@@ -1318,6 +1411,12 @@ export class PiProcessManager {
     // Clear any pending SIGKILL escalation — the child is already
     // exiting, the timer is now moot.
     this.clearSigkillTimer();
+    // Clear the spawning watchdog too — same rationale as the SIGKILL
+    // timer above; the child is dead so the watchdog is moot.
+    // (钉子 4 / SPAWN_TIMEOUT_MS — without this, a late timer firing
+    // after the child exited would call forceExitedAfterSpawnFailure
+    // on a clean exited state.)
+    this.clearSpawnTimer();
     // W3: drop the outstanding-commands table — every entry it held
     // pointed at a command written to (or queued for) the now-dead
     // child. Carrying them across a crash-restart would let a future
@@ -1575,7 +1674,9 @@ export class PiProcessManager {
             });
             break;
           }
-          this.handleListDirectories(env.id, pathField, env.session);
+          // M4 task 06 migration: list_directories handler has moved
+          // to BridgeSessionLayer (alongside work_dir_* commands).
+          // Drop on the floor here; session-layer handles it.
           break;
         // Other control types (`handshake`, `ping`, `pong`,
         // `session_state`, `session_list`, `result`, `error`) are
@@ -1634,60 +1735,12 @@ export class PiProcessManager {
     });
   }
 
-  /** `control/list_directories` — M4 task 05 directory browser.
-   *  Pure fs operation; answer without spawn (PRD §2.7: never
-   *  trigger spawn for a read). Delegates to the pure function
-   *  in `list-directories.ts` and maps its domain-level outcome
-   *  to the wire-level `result` envelope.
-   *
-   *  ## Wire-level error code mapping (PRD §2.5 + ADR-0010 §决策.4)
-   *
-   *  All three "user-path-is-bad" cases (ENOENT / EACCES / ENOTDIR)
-   *  collapse to wire-level `invalid_envelope` — the path provided
-   *  in the envelope payload is invalid in the fs-semantic sense
-   *  even though its type-level shape is valid (schema accepts any
-   *  string). `internal` is reserved for non-fs-classified errors
-   *  (EIO / ELOOP / revalidation-failure).
-   *
-   *  See `list-directories.ts` header for the full mapping table
-   *  + rationale (each branch carries a domain-specific message so
-   *  the operator can grep their filesystem, while the wire-level
-   *  code is the closest existing 6-value set member). */
-  private handleListDirectories(requestId: string, path: string | undefined, session: string | undefined): void {
-    const outcome = listDirectories(path);
-    // M4 envelope field: `session` is the multi-session routing
-    // key. We propagate it verbatim on the reply envelope so the
-    // web can correlate by session — the dispatcher doesn't *use*
-    // it (list_directories is a global fs operation), but the
-    // reply still needs to carry it for the web to route the
-    // response into the correct session bucket.
-    const baseEnvelope = {
-      v: PROTOCOL_VERSION,
-      kind: 'control' as const,
-      type: 'result' as const,
-      id: randomUUID(),
-      reply_to: requestId,
-      ...(session !== undefined ? { session } : {}),
-    };
-    if (outcome.ok) {
-      this.onOutbound({
-        ...baseEnvelope,
-        payload: { ok: true, data: outcome.data },
-      });
-      return;
-    }
-    // Domain-level → wire-level mapping via the pure helper in
-    // list-directories.ts (single source of truth for the mapping
-    // table — see list-directories.ts header for rationale).
-    const wireCode = mapListDirectoriesDomainCodeToWire(outcome.code);
-    this.onOutbound({
-      ...baseEnvelope,
-      payload: {
-        ok: false,
-        error: { code: wireCode, message: outcome.message },
-      },
-    });
-  }
+  // `control/list_directories` handler removed in M4 task 06 — the
+  // handler now lives in `BridgeSessionLayer` (alongside
+  // `work_dir_*` commands) where it belongs semantically: it's a
+  // pure fs / persistence operation with no pi-subprocess dependency.
+  // The 15a-15e dispatcher wiring tests moved with it (see
+  // `__tests__/session-layer-list-directories.test.ts`).
 
   // ----------------------------------------------------------------
   // Inbound pi commands — spawn trigger handling
@@ -1936,6 +1989,14 @@ export class PiProcessManager {
     id: string,
   ): { webEnvelopeId: string; command: string; bridgeInitiated: boolean } | undefined {
     return this.outstandingCommands.get(id);
+  }
+
+  /** Work directory this manager was constructed for (PRD §2.3). The
+   *  `BridgeSessionLayer` needs this when constructing a fresh
+   *  `PiProcessManager` so it can pass the same cwd the operator
+   *  originally picked. */
+  getWorkDir(): string {
+    return this.workDir;
   }
 
   /** Quick assertion helper — every phase must be one of the lock-
