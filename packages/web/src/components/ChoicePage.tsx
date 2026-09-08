@@ -44,7 +44,16 @@
 // mutation we re-fire `work_dir_list` so the mirror stays current —
 // the bridge doesn't broadcast changes itself; the web polls.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+// Review 修复轮——超时预算集中常量：
+//   - WORK_DIR_TIMEOUT_MS / SESSION_LIST_TIMEOUT_MS = 5_000（参考
+//     M3 RECOVERY_TIMEOUT_MS；这些 control 命令均为轻量 fs /
+//     内存查询，bridge 一秒内可回应）；
+//   - LIST_DIRECTORIES_TIMEOUT_MS = 10_000（list_directories 属
+//     fs 操作，大目录 readdirSync 可能慢——见 reviewer W1 推导）。
+const WORK_DIR_TIMEOUT_MS = 5_000;
+const SESSION_LIST_TIMEOUT_MS = 5_000;
 import type { SessionListEntry } from '@remotepi/shared';
 
 import {
@@ -101,20 +110,44 @@ function ChoiceLevel1({ token }: { token: string }) {
   // navigation also re-syncs the mirror with the canonical bridge
   // state. Mutation actions (`work_dir_add` / `work_dir_remove`)
   // re-fire the same query below to invalidate the cache.
+  //
+  // Review 修复轮 C1+W1+W5——废弃 setInterval 50ms 轮询 +
+  // transient `workDirResults` Map + `takeWorkDirResult` 方法，
+  // 改为一次性回调模式（对齐 M3 recovery.ts
+  // `registerReplyResolver` 先例）：
+  //   1. sendWorkDirList() → outbound id;
+  //   2. registerReplyResolver(id, cb) 注册一次性回调；
+  //   3. setTimeout 看门狗——超时调 unsub（静默，原实现
+  //      mount 阶段超时无 UI 反馈；mirror 空数组 + "暂无保存
+  //      的工作目录"提示已足够）；
+  //   4. useEffect cleanup 统一 clearTimeout + unsub（W5）；
+  //   5. 5s 超时预算（work_dir_list 属小包 fs 操作，参考 M3
+  //      RECOVERY_TIMEOUT_MS）。
+  // 自动清理：reply 到达时 `dispatchReplyResolvers` 自动从
+  // 内部 map 删除 resolver（one-shot）——无需 resolver 内部
+  // 调用 unsub；显式 unsub 仍保留作双保险。
+  //
+  // S4 顺手：进入时清陈旧 removeError 状态（用户在别的路径已经
+  // 看过该错误，回到 level=1 不应继续展示——避免重新 mount
+  // 仍顶置上一轮的移除失败提示）。
   useEffect(() => {
+    setRemoveError(null);
     const id = client.sendWorkDirList();
-    const start = Date.now();
-    const pollHandle = setInterval(() => {
-      const result = client.takeWorkDirResult(id);
-      if (result !== null) {
-        clearInterval(pollHandle);
-        return;
-      }
-      if (Date.now() - start > 5_000) {
-        clearInterval(pollHandle);
-      }
-    }, 50);
-    return () => clearInterval(pollHandle);
+    let unsub: (() => void) | null = null;
+    const watchdog = setTimeout(() => {
+      unsub?.();
+      // 静默超时——原实现 mount 阶段超时无 UI 反馈；保持行为
+      // 一致（mirror 保持空数组，UI 展示"暂无保存的工作目录"）。
+    }, WORK_DIR_TIMEOUT_MS);
+    unsub = client.registerReplyResolver(id, () => {
+      // 镜像已由 WsClient 集中 case 'result' 处理器（work_dir_list
+      // 解码分支）更新，无需此处手动 setWorkDirs。看门狗清除。
+      clearTimeout(watchdog);
+    });
+    return () => {
+      clearTimeout(watchdog);
+      unsub?.();
+    };
   }, [client]);
 
   const handleSelect = useCallback(
@@ -133,37 +166,49 @@ function ChoiceLevel1({ token }: { token: string }) {
       setRemoveError(null);
       setRemovingPath(path);
       const id = client.sendWorkDirRemove(path);
-      const start = Date.now();
-      const pollHandle = setInterval(() => {
-        const result = client.takeWorkDirResult(id);
-        if (result !== null) {
-          clearInterval(pollHandle);
-          setRemovingPath(null);
-          if (!result.ok) {
-            setRemoveError(
-              `移除失败（${result.error?.code ?? 'unknown'}）：${result.error?.message ?? 'unknown error'}`,
-            );
-            return;
-          }
-          // Re-fetch so the mirror catches up. We don't await —
-          // the cache update fires automatically when the
-          // work_dir_list reply lands.
-          client.sendWorkDirList();
-          // If the user just removed their currently-selected
-          // work_dir, fall back to level=1 (we're already here, so
-          // no-op; if they removed a different one, the
-          // currentWorkDir store mirror stays valid).
-          if (currentWorkDir === path) {
-            window.location.hash = changeWorkDirHash(token);
-          }
+      // Review 修复轮 C1+W1+W5——废弃 setInterval 50ms 轮询 +
+      // transient `workDirResults` + `takeWorkDirResult`：
+      //   - 一次性回调 `registerReplyResolver(id, cb)` 处理
+      //     成功/失败两种分支（成功 → 重查 mirror + 处理
+      //     currentWorkDir 回落；失败 → setRemoveError）；
+      //   - setTimeout 看门狗超时 → unsub + setRemoveError；
+      //   - 5s 超时预算（work_dir_remove 与 mount 同）。
+      // 注意：setRemovingPath(null) 是删除结束的 “UI 反馈点”
+      // 必须在成功 + 失败 + 超时三条路径都调用——原轮询实现
+      // 保证过；这里用 let 持有 unsub 让超时闭包可调用。
+      let unsub: (() => void) | null = null;
+      const watchdog = setTimeout(() => {
+        unsub?.();
+        setRemovingPath(null);
+        setRemoveError('work_dir_remove 超时未回执 — bridge 可能离线');
+      }, WORK_DIR_TIMEOUT_MS);
+      unsub = client.registerReplyResolver(id, (env) => {
+        clearTimeout(watchdog);
+        setRemovingPath(null);
+        if (env.kind !== 'control' || env.type !== 'result') return;
+        if (env.payload.ok !== true) {
+          // 失败：bridge 拒绝（StateError / path 不在 state.json
+          // / 权限不足等）；error.code / error.message 来自 bridge
+          // 6-code 锁版集合。
+          const err = env.payload.error;
+          setRemoveError(
+            `移除失败（${err?.code ?? 'unknown'}）：${err?.message ?? 'unknown error'}`,
+          );
           return;
         }
-        if (Date.now() - start > 5_000) {
-          clearInterval(pollHandle);
-          setRemovingPath(null);
-          setRemoveError('work_dir_remove 超时未回执 — bridge 可能离线');
+        // 成功：重查 mirror 让 UI 赶上 bridge 端 state.json。
+        // 重查本身不 await——成功 reset 的 setWorkDirs 在
+        // work_dir_list reply 到达时自动触发（central handler
+        // 路径）。
+        client.sendWorkDirList();
+        // 若被删的是当前选中的 work_dir（用户在 level=1 时
+        // 应不会发生——`currentWorkDir` 由 hash 反推，level=1
+        // 无 work_dir 字段；但保留原逻辑以防御 stale render），
+        // 跳回 level=1；非当前选中则 mirror 不动。
+        if (currentWorkDir === path) {
+          window.location.hash = changeWorkDirHash(token);
         }
-      }, 50);
+      });
     },
     [client, currentWorkDir, token],
   );
@@ -263,6 +308,12 @@ function ChoiceLevel2({ token, workDir }: ChoiceLevel2Props) {
   const client = useWsClient();
   const sessionList = useSessionList();
   const [error, setError] = useState<string | null>(null);
+  // W4 inFlightListRef 同款防护：记录最近一次 sendSessionList
+  // 生成的 id；resolver 回调内如果发现已被新询查覆写则丢弃。
+  // 与 WsClient 集中处理器中 `_lastSessionListId` 守卫互补：
+  // 组件层避免本地 resolver 运行；WsClient 层避免 mirror 写入。
+  // useEffect cleanup 正常会 unsub 旧 resolver；本 ref 是防御层。
+  const inFlightListRef = useRef<string | null>(null);
 
   // 钉子 5 — level=2 刷新时机：
   //   - 进入 level=2 时查询一次（首次 mount 触发）
@@ -277,19 +328,42 @@ function ChoiceLevel2({ token, workDir }: ChoiceLevel2Props) {
   // 了"从 ChatView 退回"的场景（App.tsx 的 render 分支变化保证
   // ChoicePage 是新 mount），新会话 stem 回填留待任务 08 接线。
   // 这样避免了 setState 触发额外渲染 / 重查的复杂性。
+  //
+  // Review 修复轮 C1+W1——废弃 setInterval 纯超时看门狗
+  // （reviewer W1 原话：入站 setSessionList 已更新 store 镜像，
+  // 看门狗只需单个 setTimeout(5s) → setError）：
+  //   1. sendSessionList(workDir) → outbound id;
+  //   2. registerReplyResolver(id, cb) 注册一次性回调（只需
+  //      清看门狗 + W4 inFlightListRef 守卫——mirror 写入已
+  //      由 WsClient 集中处理器 + `_lastSessionListId` 守卫）；
+  //   3. setTimeout 看门狗超时 → unsub + setError；
+  //   4. useEffect cleanup 统一 clearTimeout + unsub（W5）；
+  //   5. 5s 超时预算（session_list 与 work_dir_* 同为轻量 fs
+  //      操作，参考 M3 RECOVERY_TIMEOUT_MS）。
   useEffect(() => {
     setError(null);
-    client.sendSessionList(workDir);
-    // 轮询一个 timeout 守门 — 没有数据轮询（mirror 由 inbound
-    // 回执 wholesale 替换）。如果 5s 内没回执则提示错误。
-    const start = Date.now();
-    const pollHandle = setInterval(() => {
-      if (Date.now() - start > 5_000) {
-        clearInterval(pollHandle);
-        setError('session_list 超时未回执 — bridge 可能离线');
-      }
-    }, 50);
-    return () => clearInterval(pollHandle);
+    const id = client.sendSessionList(workDir);
+    inFlightListRef.current = id;
+    let unsub: (() => void) | null = null;
+    const watchdog = setTimeout(() => {
+      unsub?.();
+      setError('session_list 超时未回执 — bridge 可能离线');
+    }, SESSION_LIST_TIMEOUT_MS);
+    unsub = client.registerReplyResolver(id, (_env) => {
+      // W4 组件层守卫：resolver 闭包内检查 inFlightListRef 仍
+      // 持有本次 id；否则是陈旧回执（中间 workDir 变化导致
+      // cleanup 已 unsub，但同时新 mount 写入 inFlightListRef）
+      // ——丢弃避免 callback 误调 setError 之类的状态。
+      if (inFlightListRef.current !== id) return;
+      clearTimeout(watchdog);
+      // 镜像已由 WsClient 集中 case 'result' 处理器（session_list
+      // 解码分支 + _lastSessionListId 守卫）更新；本回调仅做
+      // 守卫 + 清看门狗。
+    });
+    return () => {
+      clearTimeout(watchdog);
+      unsub?.();
+    };
   }, [client, workDir]);
 
   const handleSelectSession = useCallback(

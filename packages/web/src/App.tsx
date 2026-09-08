@@ -88,20 +88,35 @@ export function App() {
   // `work_dir` into the WsClient store so the ChoicePage's outbound
   // commands (session_list + future pi commands) can read it off the
   // store without re-parsing the URL.
+  //
+  // Review 修复轮 W6 + S1——hashchange effect 收敛为 mount-once：
+  //   - 监听器本身读 `window.location.hash`（不依赖 `auth`），所以
+  //     没必要将 `auth.workDir` 列入 deps。
+  //   - 原实现 deps = `[auth.workDir, client]` 错误：依赖了
+  //     auth.workDir 意味着每当 work_dir 变化（点“选择工作目录” /
+  //     点“更换目录”）该 effect 重跑，监听器被清理后重新加载——但
+  //     hashchange 事件本来就在下一个 tick 发出，新监听器听得到。
+  //     净效果是 *看起来* 能工作，但多了一次 cleanup + 重建 + 同步
+  //     `setCurrentWorkDir`（重复 setState，不幂等）。
+  //   - S1 一并处理：初始 `setCurrentWorkDir` 同步移出该 effect，
+  //     作为独立 mount-once 调用 + 监听器为权威路径（每次 hashchange
+  //     重新调用 `setCurrentWorkDir`）——消除冗余 setState。
   useEffect(() => {
+    // Mount-time mirror——原实现将“初始镜像”写在 effect 体内 `addEventListener`
+    // 之后；现拆为独立调用（块状语句上下文变为 mount-only 主体），含义一致。
+    client.setCurrentWorkDir(readAuth().workDir);
     const onHashChange = () => {
       const next = readAuth();
       setAuth(next);
+      // 监听器为权威路径：每次 hashchange 都重写镜像，
+      // 不再依赖 effect deps 重跑来 sync。
       client.setCurrentWorkDir(next.workDir);
     };
     window.addEventListener('hashchange', onHashChange);
-    // Mirror the initial work_dir into the store so the ChoicePage's
-    // outbound commands can read it without re-parsing the hash.
-    client.setCurrentWorkDir(auth.workDir);
     return () => window.removeEventListener('hashchange', onHashChange);
-    // client is stable for the lifetime of the component (memoized
-    // above); auth.workDir triggers a mirror update when the hash changes.
-  }, [auth.workDir, client]);
+    // client 是 useMemo 返回的稳定实例（见上方）——监听器生命周期与
+    // App mount 绑定，不需 deps 重跑。
+  }, [client]);
 
   // Drive connect/disconnect from token presence. Cleanup also disconnects
   // so StrictMode's mount → unmount → mount cycle doesn't leak an orphan

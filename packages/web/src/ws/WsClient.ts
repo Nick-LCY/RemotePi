@@ -31,7 +31,6 @@
 
 import {
   Envelope,
-  ListDirectoriesResultSchema,
   PROTOCOL_VERSION,
   SessionListResultSchema,
   SessionStatePayloadSchema,
@@ -43,7 +42,6 @@ import {
   type FollowUpPayload,
   type GetMessagesPayload,
   type ListDirectoriesPayload,
-  type ListDirectoriesResult,
   type PingPayload,
   type PongPayload,
   type PromptPayload,
@@ -264,28 +262,24 @@ export class WsClient {
    *  `null` distinguishes "not yet queried" from "queried and empty"
    *  so the ChoicePage can show a placeholder vs an empty list. */
   private _sessionList: SessionListEntry[] | null = null;
-  /** Transient cache for `list_directories` replies — keyed by outbound
-   *  envelope id (the bridge echoes `reply_to`, which equals our
-   *  outbound id). ChoicePage's DirectoryBrowser uses this to render
-   *  the entries list after the user navigates. NOT part of the
-   *  useSyncExternalStore state — components consume via the type
-   *  listener (`wsClient.on('list_directories', handler)` in M3
-   *  fashion) or via the inline `onEntries` callback we expose.
-   *  Kept in a Map (rather than a single field) so two concurrent
-   *  browser navigations don't shadow each other; entries are
-   *  one-shot — the DirectoryBrowser reads them once and we drop the
-   *  map entry on consumption. */
-  private readonly listDirResults = new Map<string, { entries: Array<{ name: string; path: string }> }>();
-  /** Transient `work_dir_list` / `work_dir_add` / `work_dir_remove`
-   *  outcome cache — keyed by outbound id. ChoicePage's
-   *  DirectoryBrowser "选择" button waits for the
-   *  `work_dir_add` result to decide whether to advance. We keep
-   *  both success (`ok: true`) and failure (`ok: false` + `error`)
-   *  outcomes so error UI can render the bridge-side message. */
-  private readonly workDirResults = new Map<
-    string,
-    { ok: boolean; error?: { code: string; message: string } }
-  >();
+  /** Review 修复轮 W4 — `session_list` 迟到回执竞态守卫：记录最近
+   *  一次 `sendSessionList(workDir)` 生成的 outbound id。`case
+   *  'result'` 处理器在解码为 session_list payload 时检查
+   *  `envelope.reply_to` 是否匹配；不匹配 → 静默丢弃不更新镜像。
+   *
+   *  为什么需要：钉子 5 触发"从 ChatView 退回 level2 时重查"
+   *  或"新会话 stem 回填后重查"时，可能存在两个并发 session_list
+   *  询查（不同 id）共享同一个 `_sessionList` 镜像字段。若 query1
+   *  的回执在 query2 之后才到达，naive 的 wholesale-replace 会让
+   *  陈旧的 query1 数据覆盖 query2 的新结果——UI 显示已消失的会话
+   *  / 丢失新会话。ChoicePage 层另有 `inFlightListRef` 同款防护
+   *  （见 `ChoicePage.tsx` ChoiceLevel2 effect），两层互补：组件
+   *  层避免 resolver 回调运行；WsClient 层避免 mirror 更新。
+   *
+   *  `null` 表示尚未发送过任何 session_list（防御性——case 'result'
+   *  见到 session_list 解码但 lastQueryId 仍为 null 时也会拒绝
+   *  更新镜像，规避"未初始化收到伪回执"的极端场景）。 */
+  private _lastSessionListId: string | null = null;
 
   // Heartbeat bookkeeping ----------------------------------------------------
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -696,15 +690,24 @@ export class WsClient {
 
   /** Send `control/session_list` — query the session list for one
    *  work directory (裁定 A 操作惯例 — `payload.work_dir` 必带).
-   *  `session: <work_dir>` envelope-field convention is NOT applied
-   *  here (task 07 scope per the brief — `ChoicePage 阶段命令为
-   *  control 族，session_list 带 payload.work_dir（裁定 A）`);
-   *  the per-session envelope field lands in task 08 when the
-   *  store buckets per-session. Reply populates `_sessionList`
-   *  (replaced wholesale on every reply). Returns the outbound id. */
+   *
+   *  Review 修复轮 W2 注记——task 08 必须在此补 `session` envelope
+   *  字段（PRD §1.4 操作惯例必带；M4 ChoicePage 阶段命令为 control
+   *  族，`session_list` 自答路径不经 manager 路由，session 字段
+   *  当前省略安全）。移交任务文件路径：
+   *  `docs/tasks/m4/08-web-multi-session-store.md#任务-06-c2-移交义务最小侵入`
+   *  ——任务 08 落地后该字段自动随每条 session_list 带出。
+   *
+   *  Reply populates `_sessionList` via `setSessionList` (review W4
+   *  迟到回执守卫：仅当 `envelope.reply_to` 匹配本方法最近生成的
+   *  `_lastSessionListId` 才更新镜像，陈旧回执静默丢弃）。
+   *  Returns the outbound id. */
   sendSessionList(workDir: string): string {
     const id = this.makeId();
     const payload: SessionListPayload = { work_dir: workDir };
+    // W4 守卫：每次 send 覆写 _lastSessionListId；case 'result'
+    // 处理器见到 session_list 解码时以此判定陈旧回执。
+    this._lastSessionListId = id;
     this.sendRaw({
       v: PROTOCOL_VERSION,
       kind: 'control' as const,
@@ -871,60 +874,49 @@ export class WsClient {
         // recovery ceremony via `tryDecodeGetStateData` so the
         // schema lives in one place.
         //
-        // M4 choice-page commands also cache their outcome in
-        // `workDirResults` (work_dir_list/add/remove success/failure
-        // surface) and `listDirResults` (list_directories entries),
-        // so the ChoicePage's DirectoryBrowser can await a specific
-        // outbound id without re-routing the whole store. Reply-to
-        // resolvers (the recovery ceremony) still fire regardless
-        // so the gate can mark itself ready / error based on the
-        // actual envelope.
-        const replyTo = envelope.reply_to;
-        // Dispatch by `data` shape — each schema is a one-shot
-        // narrowing that returns the parsed payload on success and
-        // `null` on mismatch. The four-way chain covers
-        // work_dir_list / list_directories / session_list;
-        // `work_dir_add` / `work_dir_remove` reply with no `data`
-        // (success) or `result.ok = false` (failure), which the
-        // generic fallback below handles.
+        // Review 修复轮 C1 — transient Maps (`listDirResults` /
+        // `workDirResults`) + `takeListDirResult` /
+        // `takeWorkDirResult` 方法已删除。组件侧改为通过
+        // `registerReplyResolver(id, cb)` 注册一次性回调 +
+        // `setTimeout` 看门狗（ChoicePage / DirectoryBrowser
+        // 实现），回执到达即触发 + 返回 unsub 供 useEffect
+        // cleanup 清理。详见 components/ChoicePage.tsx 与
+        // components/DirectoryBrowser.tsx。本处理器只负责：
+        //   1. 解码为 work_dir_list / session_list payload 时更新
+        //      store 镜像（work_dir_list 直接 setWorkDirs，
+        //      session_list 经 W4 lastSessionListId 守卫后
+        //      setSessionList）；
+        //   2. 兜底任何其他 `result` 信封（list_directories
+        //      success / work_dir_add success / work_dir_add
+        //      failure 等）——store 镜像无需更新，组件侧的
+        //      `registerReplyResolver` 注册的回调仍会被
+        //      `dispatchReplyResolvers` 触发，回调自行解析
+        //      `envelope.payload.ok` / `error` / `data`。
         const workDirList = tryDecodeWorkDirListResult(envelope);
-        const listDir = workDirList === null ? tryDecodeListDirectoriesResult(envelope) : null;
-        const sessions =
-          workDirList === null && listDir === null
-            ? tryDecodeSessionListResult(envelope)
-            : null;
+        const sessions = workDirList === null ? tryDecodeSessionListResult(envelope) : null;
         if (workDirList !== null) {
+          // work_dir_list reply — wholesale mirror update; 旧
+          // 实现还会写入 `workDirResults` Map 供 take* 轮询，
+          // 现已删除（C1 + W1 + W5 一次回调重构）。
           this.setWorkDirs(workDirList.work_dirs);
-          if (replyTo !== undefined && replyTo.length > 0) {
-            this.workDirResults.set(replyTo, { ok: true });
-          }
-        } else if (listDir !== null) {
-          if (replyTo !== undefined && replyTo.length > 0) {
-            this.listDirResults.set(replyTo, { entries: listDir.entries });
-          }
         } else if (sessions !== null) {
-          this.setSessionList(sessions.sessions);
-        } else if (
-          replyTo !== undefined &&
-          replyTo.length > 0 &&
-          // work_dir_add / work_dir_remove success carries no
-          // `data`; we cache the success so the DirectoryBrowser
-          // can advance. Failures carry `error.code` + `error.message`
-          // and land in the same cache with `ok: false`.
-          (envelope.payload.ok === false || envelope.payload.ok === true)
-        ) {
-          this.workDirResults.set(replyTo, {
-            ok: envelope.payload.ok,
-            ...(envelope.payload.ok === false && envelope.payload.error !== undefined
-              ? {
-                  error: {
-                    code: envelope.payload.error.code,
-                    message: envelope.payload.error.message,
-                  },
-                }
-              : {}),
-          });
+          // W4 守卫：仅当回执 reply_to 匹配最近一次
+          // sendSessionList 生成的 id 时才更新镜像；陈旧回执
+          // 静默丢弃。组件层另有 inFlightListRef 同款防护。
+          const replyTo = envelope.reply_to;
+          if (
+            replyTo !== undefined &&
+            replyTo.length > 0 &&
+            replyTo === this._lastSessionListId
+          ) {
+            this.setSessionList(sessions.sessions);
+          }
         }
+        // 其他 result payload（list_directories / work_dir_add
+        // success / work_dir_add failure / get_state）—— get_state
+        // 走 tryDecodeGetStateData 更新 phase + blocked_on；
+        // list_directories / work_dir_* 的成功/失败语义由组件
+        // 侧的 `registerReplyResolver` 回调自行解析。
         // get_state reply — phase + blocked_on mirror (M3 §4.1)
         const state = tryDecodeGetStateData(envelope);
         if (state !== null) {
@@ -1616,36 +1608,21 @@ export class WsClient {
   }
 
   // ---- M4 result consumers (tasks/m4/07) -----------------------------------
-
-  /** Consume a cached `list_directories` reply by outbound id.
-   *  Returns the entries array or `null` if no reply has arrived
-   *  yet. One-shot — the cache entry is removed after the read so a
-   *  second `takeListDirResult(id)` returns `null` (mirrors the
-   *  WsClient's one-shot reply-resolver pattern). The
-   *  DirectoryBrowser awaits the reply with a short-lived
-   *  `registerReplyResolver`-style polling loop on this surface;
-   *  task 08 will replace the manual await with a typed Promise
-   *  (out of scope here — the brief pins task 07 to the ChoicePage
-   *  + DirectoryBrowser + hash plumbing; full async command plumbing
-   *  is task 08). */
-  takeListDirResult(id: string): Array<{ name: string; path: string }> | null {
-    const cached = this.listDirResults.get(id);
-    if (cached === undefined) return null;
-    this.listDirResults.delete(id);
-    return cached.entries.slice();
-  }
-
-  /** Consume a cached `work_dir_list` / `work_dir_add` /
-   *  `work_dir_remove` outcome by outbound id. One-shot semantics
-   *  match `takeListDirResult`. Returns `{ ok: true }` on success
-   *  (no data shape), `{ ok: false, error: { code, message } }` on
-   *  failure. `null` if no reply has arrived yet. */
-  takeWorkDirResult(id: string): { ok: boolean; error?: { code: string; message: string } } | null {
-    const cached = this.workDirResults.get(id);
-    if (cached === undefined) return null;
-    this.workDirResults.delete(id);
-    return cached;
-  }
+  //
+  // Review 修复轮 C1 — `takeListDirResult` / `takeWorkDirResult`
+  // + 配套 transient Maps (`listDirResults` / `workDirResults`)
+  // 已删除。组件侧改为通过 `registerReplyResolver(id, cb)` 注册
+  // 一次性回调 + `setTimeout` 看门狗，回执到达即触发 + 返回
+  // unsub 供 useEffect cleanup 清理。具体实现见
+  // components/ChoicePage.tsx (level1 mount / level1 remove /
+  // level2 mount 三处) 与 components/DirectoryBrowser.tsx (path
+  // change / row select 两处)。`registerReplyResolver` 沿用 M3
+  // 既有形状（详见 JSDoc 在类上方），通过 reply-to 匹配 + 一次
+  // 触发 + unsub 清理——自动避免 late-reply 泄漏（C1 修复点）。
+  //
+  // `sendListDirectories` / `sendWorkDirAdd` / `sendWorkDirRemove` /
+  // `sendWorkDirList` 仍返回 outbound id（用于 registerReplyResolver
+  // 注册），签名零变化。
 
   private makeId(): string {
     return crypto.randomUUID();
@@ -1692,16 +1669,16 @@ export function tryDecodeGetStateData(envelope: EnvelopeType): SessionStatePaylo
 // M4 result-data decoders (tasks/m4/07)
 // ---------------------------------------------------------------------------
 //
-// Each decoder narrows `data` against one of the three result schemas
-// (`WorkDirListResult` / `ListDirectoriesResult` / `SessionListResult`)
-// introduced in M4 (control.md §6.6 / §6.5 / §7). The central
-// `case 'result'` handler in `handleControlFrame` chains them so a
-// single inbound reply maps to exactly one cache update. The order
-// is arbitrary — each decoder inspects only the envelope's `data`
-// field and returns `null` on shape mismatch; the next decoder gets a
-// fresh shot. The schemas live in `@remotepi/shared` (`work-dirs.ts` /
-// `session-list.ts`) so adding a new result-data shape there ripples
-// through automatically.
+// Review 修复轮 C1 — `tryDecodeListDirectoriesResult` 已删除
+// （transient Map `listDirResults` 删除后无 caller）。剩下两个
+// decoder 各司其职：
+//   - `tryDecodeWorkDirListResult` — `control/result` 解码为
+//     `work_dir_list` payload (`data: { work_dirs: string[] }`),
+//     case 'result' 处理器把结果喂给 `setWorkDirs` 更新镜像。
+//   - `tryDecodeSessionListResult` — 解码为 `session_list` payload
+//     (`data: { sessions: SessionListEntry[] }`), case 'result'
+//     处理器在通过 W4 `_lastSessionListId` 守卫后调用
+//     `setSessionList` 更新镜像。
 
 /** Try to decode a `control/result` reply as a `work_dir_list`
  *  payload (`data: { work_dirs: string[] }`). The WsClient's central
@@ -1717,26 +1694,15 @@ export function tryDecodeWorkDirListResult(
   return validation.data;
 }
 
-/** Try to decode a `control/result` reply as a `list_directories`
- *  payload (`data: { entries: { name, path }[] }`). Successful
- *  decodes populate the transient `listDirResults` cache keyed by
- *  outbound id (the DirectoryBrowser awaits the reply via
- *  `takeListDirResult(id)`). */
-export function tryDecodeListDirectoriesResult(
-  envelope: EnvelopeType,
-): ListDirectoriesResult | null {
-  if (envelope.kind !== 'control' || envelope.type !== 'result') return null;
-  if (envelope.payload.ok !== true) return null;
-  if (envelope.payload.data === undefined) return null;
-  const validation = ListDirectoriesResultSchema.safeParse(envelope.payload.data);
-  if (!validation.success) return null;
-  return validation.data;
-}
-
 /** Try to decode a `control/result` reply as a `session_list`
  *  payload (`data: { sessions: SessionListEntry[] }`). Successful
  *  decodes populate `_sessionList` (ChoicePage level=2 reads this
- *  directly). The schema lives in `@remotepi/shared`/`session-list.ts`. */
+ *  directly). The schema lives in `@remotepi/shared`/`session-list.ts`.
+ *
+ *  Review 修复轮 W4 — 写镜像是经 `setSessionList` + `_lastSessionListId`
+ *  守卫，仅 reply_to 匹配最近 sendSessionList 的 id 才更新；陈旧
+ *  回执静默丢弃。`tryDecodeSessionListResult` 本身不引入守卫（仍是
+ *  纯 schema 校验），仅是 case 'result' 的 dispatch 阶段使用。 */
 export function tryDecodeSessionListResult(
   envelope: EnvelopeType,
 ): SessionListResult | null {

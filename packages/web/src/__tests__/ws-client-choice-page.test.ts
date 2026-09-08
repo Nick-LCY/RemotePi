@@ -248,9 +248,17 @@ describe('WsClient M4 inbound — control/result routing', () => {
     expect(ws.workDirs).toEqual(['/home/me', '/tmp/work']);
   });
 
-  it('2.2 list_directories reply populates the transient cache (take once)', () => {
+  it('2.2 list_directories reply fires registerReplyResolver callback with parsed entries', () => {
+    // Review 修复轮 C1——list_directories 不再写入 transient Map
+    // (`listDirResults`);改为通过 registerReplyResolver 注册一次性
+    // 回调，回执到达即触发；这里 assert 回调被调 + 解析成功 +
+    // 一次 unsub 后不再触发。
     const { ws, fake } = makeConnectedWs();
     const id = ws.sendListDirectories('/home/me');
+    const calls: Array<unknown> = [];
+    const unsub = ws.registerReplyResolver(id, (env) => {
+      calls.push(env);
+    });
     simulateInbound(
       ws,
       controlResult(id, {
@@ -261,13 +269,14 @@ describe('WsClient M4 inbound — control/result routing', () => {
       }, true),
       fake,
     );
-    const first = ws.takeListDirResult(id);
-    expect(first).toEqual([
-      { name: 'code', path: '/home/me/code' },
-      { name: 'docs', path: '/home/me/docs' },
-    ]);
-    // One-shot: a second take returns null (the cache entry was deleted).
-    expect(ws.takeListDirResult(id)).toBeNull();
+    expect(calls).toHaveLength(1);
+    // One-shot semantics: a second reply with the same id does NOT
+    // re-fire (the resolver was auto-removed on first match).
+    simulateInbound(ws, controlResult(id, { entries: [] }, true), fake);
+    expect(calls).toHaveLength(1);
+    // Manual unsub is also idempotent.
+    unsub();
+    unsub();
   });
 
   it('2.3 session_list reply populates _sessionList mirror', () => {
@@ -299,9 +308,64 @@ describe('WsClient M4 inbound — control/result routing', () => {
     expect(ws.sessionList).toEqual([]);
   });
 
-  it('2.5 work_dir_add failure (result.ok=false) caches error in workDirResults', () => {
+  it('2.4b W4 — session_list stale reply (different id) does NOT overwrite fresh mirror data', () => {
+    // Review 修复轮 W4——stale-reply 竞态守卫：两层防护。
+    // 组件层 inFlightListRef 同款防护（详见 ChoicePage.tsx）通过
+    // useEffect cleanup unsub 保证；本测试聚焦 WsClient 集中
+    // 处理器的 `_lastSessionListId` 守卫——查询 1 的回执迟于查询 2
+    // 到达时，查询 1 的 sessions[] 不覆盖查询 2 的新数据。
+    const { ws, fake } = makeConnectedWs();
+    // query 1 (older)
+    const id1 = ws.sendSessionList('/home/me');
+    // query 2 (newer) — WsClient._lastSessionListId is overwritten
+    // to id2.
+    const id2 = ws.sendSessionList('/home/me');
+    expect(id1).not.toBe(id2);
+    // query 2 reply lands first (fast bridge).
+    const freshEntries: SessionListEntry[] = [
+      {
+        id: 's2',
+        name: null,
+        cwd: '/home/me',
+        created: '2026-09-08T12:00:00Z',
+        modified: '2026-09-08T12:00:00Z',
+        message_count: 0,
+        first_message: null,
+        running: false,
+        status: 'idle',
+      },
+    ];
+    simulateInbound(ws, controlResult(id2, { sessions: freshEntries }, true), fake);
+    expect(ws.sessionList).toEqual(freshEntries);
+    // query 1 reply lands LATER — stale. W4 guard drops it.
+    const staleEntries: SessionListEntry[] = [
+      {
+        id: 's1',
+        name: null,
+        cwd: '/home/me',
+        created: '2026-09-08T10:00:00Z',
+        modified: '2026-09-08T10:00:00Z',
+        message_count: 0,
+        first_message: null,
+        running: false,
+        status: 'unknown',
+      },
+    ];
+    simulateInbound(ws, controlResult(id1, { sessions: staleEntries }, true), fake);
+    // Mirror unchanged — query 2's data survives.
+    expect(ws.sessionList).toEqual(freshEntries);
+  });
+
+  it('2.5 work_dir_add failure (result.ok=false) → registerReplyResolver sees the failure envelope', () => {
+    // Review 修复轮 C1——work_dir_add 不再写入 transient Map
+    // (`workDirResults`);失败语义由组件侧的 resolver 回调从
+    // `envelope.payload.ok / .error` 解析。
     const { ws, fake } = makeConnectedWs();
     const id = ws.sendWorkDirAdd('/nonexistent');
+    const calls: Envelope[] = [];
+    ws.registerReplyResolver(id, (env) => {
+      calls.push(env);
+    });
     simulateInbound(
       ws,
       controlResult(id, undefined, false, {
@@ -310,21 +374,28 @@ describe('WsClient M4 inbound — control/result routing', () => {
       }),
       fake,
     );
-    const outcome = ws.takeWorkDirResult(id);
-    expect(outcome).toEqual({
-      ok: false,
-      error: {
-        code: 'internal',
-        message: 'directory does not exist or is not readable',
-      },
+    expect(calls).toHaveLength(1);
+    const env = calls[0]!;
+    if (env.kind !== 'control' || env.type !== 'result') throw new Error('shape');
+    expect(env.payload.ok).toBe(false);
+    expect(env.payload.error).toEqual({
+      code: 'internal',
+      message: 'directory does not exist or is not readable',
     });
   });
 
-  it('2.6 work_dir_add success (result.ok=true, no data) caches ok:true', () => {
+  it('2.6 work_dir_add success (result.ok=true, no data) → resolver sees ok envelope', () => {
     const { ws, fake } = makeConnectedWs();
     const id = ws.sendWorkDirAdd('/home/me');
+    const calls: Envelope[] = [];
+    ws.registerReplyResolver(id, (env) => {
+      calls.push(env);
+    });
     simulateInbound(ws, controlResult(id, undefined, true), fake);
-    expect(ws.takeWorkDirResult(id)).toEqual({ ok: true });
+    expect(calls).toHaveLength(1);
+    const env = calls[0]!;
+    if (env.kind !== 'control' || env.type !== 'result') throw new Error('shape');
+    expect(env.payload.ok).toBe(true);
   });
 
   it('2.7 work_dir_list mirror survives across multiple replies', () => {
@@ -413,25 +484,7 @@ describe('WsClient M4 — tryDecode* helpers (inbound decoders)', () => {
     expect(tryDecodeWorkDirListResult(envelope)).toBeNull();
   });
 
-  it('4.3 tryDecodeListDirectoriesResult returns the parsed entries', async () => {
-    const { tryDecodeListDirectoriesResult } = await import('../ws/WsClient.js');
-    const envelope: Envelope = {
-      v: PROTOCOL_VERSION,
-      kind: 'control',
-      type: 'result',
-      id: 'r1',
-      reply_to: 'r1',
-      payload: {
-        ok: true,
-        data: { entries: [{ name: 'code', path: '/h/code' }] },
-      },
-    };
-    expect(tryDecodeListDirectoriesResult(envelope)).toEqual({
-      entries: [{ name: 'code', path: '/h/code' }],
-    });
-  });
-
-  it('4.4 tryDecodeSessionListResult returns the parsed sessions', async () => {
+  it('4.3 tryDecodeSessionListResult returns the parsed sessions', async () => {
     const { tryDecodeSessionListResult } = await import('../ws/WsClient.js');
     const entry: SessionListEntry = {
       id: 's1',

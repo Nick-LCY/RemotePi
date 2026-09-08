@@ -232,10 +232,30 @@ export function encodeHash(auth: AuthToHash): string {
  *  in M4 single-bucket web (task 07 scope), which the bridge
  *  handles as a no-active-session → bridges the user straight
  *  into ChatView via the recovery gate's `ready` outcome. Full
- *  per-session + pending behaviour lands in task 08. */
+ *  per-session + pending behaviour lands in task 08.
+ *
+ *  Review 修复轮 W3——退化 hash 形态告警：`{token, session≠null,
+ *  workDir=null}` 是手工拼出 URL 才会出现的退化形态（用户从
+ * 钉子 1 验证表外输入或 scraper / bot 拼接）。M4 ChoicePage 正
+ *  常流程不会产生该形态（level=2 必须先选 work_dir），因此其出现
+ *  提示 可能是"陈旧的书签 / 手写链接"。在进入 recovery 分支前
+ *  `console.warn` 提示，避免静默渲染陷入不期望的 session 上下文。
+ *  该告警不会影响路由决策——recovery 仍然是该形态的正确出口
+ * （上述钉子 6 文本明文规定），仅是开发者可见的信号。*/
 export function decideView(auth: AuthFromHash): View {
   if (auth.token === null) return 'tokenPrompt';
-  if (auth.session !== null) return 'recovery';
+  if (auth.session !== null) {
+    // W3 退化形态告警：session 不为空但 work_dir 为空。
+    if (auth.workDir === null) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[hash] session without work_dir — stale bookmark? token+session with no work_dir; ',
+        'will route to recovery but likely indicates a hand-crafted link. ',
+        '(session=<redacted>, token present, workDir=null)',
+      );
+    }
+    return 'recovery';
+  }
   if (auth.workDir === null) return 'choiceLevel1';
   return 'choiceLevel2';
 }

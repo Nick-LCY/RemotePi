@@ -17,7 +17,7 @@
 //   - M3 legacy compatibility: `#<token>` parses as
 //     { token, workDir: null, session: null }.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   SESSION_NEW,
@@ -191,6 +191,85 @@ describe('hash — special-character round-trips (PRD §钉子 1 边界)', () =>
       session: null,
     });
   });
+
+  // Review 修复轮 S2—token 特殊字符解析补强：
+  //  M3 token 设计为 clean alphabet (letters + dash + digits)，
+  //  避免编码歧义；但 parser 必须 tolerantly 处理：
+  //   - token 含 `&`（手工拼接 / 测试用）；
+  //   - token 含 `=`（同上）；
+  //   - token `&#` 边界（`&` 起始 body 但无 key=value）。
+  it('16b. token containing `&` is parsed at first `&` (M3 已知约束: token 不编码)', () => {
+    // M3 token 是 room access key，按惯例不 URL 编码——`&`
+    // 意味着 body 起点。parser 取 firstAmp 之前作为 token——
+    // 即使 token 字符串后面跟 `&&`（double-amp，空 body pair）
+    // 仍能正确分割：`#abc&&work_dir=/h&session=s1` →
+    //   token = "abc", body = "&work_dir=/h&session=s1"
+    //   body 首 pair 为空（连续 `&&`），被 `if (pair.length === 0) continue;` 跳过；
+    //   第二 pair 为 "work_dir=/h&session=s1" 讽刺——含 `&`
+    //   在 value 内。这里我们要 pin 的语义是：token 严格按 firstAmp
+    //   划分，body 后续 `&` 不影响 token 切割。这反映了
+    //   M3 的“token 不编码”契约：M3 链接 `#<token>` 假定 token
+    //   无 `&`；手工拼接 token 含 `&` 会以 firstAmp 为界被截断，
+    //   但不会拖坏 body 后续解析。
+    const parsed = readAuthFromHash('#abc&&work_dir=/h&session=s1');
+    expect(parsed.token).toBe('abc');
+    expect(parsed.workDir).toBe('/h');
+    expect(parsed.session).toBe('s1');
+  });
+
+  it('16c. token containing `=` parses (token first; body `=value` is treated as key=“” pair)', () => {
+    // `=` 在 token 内部不拆分（按 firstAmp 划分 body）；body
+    // 内 `key=value` 仍按 `indexOf('=')` 划分。本用例构造 token
+    // 含一个 `=` + body 一个有效 work_dir。
+    const parsed = readAuthFromHash('#abc=123&work_dir=/h');
+    expect(parsed.token).toBe('abc=123');
+    expect(parsed.workDir).toBe('/h');
+  });
+
+  it('16d. `&#` boundary: hash body literally starts with `#`-bearing value', () => {
+    // work_dir 含 `#`：encodeURIComponent 编码为 `%23`；
+    // parser 解码后拿到 `/tmp/weird#name`（正确）；
+    // 同时 body `&work_dir=...&...` 仍按 `&` 拆分——`#` 在
+    // value 内是字面字符而非 fragment delimiter（fragment 仅
+    // 出现在 hash 起始 `#` 之后、第一个 `&` 之前）。
+    const path = '/srv/build#1/data';
+    const raw = `#tok&work_dir=${encodeURIComponent(path)}&session=s`;
+    expect(readAuthFromHash(raw)).toEqual({
+      token: 'tok',
+      workDir: path,
+      session: 's',
+    });
+  });
+
+  // Review 修复轮 S2—session 含 `+` / `%` / 空格 round-trip:
+  //   sessionKey 是 pi session file 的 stem，可含日期分隔符；
+  //   实测 pi 0.85.1 stem 形式 `YYYY-MM-DDTHH-MM-SS_<short>`
+  //   （见 session-layer.ts probe 产物）。但 forward-compat 上
+  //   parser 应 tolerantly 处理 url-encoded 后的特殊字符。
+  it('16e. session containing `+` round-trips (encode + decode symmetry)', () => {
+    const encoded = encodeHash({ token: 'tok', workDir: '/h', session: 'a+b' });
+    expect(readAuthFromHash(encoded)).toEqual({
+      token: 'tok',
+      workDir: '/h',
+      session: 'a+b',
+    });
+  });
+
+  it('16f. session containing `%` round-trips', () => {
+    const encoded = encodeHash({ token: 'tok', workDir: '/h', session: 'a%20b' });
+    expect(readAuthFromHash(encoded)).toEqual({
+      token: 'tok',
+      workDir: '/h',
+      session: 'a%20b',
+    });
+  });
+
+  it('16g. session containing space round-trips (encoded as %20)', () => {
+    const encoded = encodeHash({ token: 'tok', workDir: '/h', session: 'sess 1' });
+    // write side: encodeURIComponent replaces spaces with %20
+    expect(encoded).toContain('session=sess%201');
+    expect(readAuthFromHash(encoded).session).toBe('sess 1');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -310,6 +389,32 @@ describe('hash — decideView (钉子 6 决策表)', () => {
 
   it('31. token + work_dir + session=new → recovery (pending placeholder)', () => {
     expect(decideView({ token: 't', workDir: '/h', session: 'new' })).toBe('recovery');
+  });
+
+  // Review 修复轮 W3——退化 hash 形态告警：
+  //   `{token, session≠null, workDir=null}` 是手工拼出 URL 才
+  //   出现的退化形态（scraper / bot / stale bookmark）。该形态
+  //   仍路由到 recovery（钉子 6 文本明文规定），但进 recovery
+  //   前应 console.warn 提示。
+  it('31b. W3 — degenerate token+session+null work_dir emits console.warn', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const view = decideView({ token: 't', workDir: null, session: 'stale-sess' });
+    expect(view).toBe('recovery');
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = warn.mock.calls[0]![0] as string;
+    expect(message).toContain('session without work_dir');
+    expect(message).toContain('stale bookmark');
+    warn.mockRestore();
+  });
+
+  it('31c. W3 — non-degenerate shapes do NOT emit the warn (avoid noise)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    decideView({ token: 't', workDir: '/h', session: 's' });
+    decideView({ token: 't', workDir: null, session: null });
+    decideView({ token: 't', workDir: '/h', session: null });
+    decideView({ token: null, workDir: null, session: null });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 

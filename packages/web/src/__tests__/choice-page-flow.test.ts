@@ -342,9 +342,33 @@ describe('DirectoryBrowser — list_directories + work_dir_add round-trip', () =
     expect(frames[0]!.payload).toEqual({ path: '/home/me/code' });
   });
 
-  it('3.3 list_directories reply populates transient cache (DirectoryBrowser reads it)', () => {
+  it('3.3 list_directories reply fires resolver with parsed entries (DirectoryBrowser reads via callback)', () => {
+    // Review 修复轮 C1——transient `listDirResults` cache + `takeListDirResult`
+    // 已删除；改为 `registerReplyResolver` 一次性回调。组件侧
+    // 从 `envelope.payload.data.entries` 解析（见 DirectoryBrowser.tsx
+    // path change effect）。这里 assert resolver 看到原始 envelope +
+    // 调用者能从中提取 entries 数组。
     const { ws, fake } = makeConnectedWs();
     const id = ws.sendListDirectories('/home/me');
+    const calls: Array<{ name: string; path: string }[]> = [];
+    ws.registerReplyResolver(id, (env) => {
+      if (env.kind !== 'control' || env.type !== 'result') return;
+      if (env.payload.ok !== true) return;
+      const data = env.payload.data;
+      if (data === null || typeof data !== 'object') return;
+      const entries = (data as { entries?: unknown }).entries;
+      if (!Array.isArray(entries)) return;
+      const parsed: Array<{ name: string; path: string }> = [];
+      for (const e of entries) {
+        if (e !== null && typeof e === 'object') {
+          const obj = e as { name?: unknown; path?: unknown };
+          if (typeof obj.name === 'string' && typeof obj.path === 'string') {
+            parsed.push({ name: obj.name, path: obj.path });
+          }
+        }
+      }
+      calls.push(parsed);
+    });
     simulateInbound(
       ws,
       controlResult(
@@ -360,19 +384,25 @@ describe('DirectoryBrowser — list_directories + work_dir_add round-trip', () =
       ),
       fake,
     );
-    expect(ws.takeListDirResult(id)).toEqual([
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual([
       { name: 'code', path: '/home/me/code' },
       { name: 'docs', path: '/home/me/docs' },
       { name: 'tmp', path: '/home/me/tmp' },
     ]);
   });
 
-  it('3.4 list_directories failure surfaces as work_dir_results error (cache fallback)', () => {
+  it('3.4 list_directories failure → resolver sees ok:false error envelope (DirectoryBrowser surfaces inline)', () => {
+    // Review 修复轮 C1——list_directories 失败不再走 transient Map
+    // 统一的 fallback 路径；改为 resolver 回调从
+    // `envelope.payload.ok / .error` 解析（与 work_dir_* 路径同形）。
     const { ws, fake } = makeConnectedWs();
     const id = ws.sendListDirectories('/nonexistent');
-    // list_directories failures carry no `data` shape — the result
-    // handler routes them to workDirResults (the generic failure
-    // cache).
+    const observed: Array<{ ok: boolean; error?: unknown }> = [];
+    ws.registerReplyResolver(id, (env) => {
+      if (env.kind !== 'control' || env.type !== 'result') return;
+      observed.push({ ok: env.payload.ok, error: env.payload.error });
+    });
     simulateInbound(
       ws,
       {
@@ -388,23 +418,34 @@ describe('DirectoryBrowser — list_directories + work_dir_add round-trip', () =
       },
       fake,
     );
-    const outcome = ws.takeWorkDirResult(id);
-    expect(outcome).toEqual({
-      ok: false,
-      error: { code: 'invalid_envelope', message: 'path does not exist' },
-    });
+    expect(observed).toEqual([
+      {
+        ok: false,
+        error: { code: 'invalid_envelope', message: 'path does not exist' },
+      },
+    ]);
   });
 
-  it('3.5 work_dir_add success → ok:true (DirectoryBrowser advances to level=2)', () => {
+  it('3.5 work_dir_add success → resolver sees ok:true (DirectoryBrowser advances to level=2)', () => {
     const { ws, fake } = makeConnectedWs();
     const id = ws.sendWorkDirAdd('/Users/foo bar/');
+    const observed: boolean[] = [];
+    ws.registerReplyResolver(id, (env) => {
+      if (env.kind !== 'control' || env.type !== 'result') return;
+      observed.push(env.payload.ok === true);
+    });
     simulateInbound(ws, controlResult(id, undefined, true), fake);
-    expect(ws.takeWorkDirResult(id)).toEqual({ ok: true });
+    expect(observed).toEqual([true]);
   });
 
-  it('3.6 work_dir_add failure (StateError → internal) → ok:false with bridge message', () => {
+  it('3.6 work_dir_add failure (StateError → internal) → resolver sees ok:false with bridge message', () => {
     const { ws, fake } = makeConnectedWs();
     const id = ws.sendWorkDirAdd('/nonexistent');
+    const observed: Array<{ ok: boolean; error?: unknown }> = [];
+    ws.registerReplyResolver(id, (env) => {
+      if (env.kind !== 'control' || env.type !== 'result') return;
+      observed.push({ ok: env.payload.ok, error: env.payload.error });
+    });
     simulateInbound(
       ws,
       {
@@ -423,20 +464,27 @@ describe('DirectoryBrowser — list_directories + work_dir_add round-trip', () =
       },
       fake,
     );
-    expect(ws.takeWorkDirResult(id)).toEqual({
-      ok: false,
-      error: {
-        code: 'internal',
-        message: 'directory does not exist or is not readable',
+    expect(observed).toEqual([
+      {
+        ok: false,
+        error: {
+          code: 'internal',
+          message: 'directory does not exist or is not readable',
+        },
       },
-    });
+    ]);
   });
 
-  it('3.7 work_dir_remove success → ok:true (钉子 3: no active-manager kill)', () => {
+  it('3.7 work_dir_remove success → resolver sees ok:true (钉子 3: no active-manager kill)', () => {
     const { ws, fake } = makeConnectedWs();
     const id = ws.sendWorkDirRemove('/home/me');
+    const observed: boolean[] = [];
+    ws.registerReplyResolver(id, (env) => {
+      if (env.kind !== 'control' || env.type !== 'result') return;
+      observed.push(env.payload.ok === true);
+    });
     simulateInbound(ws, controlResult(id, undefined, true), fake);
-    expect(ws.takeWorkDirResult(id)).toEqual({ ok: true });
+    expect(observed).toEqual([true]);
     // The web's contract per钉子 3: the bridge does NOT kill any
     // active manager rooted in this work_dir. The web merely
     // re-fetches work_dir_list to update the mirror.
@@ -464,7 +512,9 @@ describe('ChoicePage level=1 — work_dirs mutation round-trips', () => {
     expect(ws.workDirs).toEqual(['/home/me']);
   });
 
-  it('4.2 work_dir_add success → mirror updates after re-fetch', () => {
+  it('4.2 work_dir_add success → resolver sees ok:true; mirror updates after re-fetch', () => {
+    // Review 修复轮 C1——work_dir_add 不再缓存 `takeWorkDirResult`；
+    // 改为 resolver 看到 ok:true + 触发重查 work_dir_list。
     const { ws, fake } = makeConnectedWs();
     // Initial state.
     const id0 = ws.sendWorkDirList();
@@ -473,8 +523,13 @@ describe('ChoicePage level=1 — work_dirs mutation round-trips', () => {
 
     // Add a new directory (via DirectoryBrowser "选择" button).
     const addId = ws.sendWorkDirAdd('/tmp/work');
+    const observed: boolean[] = [];
+    ws.registerReplyResolver(addId, (env) => {
+      if (env.kind !== 'control' || env.type !== 'result') return;
+      observed.push(env.payload.ok === true);
+    });
     simulateInbound(ws, controlResult(addId, undefined, true), fake);
-    expect(ws.takeWorkDirResult(addId)).toEqual({ ok: true });
+    expect(observed).toEqual([true]);
 
     // Re-fetch (the ChoicePage re-issues work_dir_list after every
     // mutation).
@@ -487,7 +542,7 @@ describe('ChoicePage level=1 — work_dirs mutation round-trips', () => {
     expect(ws.workDirs).toEqual(['/home/me', '/tmp/work']);
   });
 
-  it('4.3 work_dir_remove success → mirror updates after re-fetch', () => {
+  it('4.3 work_dir_remove success → resolver sees ok:true; mirror updates after re-fetch', () => {
     const { ws, fake } = makeConnectedWs();
     const id0 = ws.sendWorkDirList();
     simulateInbound(
@@ -498,8 +553,13 @@ describe('ChoicePage level=1 — work_dirs mutation round-trips', () => {
     expect(ws.workDirs).toEqual(['/home/me', '/tmp/work']);
 
     const removeId = ws.sendWorkDirRemove('/tmp/work');
+    const observed: boolean[] = [];
+    ws.registerReplyResolver(removeId, (env) => {
+      if (env.kind !== 'control' || env.type !== 'result') return;
+      observed.push(env.payload.ok === true);
+    });
     simulateInbound(ws, controlResult(removeId, undefined, true), fake);
-    expect(ws.takeWorkDirResult(removeId)).toEqual({ ok: true });
+    expect(observed).toEqual([true]);
 
     const id1 = ws.sendWorkDirList();
     simulateInbound(ws, controlResult(id1, { work_dirs: ['/home/me'] }, true), fake);

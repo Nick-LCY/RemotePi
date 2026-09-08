@@ -36,8 +36,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useWsClient } from '../ws/WsClientContext.js';
 
-const POLL_INTERVAL_MS = 50;
-const POLL_TIMEOUT_MS = 5_000;
+// Review 修复轮 C1+W1——废弃 POLL_INTERVAL_MS / POLL_TIMEOUT_MS
+// setInterval 50ms 轮询常量。轮询路径改为一次性回调（见下方
+// useEffect + handleSelect 实现），仅保留 setTimeout 看门狗
+// 常量 LIST_DIRECTORIES_TIMEOUT_MS / WORK_DIR_ADD_TIMEOUT_MS
+// （定义在文件中段，靠近使用点便于审阅）。
 
 interface DirectoryBrowserProps {
   /** Called after `work_dir_add` succeeds. Parent typically uses
@@ -54,10 +57,16 @@ interface ListEntries {
   entries: Array<{ name: string; path: string }>;
 }
 
-interface WorkDirAddOutcome {
-  ok: boolean;
-  error?: { code: string; message: string };
-}
+// Review 修复轮 C1+W1+W5——`WorkDirAddOutcome` 内部类型删除（只
+// 轮询路径内部使用；resolver 回调直接从 envelope.payload 解析）。
+
+// 超时预算集中常量：
+//   - LIST_DIRECTORIES_TIMEOUT_MS = 10_000（reviewer W1 推导：大
+//     目录 readdirSync 可能慢，fs 操作看门狗从 5s 放宽到 10s）；
+//   - WORK_DIR_ADD_TIMEOUT_MS = 5_000（add 路径与 work_dir_*
+//     同为轻量 fs 操作，参考 M3 RECOVERY_TIMEOUT_MS）。
+const LIST_DIRECTORIES_TIMEOUT_MS = 10_000;
+const WORK_DIR_ADD_TIMEOUT_MS = 5_000;
 
 export function DirectoryBrowser({ onAdded, onCancel }: DirectoryBrowserProps) {
   const client = useWsClient();
@@ -78,39 +87,68 @@ export function DirectoryBrowser({ onAdded, onCancel }: DirectoryBrowserProps) {
   const inFlightListRef = useRef<string | null>(null);
 
   // Fetch entries whenever `path` changes. `path === null` triggers a
-  // home query (no `path` in the outbound). The polling loop reads
-  // `takeListDirResult(id)`; on success we replace the entries; on
-  // timeout / socket drop we surface an error.
+  // home query (no `path` in the outbound).
+  //
+  // Review 修复轮 C1+W1+W5——废弃 setInterval 50ms 轮询 +
+  // transient `listDirResults` Map + `takeListDirResult` 方法，
+  // 改为一次性回调模式（对齐 M3 recovery.ts
+  // `registerReplyResolver` 先例）：
+  //   1. sendListDirectories(path?) → outbound id;
+  //   2. registerReplyResolver(id, cb) 注册一次性回调——resolver
+  //      内部从 envelope.payload 解析 entries（success）或
+  //      `payload.error`（failure）走成功/失败分支；
+  //   3. setTimeout 看门狗（10s — list_directories 属 fs 操作，
+  //      大目录 readdirSync 可能慢，reviewer W1 推导）；超时
+  //      → unsub + setListError；
+  //   4. useEffect cleanup 统一 clearTimeout + unsub（W5）；
+  //   5. inFlightListRef 防护语义保留——resolver 闭包内检查
+  //      ref 仍持有本次 id；否则陈旧回执丢弃（尽管 cleanup
+  //      已经 unsub，双保险）。
+  // setEntries(null) + setListError(null) 在 effect 起始同步执行，
+  // 保持原“切换路径 → 清陈旧 entries + 清错误”语义。
   useEffect(() => {
-    let cancelled = false;
     setEntries(null);
     setListError(null);
     const id = client.sendListDirectories(path ?? undefined);
     inFlightListRef.current = id;
-    const start = Date.now();
-    const pollHandle = setInterval(() => {
-      if (cancelled) return;
-      if (inFlightListRef.current !== id) {
-        // A newer navigation superseded this one — stop polling.
-        clearInterval(pollHandle);
+    let unsub: (() => void) | null = null;
+    const watchdog = setTimeout(() => {
+      unsub?.();
+      inFlightListRef.current = null;
+      setListError('list_directories 超时未回执 — bridge 可能离线');
+    }, LIST_DIRECTORIES_TIMEOUT_MS);
+    unsub = client.registerReplyResolver(id, (env) => {
+      if (inFlightListRef.current !== id) return;
+      clearTimeout(watchdog);
+      inFlightListRef.current = null;
+      if (env.kind !== 'control' || env.type !== 'result') return;
+      if (env.payload.ok !== true) {
+        const err = env.payload.error;
+        setListError(
+          `读取目录失败（${err?.code ?? 'unknown'}）：${err?.message ?? 'unknown error'}`,
+        );
         return;
       }
-      const result = client.takeListDirResult(id);
-      if (result !== null) {
-        clearInterval(pollHandle);
-        inFlightListRef.current = null;
-        setEntries({ entries: result });
-        return;
+      // 成功：从 envelope.payload.data 解析 entries。 schema
+      // `ListDirectoriesResult` = { entries: { name, path }[] }。
+      const data = env.payload.data;
+      if (data === null || typeof data !== 'object') return;
+      const entriesRaw = (data as { entries?: unknown }).entries;
+      if (!Array.isArray(entriesRaw)) return;
+      const parsed: Array<{ name: string; path: string }> = [];
+      for (const e of entriesRaw) {
+        if (e !== null && typeof e === 'object') {
+          const obj = e as { name?: unknown; path?: unknown };
+          if (typeof obj.name === 'string' && typeof obj.path === 'string') {
+            parsed.push({ name: obj.name, path: obj.path });
+          }
+        }
       }
-      if (Date.now() - start > POLL_TIMEOUT_MS) {
-        clearInterval(pollHandle);
-        inFlightListRef.current = null;
-        setListError('list_directories 超时未回执 — bridge 可能离线');
-      }
-    }, POLL_INTERVAL_MS);
+      setEntries({ entries: parsed });
+    });
     return () => {
-      cancelled = true;
-      clearInterval(pollHandle);
+      clearTimeout(watchdog);
+      unsub?.();
     };
   }, [client, path]);
 
@@ -123,33 +161,43 @@ export function DirectoryBrowser({ onAdded, onCancel }: DirectoryBrowserProps) {
   }, []);
 
   /** Click handler for a "选择" button on a row. Fires
-   *  `work_dir_add` and polls the result map; on success calls
-   *  `onAdded` (parent advances to level=2). On failure surfaces the
-   *  bridge message inline. */
+   *  `work_dir_add` and waits for the reply via
+   *  `registerReplyResolver` (一次性回调 + 5s 看门狗)；on
+   *  success calls `onAdded` (parent advances to level=2). On
+   *  failure surfaces the bridge message inline.
+   *
+   *  Review 修复轮 C1+W1——废弃 setInterval 50ms 轮询 +
+   *  transient `workDirResults` + `takeWorkDirResult` 方法，
+   *  改为一次性回调模式（与 useEffect 同形）：
+   *    1. sendWorkDirAdd(path) → outbound id;
+   *    2. registerReplyResolver(id, cb) 从 envelope.payload 解析
+   *       ok / error 走成功/失败分支；
+   *    3. setTimeout 看门狗（5s — work_dir_add 与 mount 同）；
+   *    4. let unsub 让超时闭包可调 + 成功后 resolver 内部
+   *       双保险 unsub（注册仅一次性，dispatchReplyResolvers
+   *       自动从内部 map 删除）。
+   */
   const handleSelect = useCallback(
     (selectedPath: string) => {
       setAddingPath(selectedPath);
       setAddError(null);
       const id = client.sendWorkDirAdd(selectedPath);
-      const start = Date.now();
-      const pollHandle = setInterval(() => {
-        const result: WorkDirAddOutcome | null = client.takeWorkDirResult(id);
-        if (result !== null) {
-          clearInterval(pollHandle);
-          setAddingPath(null);
-          if (result.ok) {
-            onAdded(selectedPath);
-            return;
-          }
-          setAddError(formatAddError(result.error));
+      let unsub: (() => void) | null = null;
+      const watchdog = setTimeout(() => {
+        unsub?.();
+        setAddingPath(null);
+        setAddError('work_dir_add 超时未回执 — bridge 可能离线');
+      }, WORK_DIR_ADD_TIMEOUT_MS);
+      unsub = client.registerReplyResolver(id, (env) => {
+        clearTimeout(watchdog);
+        setAddingPath(null);
+        if (env.kind !== 'control' || env.type !== 'result') return;
+        if (env.payload.ok !== true) {
+          setAddError(formatAddError(env.payload.error));
           return;
         }
-        if (Date.now() - start > POLL_TIMEOUT_MS) {
-          clearInterval(pollHandle);
-          setAddingPath(null);
-          setAddError('work_dir_add 超时未回执 — bridge 可能离线');
-        }
-      }, POLL_INTERVAL_MS);
+        onAdded(selectedPath);
+      });
     },
     [client, onAdded],
   );
