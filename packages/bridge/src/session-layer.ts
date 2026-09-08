@@ -203,6 +203,13 @@ export interface BridgeSessionLayerOptions {
    *  hands it in here. */
   workDirStore: WorkDirStoreType;
 
+  /** Optional env override forwarded to every manager the layer
+   *  constructs. Defaults to `process.env`. Tests inject a hermetic
+   *  env (see `tests/integration/helpers/build-hermetic-env.ts`)
+   *  so the spawned pi subprocess points at a fixture agent dir
+   *  rather than the host's `~/.pi/agent`. */
+  baseEnv?: NodeJS.ProcessEnv;
+
   /** Optional manager factory for unit tests. Defaults to
    *  `PiProcessManager`. Tests inject a wrapper that swaps the
    *  `spawn` factory so the FakeChild pattern (see
@@ -276,6 +283,7 @@ export class BridgeSessionLayer {
   private readonly onOutbound: (env: Envelope) => void;
   private readonly onStderr: (chunk: string) => void;
   private readonly workDirStore: WorkDirStoreType;
+  private readonly baseEnv: NodeJS.ProcessEnv | undefined;
   private readonly makeManager: (opts: PiProcessOptions) => PiProcessManager;
 
   // ---- runtime state ----
@@ -304,6 +312,7 @@ export class BridgeSessionLayer {
     this.onOutbound = options.onOutbound;
     this.onStderr = options.onStderr ?? ((chunk) => logger.warn(`pi stderr: ${chunk.trimEnd()}`));
     this.workDirStore = options.workDirStore;
+    this.baseEnv = options.baseEnv;
     this.makeManager = options.makeManager ?? ((opts) => new PiProcessManager(opts));
   }
 
@@ -388,38 +397,66 @@ export class BridgeSessionLayer {
     // spawning, but a no-write queue leaves it in `ready` and we
     // still need to migrate so web can stop tracking the pending
     // `'new'` hash placeholder. Migration on the FIRST non-exited
-    // broadcast is correct because the manager has by definition
-    // produced a stdout frame (otherwise we wouldn't be here).
+    // session_state broadcast is correct because the manager has
+    // by definition produced a stdout frame (otherwise we wouldn't
+    // be here).
     if (mapKey.startsWith('new:')) {
-      const workDir = mapKey.slice('new:'.length);
-      const stem = this.deriveStemForWorkDir(workDir);
-      if (stem === null) {
-        // File not present yet (or the manager's cwd doesn't match
-        // a session subdir). This is the rare case where the probe's
-        // 50ms watcher latency didn't catch the file in time —
-        // fall through without migrating; the next outbound frame
-        // (turn_start / message_start / etc.) will trigger another
-        // attempt. We log warn once per manager per phase so a
-        // long-running gap is observable but doesn't spam.
-        logger.warn(
-          `pending manager: session file not found in ${this.agentDir}/sessions/--<encoded>--/ yet; will retry on next frame`,
-        );
-        return;
-      }
-      // Atomic migration (PRD §钉子 2: 三步原子 = 删旧键 + 设新键
-      // + 广播，期间命令不误路由). JS single-threadedness makes
-      // this naturally atomic — no command can be processed
-      // between the delete and the set.
-      this.managers.delete(mapKey);
-      this.managers.set(stem, manager);
-      const holder = this.managerKeys.get(manager);
-      if (holder !== undefined) {
-        holder.current = stem;
-      }
-      // Broadcast the session_state with the real session field.
-      // Note: the wrapper already injected `session: <pendingKey>`
-      // on the inbound frame; we now re-broadcast with the real
-      // stem so web can update its hash.
+      this.attemptPendingMigration(manager, mapKey, sessionState.phase);
+    }
+  }
+
+  /** Attempt the pending → stem migration for a manager. Idempotent:
+   *  once the map key has been swapped from `new:<work_dir>` to the
+   *  real stem, subsequent calls become no-ops (the early-return
+   *  on `!mapKey.startsWith('new:')` short-circuits). Called from
+   *  the spawnManager outbound wrapper on EVERY outbound envelope
+   *  (so even non-session_state frames like the first `agent_start`
+   *  event trigger migration; the session_state call path is the
+   *  primary one, the other is a defensive fallback for the rare
+   *  case where pi writes the jsonl AFTER the first session_state).
+   */
+  private tryPendingMigration(manager: PiProcessManager, mapKey: string): void {
+    if (!mapKey.startsWith('new:')) return; // not pending — nothing to migrate
+    this.attemptPendingMigration(manager, mapKey, null);
+  }
+
+  private attemptPendingMigration(
+    manager: PiProcessManager,
+    mapKey: string,
+    phase: SessionPhase | null,
+  ): void {
+    if (!mapKey.startsWith('new:')) return;
+    const workDir = mapKey.slice('new:'.length);
+    const stem = this.deriveStemForWorkDir(workDir);
+    if (stem === null) {
+      // File not present yet. The probe showed the jsonl appears
+      // synchronously with the agent_start event (~50ms latency in
+      // our watcher); if the file is still missing, the next
+      // outbound frame will retry. Log warn so a long-running gap is
+      // observable but doesn't spam the log.
+      logger.warn(
+        `pending manager: session file not found in ${this.agentDir}/sessions/--${encodeCwdForPi(workDir)}--/ yet; will retry on next frame`,
+      );
+      return;
+    }
+    // Atomic migration (PRD §钉子 2: 三步原子 = 删旧键 + 设新键 + 广播，期间命令不误路由). JS single-threadedness makes
+    // this naturally atomic — no command can be processed between
+    // the delete and the set.
+    this.managers.delete(mapKey);
+    this.managers.set(stem, manager);
+    const holder = this.managerKeys.get(manager);
+    if (holder !== undefined) {
+      holder.current = stem;
+    }
+    // Broadcast the session_state with the real session field when
+    // invoked from a session_state envelope (so the inbound and
+    // outbound session_states carry the same payload shape, just
+    // with the real session key). When invoked from a non-state
+    // outbound (e.g. the first agent_start event), the manager
+    // will emit its own session_state on the next phase transition
+    // carrying the holder.current (now the real stem) — so we
+    // don't double-broadcast.
+    if (phase !== null) {
       this.onOutbound({
         v: PROTOCOL_VERSION,
         kind: 'control',
@@ -427,10 +464,7 @@ export class BridgeSessionLayer {
         id: randomUUID(),
         session: stem,
         payload: {
-          phase: sessionState.phase,
-          ...(sessionState.blocked_on !== undefined
-            ? { blocked_on: sessionState.blocked_on }
-            : {}),
+          phase,
           work_dir: workDir,
         },
       });
@@ -656,19 +690,37 @@ export class BridgeSessionLayer {
   }): PiProcessManager {
     const holder: SessionKeyHolder = { current: opts.mapKey };
     const wrapper = makeOutboundWrapper(holder, this);
-    const baseEnv = process.env;
+    const baseEnv = this.baseEnv ?? process.env;
+    // We can't capture `manager` inside the `onOutboundEnvelope`
+    // closure (TDZ), so we declare the helper below and let the
+    // closure call it. The helper closes over the manager by
+    // reassigning once the manager is constructed.
     const piOpts: PiProcessOptions = {
       agentDir: this.agentDir,
       workDir: opts.workDir,
       baseEnv,
       onOutboundEnvelope: (env) => {
-        // Inspect session_state envelopes for pending migration /
-        // exited cleanup BEFORE forwarding through the wrapper (which
-        // also handles session_state injection). Doing it here means
-        // we react to the manager's broadcast before the wrapper
-        // rewrites the envelope.
+        // 钉子 2 + 钉子 4 + 裁定 C cleanup: react on EVERY outbound
+        // envelope (not just session_state). Probe-validated trigger
+        // (tests/integration/probes/sessionkey-probe.ts): in pi
+        // 0.85.1 the jsonl file is created synchronously with the
+        // agent_start event — the most reliable signal we can act on
+        // without polling the filesystem. The agent_start frame is
+        // an outbound `pi/event` envelope (the manager forwards it
+        // verbatim per `handleStdoutFrame`); by attempting migration
+        // on every outbound we catch agent_start as well as the
+        // session_state broadcasts the manager emits on every phase
+        // transition. The migration is idempotent: once migrated,
+        // subsequent attempts find no pending key and become no-ops.
         if (env.kind === 'control' && env.type === 'session_state') {
-          this.onManagerSessionState(opts.mapKey as unknown as PiProcessManager, env.payload);
+          onSessionState(env.payload);
+        } else {
+          // Any non-session_state outbound (event / command_result /
+          // snapshot / result from the manager) also triggers a
+          // migration attempt. The pending-key check inside
+          // `onManagerSessionState` short-circuits on subsequent
+          // attempts once the map key has been swapped.
+          onAnyOutbound();
         }
         wrapper(env);
       },
@@ -678,6 +730,13 @@ export class BridgeSessionLayer {
       ...(this.spawnTimeoutMs !== undefined ? { spawnTimeoutMs: this.spawnTimeoutMs } : {}),
     };
     const manager = this.makeManager(piOpts);
+    // Define helpers after construction; they close over `manager`.
+    const onSessionState = (payload: SessionStatePayload): void => {
+      this.onManagerSessionState(manager, payload);
+    };
+    const onAnyOutbound = (): void => {
+      this.tryPendingMigration(manager, opts.mapKey);
+    };
     this.managers.set(opts.mapKey, manager);
     this.managerKeys.set(manager, holder);
     manager.start();

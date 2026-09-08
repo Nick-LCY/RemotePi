@@ -274,6 +274,11 @@ export interface PiSpawnOptions {
 export interface SessionStatePayload {
   phase: SessionPhase;
   blocked_on?: BlockedOnEntryPayload[];
+  // M4 (ADR-0010 §演进规则 (a)): session_state.payload.work_dir
+  // is an additive optional field. The bridge populates it from
+  // its own `workDir`; web uses it to render the ChoicePage list
+  // without a separate session_list query.
+  work_dir?: string;
 }
 
 /** Commands that need to be deferred until the handshake completes.
@@ -1507,6 +1512,12 @@ export class PiProcessManager {
     const payload: SessionStatePayload = {
       phase: this.phase,
       ...(blockedOn.length > 0 ? { blocked_on: blockedOn } : {}),
+      // M4 (ADR-0010 §演进规则 (a)): session_state carries the
+      // work_dir so the web's ChoicePage level=2 can render it
+      // directly without a separate session_list query. The
+      // SessionSessionLayer wrapper injects the `session` envelope
+      // field; we own the payload field here.
+      work_dir: this.workDir,
     };
     this.onOutbound({
       v: PROTOCOL_VERSION,
