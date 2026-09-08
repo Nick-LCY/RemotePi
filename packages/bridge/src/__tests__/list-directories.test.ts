@@ -22,6 +22,9 @@
 //       ENOENT/EACCES/ENOTDIR → invalid_envelope; internal → internal
 //  16.  dispatcher wiring in pi-process.ts: emits result envelope with
 //       reply_to, no spawn, $HOME fallback
+//  17.  trailing-slash on input path: entry `path` has no double slash
+//       (path.join normalisation; pins behaviour against future
+//       string-concat refactors)
 //
 // Style mirrors `state.test.ts`: one numbered `it` per acceptance
 // case, no shared mutable state, real fs where possible (tmpdir),
@@ -29,7 +32,6 @@
 // reliably produce (root user bypasses DAC).
 
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -503,6 +505,42 @@ describe('listDirectories — path.resolve normalisation', () => {
     if (!result.ok) return;
     expect(result.data.entries).toEqual([]);
   });
+
+  it('10c. trailing slash on input path: entry `path` does not contain double slash', () => {
+    // `<tmp>/dir/` — the input carries an extra trailing slash.
+    // `path.resolve` normalises this (no double slash in resolved
+    // path), and `path.join` used inside the implementation also
+    // collapses trailing slashes. This test pins the contract:
+    // every entry's `path` field must contain no `//` substring,
+    // regardless of whether the operator-supplied path had a
+    // trailing slash. A future refactor that, say, switched to
+    // string concatenation (`resolvedPath + '/' + name`) would
+    // regress here.
+    const root = makeTmpdir();
+    mkdirTree(root, {
+      'sub-a': {},
+      'sub-b': {},
+    });
+    const inputPath = `${root}/`; // explicit trailing slash
+    const result = listDirectories(inputPath);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.entries).toHaveLength(2);
+    // No entry path contains `//`.
+    for (const entry of result.data.entries) {
+      expect(entry.path.includes('//')).toBe(false);
+      // And the resolved form is what we expect: path.join
+      // collapses the trailing slash, so entries land at
+      // `${root}/sub-a` and `${root}/sub-b` (not `${root}//sub-a`).
+      expect(entry.path).toMatch(/^\/.*\/sub-[ab]$/);
+    }
+    // Belt-and-braces: every entry resolves to a real directory
+    // on disk — pins that path.join didn't drop or corrupt the
+    // path beyond the trailing-slash normalisation.
+    for (const entry of result.data.entries) {
+      expect(statSync(entry.path).isDirectory()).toBe(true);
+    }
+  });
 });
 
 // ----- 11. empty directory --------------------------------------------------
@@ -843,13 +881,5 @@ describe('list-directories dispatcher in pi-process.ts', () => {
     const result = resultEnvs[0] as { session?: string; reply_to?: string };
     expect(result.session).toBe('sess-abc-123');
     expect(result.reply_to).toBe('ld-req-5');
-  });
-
-  // Quiet "unused variable" — `existsSync` is referenced in
-  // the file header but not actually used; silence the lint
-  // by referencing it once in a no-op assertion.
-  it('15z. tmpdir fixtures are cleaned up by afterEach', () => {
-    // Sanity check that the cleanup registry runs at least once.
-    expect(existsSync(makeTmpdir())).toBe(true);
   });
 });

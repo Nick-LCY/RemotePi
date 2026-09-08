@@ -263,7 +263,19 @@ function preflight(
  *  polish pass; that's a UI concern, not a wire contract one.)
  *
  *  Sort: locale-independent lexicographic (code-point) order; see
- *  module header "Sort order" note for rationale. */
+ *  module header "Sort order" note for rationale.
+ *
+ *  ## TOCTOU note (readdir-time ENOTDIR / ENOENT)
+ *
+ *  The preflight above is best-effort — between stat + readdir
+ *  the path could be deleted (ENOENT) or replaced with a file
+ *  (ENOTDIR). These are handled in the catch block below (the
+ *  ENOTDIR branch around line 290+), mapped to `path_not_found`
+ *  and `path_not_directory` respectively so the operator sees
+ *  the same message regardless of which syscall surfaced the
+ *  failure. These branches are **not** unit-tested (synthesising
+ *  the precise race is impractical in a hermetic tmpdir); the
+ *  integration / e2e suite is the right place to exercise them. */
 function readDirectoryEntries(resolvedPath: string): {
   kind: 'ok';
   entries: { name: string; path: string }[];

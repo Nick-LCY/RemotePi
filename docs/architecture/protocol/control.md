@@ -215,7 +215,11 @@ bridge 在不在线（由中间层生成）。
 - **方向**：web → bridge（中间层转发），bridge → web 走 `result`（与 `session_list` / `get_state` 同形态）。
 - **payload**：`path?: string`——可选；缺省 = `$HOME`（`os.homedir()`）；提供时由 bridge 走 `path.resolve(path)` 规范化。
 - **回执**：`result.data = { entries: { name: string, path: string }[] }`——**只列子目录**（`dirent.isDirectory()` 过滤），不含文件。
-- **回执失败**：`result.ok = false` + `error.code` 复用 [§8](#8-error) 已锁版的 6 个 code 集合（不新增）——ENOENT / EACCES / ENOTDIR 各分支独立（沿用 M3 §2.1 配置校验的同类做法），实施期选最贴切的 code。
+- **回执失败**：`result.ok = false` + `error.code` 复用 [§8](#8-error) 已锁版的 6 个 code 集合（**不新增**——ADR-0010 §决策.8）。落地映射（任务 05 实施期定稿）：
+  - ENOENT / EACCES / EPERM / ENOTDIR → `result.ok = false` + `error.code = 'invalid_envelope'`，`error.message` 携带 domain 级区分（`path_not_found` / `path_not_readable` / `path_not_directory`）便于运维定位。**语义注记**：此处 `invalid_envelope` 在 list_directories 上下文中扩展为"envelope payload 指向不可用的 fs 实体（路径不存在 / 不可读 / 不是目录）"——并非 envelope 结构本身错误（结构错误仍走 M3 §8 原义）；domain code 落在 message 字段，wire code 统一收敛。
+  - EIO / ELOOP / 其他非预期 fs 错误（stat / accessSync / readdir 三处任一抛出未分类 errno）→ `error.code = 'internal'`。
+  - 映射表是单点真理：`mapListDirectoriesDomainCodeToWire` 在 `list-directories.ts` 落地，dispatcher 只调用该函数。
+- **dotfile 行为**：列出所有子目录（含 dotfile 前缀目录，如 `.config` / `.cache`），UI 层可选择性过滤——属产品 UI 关注点，非 wire 契约。
 - **范围限制**：业务共识 2 "起点 home，不设范围限制"——任何合法路径都可列；单用户自用，无 traversal 安全顾虑。
 - **破锁依据**：M4 新增（9 → 13），沿用 ADR-0006 范式，理由见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.1。
 

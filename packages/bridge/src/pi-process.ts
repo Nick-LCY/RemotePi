@@ -1543,7 +1543,39 @@ export class PiProcessManager {
           // get_state because both are "answer without spawn" control
           // types whose semantics are independent of the pi state
           // machine.
-          this.handleListDirectories(env.id, env.payload.path, env.session);
+          //
+          // Defensive narrow-validate: the shared schema marks
+          // `path` as `string | undefined`, but the dispatcher
+          // sits before the schema's type assertions in some
+          // legacy code paths and after in others (task 06 will
+          // unify on a single schema gate). A future worker
+          // forwarding mode (e.g. JSON-with-comments envelopes,
+          // or a worker that serialises untyped payloads) could
+          // pass a non-string `path` here. Reject anything other
+          // than `string` or `undefined` with `invalid_envelope`
+          // — cheap to check, prevents `path.resolve(<number>)`
+          // from throwing a TypeError that would otherwise
+          // surface as a generic internal error.
+          const pathField = (env.payload as { path?: unknown }).path;
+          if (pathField !== undefined && typeof pathField !== 'string') {
+            this.onOutbound({
+              v: PROTOCOL_VERSION,
+              kind: 'control',
+              type: 'result',
+              id: randomUUID(),
+              reply_to: env.id,
+              ...(env.session !== undefined ? { session: env.session } : {}),
+              payload: {
+                ok: false,
+                error: {
+                  code: 'invalid_envelope',
+                  message: `list_directories.payload.path must be string or undefined (got ${typeof pathField})`,
+                },
+              },
+            });
+            break;
+          }
+          this.handleListDirectories(env.id, pathField, env.session);
           break;
         // Other control types (`handshake`, `ping`, `pong`,
         // `session_state`, `session_list`, `result`, `error`) are
