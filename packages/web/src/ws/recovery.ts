@@ -189,8 +189,21 @@ export interface InitiateRecoveryOptions {
    *
    *  App.tsx 的 RecoveryShell 调用点从 `currentSessionKey` 镜像
    *  传入。`currentSessionKey === null`（M3 token-only URL）
-   *  时传 `null`，仪式保持 session-less。*/
+   *  时传 `null`，仪式保持 session-less。
+   *
+   *  `workDir` 同样传给仪式：session='new' 的仪式需要把 work_dir
+   *  写入 `pi/get_messages` payload 以满足 bridge pending-key 路由
+   *  的需求（钉子 2：new 必带 work_dir）。M3-compat fallback
+   *  （sessionKey=null）不需要 work_dir。M4 normal flow（真 stem）
+   *  不需要——work_dir 仅 session='new' 时塞 payload。*/
   sessionKey?: string | null;
+  /** Work directory 镜像（来自 URL hash 的 work_dir 分量）。仪式
+   *  在 `sessionKey === 'new'` 时把它塞进 `pi/get_messages` 与
+   *  `control/get_state` 两个信封的 payload.work_dir 字段，以启动
+   *  bridge 的 pending-key 路由。App.tsx RecoveryShell 调用点从
+   *  `currentWorkDir` 镜像传入；sessionKey 不是 'new' 时该字段被
+   *  忽略。*/
+  workDir?: string | null;
 }
 
 export function initiateRecovery(
@@ -202,6 +215,7 @@ export function initiateRecovery(
   const makeId = options.makeId ?? defaultMakeId;
   const onTransition = options.onTransition;
   const sessionKey = options.sessionKey ?? null;
+  const workDir = options.workDir ?? null;
 
   // ---- state ---------------------------------------------------------------
   // Cached snapshot — replace-on-change semantics. `useSyncExternalStore`
@@ -390,22 +404,51 @@ export function initiateRecovery(
     // 迁移后仪式在 M4 流下携带真实 session 或 `'new'`，M3
     // fallback 仅在调试 / 旧链接场景生效。
     const sessionField = sessionKey !== null ? { session: sessionKey } : {};
-    wsClient.send({
+    // R3 review 修复轮——`session: 'new'` 的仪式需要 work_dir
+    // 才能让 bridge pending-key 路由生效（钉子 2）：
+    // `getOrCreateManagerForSession` 读取 `payload.work_dir`
+    // 动态判断 work_dir——session='new' 缺 work_dir 会被判为
+    // invalid_envelope。共享 GetMessagesPayloadSchema 仅含
+    // `since`（zod 默认 strip 模式：多余字段被剥离但 schema
+    // 通过），所以 web 端在 payload 上附加 `work_dir` 后，
+    // bridge 端按动态 narrowing 读到 work_dir，shared 不动。
+    //
+    // M3-compat fallback（sessionKey=null）不发 work_dir——
+    // bridge 走 M3_LEGACY auto-spawn 路径，不需 work_dir。
+    // 真 stem（sessionKey=<stem>）也不需要——session 路由已
+    // 命中 manager。仅 sessionKey='new' 时塞 work_dir。
+    const needsWorkDir = sessionKey === 'new' && workDir !== null;
+    const messagesPayload: Record<string, unknown> = {};
+    const statePayload: Record<string, unknown> = {};
+    if (needsWorkDir) {
+      messagesPayload['work_dir'] = workDir;
+      statePayload['work_dir'] = workDir;
+    }
+    // TODO 任务 09：work_dir 进 GetMessagesPayloadSchema / GetStatePayloadSchema
+    // 显式字段——本轮最小侵入用 cast 钉桩（zod default = strip，多余
+    // 字段在 worker.safeParse 被剥离但 schema 通过；bridge 端按
+    // 动态 narrowing 读到 work_dir，shared 不动）。TypeScript
+    // 推荐用法：直接断言到 envelope schema 的 payload 类型，因为
+    // `Record<string, unknown>` 的所有字段值都是 `unknown`，
+    // 本身可以看作"任何对象"的扩展——lint 视为"无需断言"。
+    const getMessagesEnvelope = {
       v: PROTOCOL_VERSION,
-      kind: 'pi',
-      type: 'get_messages',
+      kind: 'pi' as const,
+      type: 'get_messages' as const,
       id: messagesId,
       ...sessionField,
-      payload: {},
-    });
-    wsClient.send({
+      payload: messagesPayload,
+    };
+    const getStateEnvelope = {
       v: PROTOCOL_VERSION,
-      kind: 'control',
-      type: 'get_state',
+      kind: 'control' as const,
+      type: 'get_state' as const,
       id: stateId,
       ...sessionField,
-      payload: {},
-    });
+      payload: statePayload,
+    };
+    wsClient.send(getMessagesEnvelope);
+    wsClient.send(getStateEnvelope);
   };
 
   /** Per-reply outcome: `pi/snapshot` with the matching reply_to
@@ -554,6 +597,34 @@ export function initiateRecovery(
       };
     },
     retry: startCeremony,
+  };
+}
+
+/** Build a no-op gate that is ALREADY in the `ready: true` state
+ *  — used when the recovery ceremony cannot meaningfully run.
+ *  Primary use case: `session: 'new'` (the bridge has no manager
+ *  for the 'new' key until the first pi/prompt creates the pending
+ *  manager; running `get_messages` / `get_state` against it returns
+ *  `invalid_envelope` / `no manager`). The new session has empty
+ *  history by definition — there's nothing to recover. ChatView
+ *  renders immediately; the user's first prompt triggers the
+ *  bridge pending-key spawn, then the App.tsx stem-refilled watcher
+ *  (W8) refills the hash with the real stem and the next session
+ *  change gets a real ceremony.
+ *
+ *  `retry()` is wired to a no-op — re-pressing "重试" on a no-op
+ *  gate does nothing (the gate never enters the error state, so
+ *  the menu item isn't shown; the implementation is defensive). */
+export function createReadyGate(): RecoveryGate {
+  const snapshot: RecoveryState = { ready: true, error: null };
+  return {
+    getSnapshot: () => snapshot,
+    subscribe: () => () => {
+      // no listeners — no-op
+    },
+    retry: () => {
+      // no-op — already ready
+    },
   };
 }
 

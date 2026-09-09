@@ -105,26 +105,80 @@ async function waitForChatViewOrRecovery(page: Page): Promise<'chat-view' | 'rec
   return 'chat-view';
 }
 
-test.describe('scenario (a) — first-turn streaming render', () => {
-  test('user sends a prompt; assistant streams multi-delta; input regains focus', async ({ page }) => {
+test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
+  test('user sends a prompt through the M4 ChoicePage flow; assistant streams multi-delta; stem refilled; input regains focus', async ({ page }) => {
     const state = await readRunState();
     const { token, baseUrl, fakeLlmUrl } = state;
 
-    // M4 task 08: still on the M3 token-only URL — the bridge's
-    // outbound wrapper (task 06) only injects the session field
-    // on `session_state` envelopes, not on events / snapshots.
-    // That means a `&session=new` outbound would create a
-    // `new:<work_dir>` map key on the bridge whose events arrive
-    // session-less at the web and get routed to the M3_LEGACY
-    // bucket — not the `new` bucket ChatView is reading. M3
-    // token-only URL goes through the M3_LEGACY manager whose
-    // events DO arrive in the M3_LEGACY bucket, so ChatView (now
-    // pinned to the M3_LEGACY bucket when currentSessionKey is
-    // null) renders correctly. This is the same M3-compat path
-    // task 10's spec acknowledges and will eventually retire. See
-    // the task 08 report for the M3_LEGACY retirement evaluation.
+    // M4 task 08 review R6 — migrated to M4 flow per reviewer 方案 B:
+    //   `#<token>` → ChoicePage level=1 (work_dirs list) →
+    //   点击 bridge.json 配置的 work_dir → level=2 →
+    //   「新建会话」→ pending ChatView (hash `&session=new`) →
+    //   bridge 派生 stem → App.tsx stem-refilled watcher 回填
+    //   hash → continue with the refilled hash (session=<stem>)。
+    //
+    // 该路径依赖：
+    //   - R1 翻转 task 07 实施期的 M3-compat 偏离（`#<token>`
+    //     不再旁路到 recovery，路由 choiceLevel1）；
+    //   - R2 入站 fallback 链（bridge 不在 event/snapshot 上注入
+    //     session，依赖 `currentSessionKey` 兜底落桶）；
+    //   - R3 恢复仪式带 session 出站（get_messages + get_state
+    //     信封携带 envelope.session）；
+    //   - R4 stem 回填桶迁移（'new' 桶累积的早期消息整体搬到
+    //     stem 桶，避免 ChatView 切到读 stem 桶时丢早期状态）。
+    //
+    // 三场景（a/b/c）同走此 M4 流——M3_LEGACY auto-spawn 路径
+    // （`#<token>` 旁路到 recovery 的旧形态）不再被 e2e 消费；
+    // bridge M3_LEGACY manager 仍然存在以服务 M3 旧链接的运维
+    // / 调试场景，但 e2e 全 M4 化后该路径仅在外部访问旧链接
+    // 时才被触发。
+
+    // Step 1: load M3 legacy URL → land on ChoicePage level=1.
+    page.on('pageerror', (err) => {
+      // Fail loudly if there's a JS error — common cause of React mount failure.
+      throw new Error(`[browser pageerror] ${err.message}\n${err.stack ?? ''}`);
+    });
+    page.on('console', (msg) => {
+      if (msg.type() === 'error' || msg.type() === 'warning') {
+        process.stdout.write(`[browser ${msg.type()}] ${msg.text()}\n`);
+      }
+    });
     await page.goto(`${baseUrl}/#${token}`);
+    const level1 = page.locator('[data-testid="choice-page"][data-level="1"]');
+    await level1.waitFor({ state: 'visible', timeout: 30_000 });
+
+    // Step 2: click the work_dir row for the bridge's configured
+    // work_dir (exposed via run-state.json). Row's data-testid is
+    // 'work-dir-select' with a 'data-path' attribute matching the
+    // absolute path.
+    const workDirRow = page.locator(
+      '[data-testid="work-dir-select"][data-path="' + state.workDir + '"]',
+    );
+    await workDirRow.waitFor({ state: 'visible', timeout: 10_000 });
+    await workDirRow.click();
+
+    // Step 3: land on ChoicePage level=2 — session list (may be
+    // empty for this fresh work_dir; the test pre-populates no
+    // sessions, so we expect the "暂无会话" empty state).
+    const level2 = page.locator('[data-testid="choice-page"][data-level="2"]');
+    await level2.waitFor({ state: 'visible', timeout: 30_000 });
+
+    // Step 4: click 「新建会话」 → hash gets `&session=new` →
+    // App re-dispatches to recovery → ChatView pending.
+    await page.locator('[data-testid="session-new"]').click();
     await waitForChatViewOrRecovery(page);
+
+    // R6 review 修复轮——wait for WebSocket to be online before
+    // sending prompts. ChatView for session='new' mounts
+    // immediately (createReadyGate = always ready, 不跑仪式),
+    // 但 WebSocket 可能仍在握手/connecting 中——若 sendRaw 时
+    // socket.readyState !== OPEN 则静默丢包。M4 流下 root cause
+    // 是 choicePage level1/level2 切换 + createReadyGate 立即
+    // ready 让 chat-view 早于 WS online 出现；testid 点击路径已
+    // 走对，仅需等 WS online 后再点 send 即可。
+    await page
+      .locator('[data-testid="bridge-status"] [data-state="online"]')
+      .waitFor({ state: 'visible', timeout: 30_000 });
 
     // Inject the multi-delta reply BEFORE sending the prompt so
     // the LLM call (which the bridge spawns pi to make on the
@@ -215,6 +269,35 @@ test.describe('scenario (a) — first-turn streaming render', () => {
       { hasText: 'hello-from-e2e' },
     );
     await userRow.waitFor({ state: 'visible', timeout: 15_000 });
+
+    // Step 6 (R6 M4 flow): wait for the App.tsx stem-refilled
+    // watcher (W8) to fire — bridge broadcasts
+    // session_state{session:<stem>} after the pending manager's
+    // first session_state, watcher refills the hash from
+    // `session=new` to `session=<realStem>`. We poll up to 30s
+    // (the ceremony's first turn + pi cold spawn + watcher fire
+    // usually well under 5s; 30s is headroom for slow machines).
+    //
+    // 关键时序：watcher 在 session_state 入桶时触发 hash 写入；
+    // 该 session_state 通常在用户 prompt 发出后 + pi 第一条
+    // session_state 阶段转换时到达。在 userRow 出现（本地
+    // optimistic append）后立即轮询，等待 watcher fire。
+    await expect
+      .poll(
+        async () => {
+          const currentHash = await page.evaluate(() => window.location.hash);
+          const match = currentHash.match(/session=([^&]*)/);
+          if (match === null) return null;
+          const decoded = decodeURIComponent(match[1]!);
+          return decoded === 'new' ? null : decoded;
+        },
+        {
+          timeout: 30_000,
+          message:
+            'App.tsx stem-refilled watcher did not update URL hash from session=new to a real stem within 30s',
+        },
+      )
+      .not.toBeNull();
 
     // Await the in-page observer's completion — it records every
     // intermediate draft length and signals when the terminal

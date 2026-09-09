@@ -86,7 +86,12 @@ import { errorHint } from './components/error-hint.js';
 import { decideView, readAuthFromHash, type AuthFromHash } from './hash.js';
 import { WsClient, M3_LEGACY_KEY, type ConnState } from './ws/WsClient.js';
 import { useBridgeStatus, useConnState, useSessionPhase, WsClientProvider } from './ws/WsClientContext.js';
-import { initiateRecovery, type RecoveryError, type RecoveryGate } from './ws/recovery.js';
+import {
+  createReadyGate,
+  initiateRecovery,
+  type RecoveryError,
+  type RecoveryGate,
+} from './ws/recovery.js';
 import { resolveWssUrl } from './ws/config.js';
 
 export { errorHint };
@@ -286,7 +291,7 @@ function RecoveryShell({
   // for the auto-start contract that re-fires the ceremony on
   // session change.
   const gateMapRef = useRecoveryGateMap();
-  const gate = gateForSession(gateMapRef.current, session, client);
+  const gate = gateForSession(gateMapRef.current, session, workDir, client);
   return <RecoveryView gate={gate} session={session} workDir={workDir} token={token} />;
 }
 
@@ -315,16 +320,38 @@ function useRecoveryGateMap(): { current: Map<string, RecoveryGate> } {
 function gateForSession(
   map: Map<string, RecoveryGate>,
   session: string,
+  workDir: string,
   client: WsClient,
 ): RecoveryGate {
   let gate = map.get(session);
   if (gate === undefined) {
-    // R3 review 修复轮——仪式带 session 出站：App.tsx 传入当前
-    // sessionKey（来自 URL hash 的 session 分量）；M3-compat
-    // 路径（currentSessionKey=null）下 M3_LEGACY 路径走
-    // session-less，bridge auto-spawn 接住。R6 e2e 迁移后所有
-    // 路径走带 session 形态。
-    gate = initiateRecovery(client, { sessionKey: session });
+    if (session === 'new') {
+      // R3 review 修复轮——`session: 'new'` 不跑仪式：
+      //   bridge 在收到首条 pi/prompt 之前没有 'new' 对应的
+      //   manager（pending manager 是 lazy spawn）；get_messages
+      //   / get_state 都会返 `invalid_envelope` / `no manager`。
+      //   新会话按定义历史为空——无东西可恢复。createReadyGate
+      //   直接返回 ready=true 的 no-op gate，ChatView 立即渲染；
+      //   用户首条 prompt 触发 bridge pending 键 + App.tsx
+      //   stem-refilled watcher 回填 hash → 下次会话切换进真
+      //   stem 的仪式。
+      gate = createReadyGate();
+    } else {
+      // R3 review 修复轮——仪式带 session + workDir 出站：
+      //   - sessionKey 来自 URL hash 的 session 分量；
+      //   - workDir 来自 URL hash 的 work_dir 分量（pending
+      //     session='new' 时仪式需 work_dir 触发 bridge pending-
+      //     key 路由——钉子 2）。本分支是真 stem 走仪式，work_dir
+      //     仅在 session='new' 时被仪式消费；真 stem 时仪式不
+      //     消费（manager 已存在，session 路由已命中）。
+      //   M3-compat 路径（currentSessionKey=null）下 M3_LEGACY
+      //     路径走 session-less，bridge auto-spawn 接住。R6 e2e
+      //     迁移后所有路径走带 session 形态。
+      gate = initiateRecovery(client, {
+        sessionKey: session,
+        workDir: workDir.length > 0 ? workDir : null,
+      });
+    }
     map.set(session, gate);
   }
   return gate;

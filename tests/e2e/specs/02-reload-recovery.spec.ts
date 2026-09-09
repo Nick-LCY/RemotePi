@@ -152,24 +152,53 @@ async function sendPromptAndAwait(
   await expect(inputField).toBeEnabled({ timeout: 30_000 });
 }
 
-test.describe('scenario (b) — F5 reload recovery', () => {
-  test('after reload, recovery ceremony re-runs and history is fully restored', async ({ page }) => {
+test.describe('scenario (b) — F5 reload recovery (M4 flow)', () => {
+  test('M4 nav → 新建会话 → stem refilled → send 2 prompts → reload (with refilled hash) → recovery ceremony re-runs and history is fully restored', async ({ page }) => {
     const state = await readRunState();
     const { token, baseUrl, fakeLlmUrl } = state;
 
-    // M4 task 08: M3 token-only URL — see the same comment in
-    // 01-first-turn.spec.ts for why the M3 path is what the E2E
-    // uses (M3_LEGACY bucket; the bridge's `new:<work_dir>`
-    // pending-key events are session-less at the web boundary
-    // and would route wrong). Task 10's M4-native E2E migration
-    // will flip these to the full M4 hash once the bridge injects
-    // session on event envelopes too.
+    // M4 task 08 review R6 — migrated to M4 flow per reviewer 方案 B:
+    //   `#<token>` → ChoicePage level=1 → level=2 → 新建会话
+    //   → pending ChatView → stem refilled → 发 2 条 prompt →
+    //   拿 refilled hash → reload → RecoveryView（R3 仪式带 session
+    //   出站）→ ChatView → 消息对账。
     //
-    // Step 1: load the chat, send two prompts, wait for both
-    // terminal rows to land. The LLM scripts are pre-installed
-    // so the assistant replies are deterministic.
+    // 该路径依赖 R1 (decideView 翻 choiceLevel1) + R2 (event /
+    // snapshot fallback 链) + R3 (恢复仪式带 session 出站) +
+    // R4 (stem 回填桶迁移，`new` 桶的早期消息搬到 stem 桶) +
+    // W8 (stem-refilled watcher 抽取单测 + 在 App.tsx 接线)。
+    //
+    // 关键约束：reload 后的 hash 必须是 refilled 后的三字段
+    //（token + work_dir + session=<stem>），否则仪式发 session-less
+    // 信封 → bridge 走 M3_LEGACY auto-spawn 路径 → 看不到本场景
+    // 创建的 session 历史（不同 manager / 不同 jsonl）。
+    //
+    // Step 1: load M3 legacy URL → land on ChoicePage level=1.
     await page.goto(`${baseUrl}/#${token}`);
+    const level1 = page.locator('[data-testid="choice-page"][data-level="1"]');
+    await level1.waitFor({ state: 'visible', timeout: 30_000 });
+
+    // Step 2: click work_dir row → level=2.
+    const workDirRow = page.locator(
+      '[data-testid="work-dir-select"][data-path="' + state.workDir + '"]',
+    );
+    await workDirRow.waitFor({ state: 'visible', timeout: 10_000 });
+    await workDirRow.click();
+    const level2 = page.locator('[data-testid="choice-page"][data-level="2"]');
+    await level2.waitFor({ state: 'visible', timeout: 30_000 });
+
+    // Step 3: click 新建会话 → pending ChatView.
+    await page.locator('[data-testid="session-new"]').click();
     await waitForChatViewOrRecovery(page);
+
+    // R6 review 修复轮——wait for WebSocket to be online before
+    // sending prompts. ChatView for session='new' mounts
+    // immediately (createReadyGate = always ready, 不跑仪式),
+    // 但 WebSocket 可能仍在握手/connecting 中——若 sendRaw 时
+    // socket.readyState !== OPEN 则静默丢包。
+    await page
+      .locator('[data-testid="bridge-status"] [data-state="online"]')
+      .waitFor({ state: 'visible', timeout: 30_000 });
 
     // Pre-script two replies so each prompt gets a known response.
     await injectScript(fakeLlmUrl, [
@@ -177,6 +206,28 @@ test.describe('scenario (b) — F5 reload recovery', () => {
       { kind: 'reply', reply: buildSingleDeltaScript('second reply from fake LLM') },
     ]);
     await sendPromptAndAwait(page, 'reload-test-prompt-1', 'first reply from fake LLM');
+
+    // Step 4: wait for stem-refilled watcher to fire after the
+    // first user prompt triggers pi spawn + session_state
+    // broadcast. The hash must transition session=new →
+    // session=<realStem> before the reload step.
+    await expect
+      .poll(
+        async () => {
+          const currentHash = await page.evaluate(() => window.location.hash);
+          const match = currentHash.match(/session=([^&]*)/);
+          if (match === null) return null;
+          const decoded = decodeURIComponent(match[1]!);
+          return decoded === 'new' ? null : decoded;
+        },
+        {
+          timeout: 30_000,
+          message:
+            'App.tsx stem-refilled watcher did not update URL hash from session=new to a real stem within 30s',
+        },
+      )
+      .not.toBeNull();
+
     await sendPromptAndAwait(page, 'reload-test-prompt-2', 'second reply from fake LLM');
 
     // Snapshot the pre-reload history. We expect 2 user prompts +

@@ -63,6 +63,7 @@ import {
   selectWorkDirHash,
 } from '../hash.js';
 import {
+  useConnState,
   useCurrentWorkDir,
   useSessionList,
   useWsClient,
@@ -99,6 +100,7 @@ export function ChoicePage(props: ChoicePageProps) {
 
 function ChoiceLevel1({ token }: { token: string }) {
   const client = useWsClient();
+  const connState = useConnState();
   const workDirs = useWorkDirs();
   const currentWorkDir = useCurrentWorkDir();
   const [browsing, setBrowsing] = useState(false);
@@ -132,6 +134,7 @@ function ChoiceLevel1({ token }: { token: string }) {
   // 仍顶置上一轮的移除失败提示）。
   useEffect(() => {
     setRemoveError(null);
+    if (connState !== 'online') return; // wait for socket open
     const id = client.sendWorkDirList();
     let unsub: (() => void) | null = null;
     const watchdog = setTimeout(() => {
@@ -148,7 +151,7 @@ function ChoiceLevel1({ token }: { token: string }) {
       clearTimeout(watchdog);
       unsub?.();
     };
-  }, [client]);
+  }, [client, connState]);
 
   const handleSelect = useCallback(
     (path: string) => {
@@ -306,6 +309,7 @@ interface ChoiceLevel2Props {
 
 function ChoiceLevel2({ token, workDir }: ChoiceLevel2Props) {
   const client = useWsClient();
+  const connState = useConnState();
   const sessionList = useSessionList();
   const [error, setError] = useState<string | null>(null);
   // W4 inFlightListRef 同款防护：记录最近一次 sendSessionList
@@ -342,6 +346,7 @@ function ChoiceLevel2({ token, workDir }: ChoiceLevel2Props) {
   //      操作，参考 M3 RECOVERY_TIMEOUT_MS）。
   useEffect(() => {
     setError(null);
+    if (connState !== 'online') return; // wait for socket open
     const id = client.sendSessionList(workDir);
     inFlightListRef.current = id;
     let unsub: (() => void) | null = null;
@@ -364,7 +369,7 @@ function ChoiceLevel2({ token, workDir }: ChoiceLevel2Props) {
       clearTimeout(watchdog);
       unsub?.();
     };
-  }, [client, workDir]);
+  }, [client, connState, workDir]);
 
   const handleSelectSession = useCallback(
     (sessionKey: string) => {

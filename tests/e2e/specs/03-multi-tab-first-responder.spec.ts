@@ -80,15 +80,43 @@ async function openChatOnContext(
   browser: Browser,
   baseUrl: string,
   token: string,
+  workDir: string,
 ): Promise<DialogContext> {
   const context = await browser.newContext();
   const page = await context.newPage();
-  // M4 task 08: M3 token-only URL — see the same comment in
-  // 01-first-turn.spec.ts. The M3_LEGACY path keeps the E2E on
-  // the same M3 single-bucket semantics; the M4 per-session
-  // migration is a follow-up in task 10 once the bridge
-  // outbound wrapper injects session on event envelopes too.
+  // M4 task 08 review R6 — M4 flow migration per reviewer 方案 B:
+  //   `#<token>` → ChoicePage level=1 → click work_dir → level=2
+  //   → 新建会话 → pending ChatView → stem refilled。
+  //
+  // 关键依赖：R1 (decideView 翻 choiceLevel1) + R2 (fallback 链) +
+  // R3 (仪式带 session) + R4 (stem 回填桶迁移) + W8 (stem-refilled
+  // watcher 抽取测试)。
+  //
+  // 两个 context 必须独立走 M4 流（每个 context 自己的 hash /
+  // currentSessionKey / WsClient 镜像）；但共享 bridge 端的
+  // Room DO（同一 token）。多端弹窗先答者胜（anonymous ADR-0004
+  // §补注 3）的语义在 R3 仪式带 session 出站下保持——bridge 按
+  // session 路由 extension_ui_response 到该 manager，广播
+  // session_state 给所有 web（同 session）。
   await page.goto(`${baseUrl}/#${token}`);
+  const level1 = page.locator('[data-testid="choice-page"][data-level="1"]');
+  await level1.waitFor({ state: 'visible', timeout: 30_000 });
+  const workDirRow = page.locator(
+    '[data-testid="work-dir-select"][data-path="' + workDir + '"]',
+  );
+  await workDirRow.waitFor({ state: 'visible', timeout: 10_000 });
+  await workDirRow.click();
+  const level2 = page.locator('[data-testid="choice-page"][data-level="2"]');
+  await level2.waitFor({ state: 'visible', timeout: 30_000 });
+  await page.locator('[data-testid="session-new"]').click();
+  // R6 review 修复轮——wait for WebSocket to be online before
+  // sending prompts. ChatView for session='new' mounts
+  // immediately (createReadyGate = always ready, 不跑仪式),
+  // 但 WebSocket 可能仍在握手/connecting 中——若 sendRaw 时
+  // socket.readyState !== OPEN 则静默丢包。
+  await page
+    .locator('[data-testid="bridge-status"] [data-state="online"]')
+    .waitFor({ state: 'visible', timeout: 30_000 });
   // Retry-tolerant recovery wait (5s timeout挂账 can fire on cold
   // pi restart, ADR-0009 §开放点 1). Same one-retry block as
   // scenarios (a) + (b).
@@ -111,6 +139,51 @@ async function openChatOnContext(
       .waitFor({ state: 'visible', timeout: 30_000 });
   } else if (either !== 'chat-view') {
     throw new Error('Neither chat-view nor recovery-error appeared within 30s on context');
+  }
+  return { context, page };
+}
+
+/** Open a chat-view on a fresh browser context with a FULL M4 hash
+ *  (token + work_dir + session=<stem>) — used for the second
+ *  context in scenario (c) so both contexts view the SAME session
+ *  (multi-tab first-responder semantics). The hash must already be
+ *  refilled (session=<realStem>), not pending ('new'), so the
+ *  recovery ceremony hits an existing manager via R3's session-
+ *  bearing dual queries.
+ *
+ *  Context A uses `openChatOnContext` (M4 nav → new session).
+ *  Context B uses this helper with the refilled hash from A —
+ *  both contexts then view the same session, dialog broadcasts
+ *  reach both sides (per ADR-0004 §补注 3 + 多端先答者胜). */
+async function openChatOnExistingContext(
+  browser: Browser,
+  fullHash: string,
+): Promise<DialogContext> {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  // Direct navigation to the refilled M4 hash — bridge receives
+  // pi/get_messages + control/get_state with session=<stem>
+  // (R3 仪式带 session 出站) and recovers the same manager.
+  await page.goto(fullHash);
+  const either = await Promise.race([
+    page
+      .locator('[data-testid="chat-view"]')
+      .waitFor({ state: 'visible', timeout: 30_000 })
+      .then(() => 'chat-view' as const)
+      .catch(() => null),
+    page
+      .locator('[data-testid="recovery-error"]')
+      .waitFor({ state: 'visible', timeout: 30_000 })
+      .then(() => 'recovery-error' as const)
+      .catch(() => null),
+  ]);
+  if (either === 'recovery-error') {
+    await page.locator('[data-testid="recovery-retry"]').click();
+    await page
+      .locator('[data-testid="chat-view"]')
+      .waitFor({ state: 'visible', timeout: 30_000 });
+  } else if (either !== 'chat-view') {
+    throw new Error('Neither chat-view nor recovery-error appeared within 30s on existing session context');
   }
   return { context, page };
 }
@@ -174,12 +247,32 @@ test.describe('scenario (c) — multi-tab first-responder wins', () => {
     const state = await readRunState();
     const { token, baseUrl, fakeLlmUrl } = state;
 
-    // Step 1: two independent contexts on the same token. Both
-    // reach chat-view via the dual-query ceremony.
-    [ctxA, ctxB] = await Promise.all([
-      openChatOnContext(browser, baseUrl, token),
-      openChatOnContext(browser, baseUrl, token),
-    ]);
+    // Step 1: A creates a new session via M4 flow (level=1 → level=2
+    // → 新建会话 → stem refilled). B then opens the SAME session by
+    // hash — both contexts view the same session for the multi-tab
+    // first-responder semantics. We can't `Promise.all` because B
+    // needs A's refilled hash.
+    ctxA = await openChatOnContext(browser, baseUrl, token, state.workDir);
+    // Wait for stem refilled on A so we can build B's URL.
+    await expect
+      .poll(
+        async () => {
+          const currentHash = await ctxA.page.evaluate(() => window.location.hash);
+          const match = currentHash.match(/session=([^&]*)/);
+          if (match === null) return null;
+          const decoded = decodeURIComponent(match[1]!);
+          return decoded === 'new' ? null : decoded;
+        },
+        {
+          timeout: 30_000,
+          message:
+            'Context A: App.tsx stem-refilled watcher did not update URL hash from session=new to a real stem within 30s',
+        },
+      )
+      .not.toBeNull();
+    const refilledHashOnA = await ctxA.page.evaluate(() => window.location.href);
+    // B opens the same session via the full refilled M4 hash.
+    ctxB = await openChatOnExistingContext(browser, refilledHashOnA);
     expect(ctxA).toBeDefined();
     expect(ctxB).toBeDefined();
 

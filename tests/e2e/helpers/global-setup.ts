@@ -264,6 +264,16 @@ async function setupHarness(): Promise<GlobalHarness> {
     // doesn't strip provider keys — that's a deliberate decision noted
     // in pi-process.ts — but the E2E harness is closer to a test
     // fixture than a production deploy, so we keep the strip on.)
+    //
+    // R6 review 修复轮：注入 XDG_CONFIG_HOME 到本次 run 的 tmp 目录。
+    // 桥端 state.json 在 M4 task 04 落地了首次启动的 bridge.json →
+    // state.json 迁移（work_dir 自动写入 work_dirs 数组）。原实现用
+    // 用户默认 ~/.config/remotepi/state.json，跨 run 累积陈旧
+    // paths（且 path 指向已被 rm -rf 清掉的 tests/integration/.tmp/
+    // 子目录）——R6 修复后 state.json 跟随 runTag 落地到 e2e tmp 内，
+    // 自然由 teardown 的 rm -rf tests/e2e/.tmp 清理。无需修改
+    // bridge CLI args（PRD §2.2: 不新增 CLI 参数）。
+    bridgeEnv['XDG_CONFIG_HOME'] = tmpRoot;
 
     // Order note (deviation from task 12 §全局 setup step 4, documented
     // here for the next maintainer): the task file says "bridge →
