@@ -347,21 +347,6 @@ describe('BridgeSessionLayer 钉子 2 — pending key control', () => {
     const stem = `2026-09-08T16-00-00-000Z_${'a'.repeat(8)}-1111-2222-3333-444444444444`;
     const sessionJsonlPath = path.join(sessionDir, `${stem}.jsonl`);
     writeFileSync(sessionJsonlPath, '', 'utf8');
-    // E2E 修复 2026-09-09: `deriveStemForWorkDir` now takes a
-    // `sinceMs` filter (manager's firstSpawnedAt) so a brand-new
-    // pending manager doesn't bind to a pre-existing jsonl left
-    // over from a prior spec (the e2e harness shares the agent
-    // dir across the 8 scenarios). Real pi writes the jsonl a
-    // few ms AFTER the manager's spawn, so we simulate the
-    // ordering by nudging the mtime past the spawn stamp with
-    // utimesSync. The mtime API takes whole seconds, so we add
-    // 1s of slack — mtime resolution is 1s on POSIX and any
-    // future drift in the same JS tick would otherwise race the
-    // integer floor.
-    {
-      const t = Date.now() / 1000 + 1;
-      utimesSync(sessionJsonlPath, t, t);
-    }
 
     // Drive the manager through ready; outbound shows spawning → ready.
     driveToReady(child);
@@ -390,6 +375,155 @@ describe('BridgeSessionLayer 钉子 2 — pending key control', () => {
     expect(readyMigratedStates.length).toBe(1);
   });
 
+  it('1.5a pre-spawn filename snapshot excludes residual files until a new jsonl appears', () => {
+    const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-mig-snapshot-'));
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-mig-snapshot-ad-'));
+    trackTmp(workDir);
+    trackTmp(agentDir);
+    const sessionDir = path.join(
+      agentDir,
+      'sessions',
+      `--${encodeCwdForPi(workDir)}--`,
+    );
+    mkdirSync(sessionDir, { recursive: true });
+    const residualStem = '2099-01-01T00-00-00-000Z_residual-session';
+    const residualFile = path.join(sessionDir, `${residualStem}.jsonl`);
+    writeFileSync(residualFile, '', 'utf8');
+
+    const { layer, spawned } = makeLayer({ agentDir, workDirs: [workDir] });
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'snapshot-p1',
+      session: 'new',
+      payload: { content: 'go', work_dir: workDir },
+    });
+    const child = spawned[0]!;
+    // Concurrent sibling activity bumps the residual file's mtime well
+    // past the manager's spawn wall-clock; the snapshot must still bind
+    // only to a NEW file. Old mtime-comparison code would have picked
+    // this residual here.
+    const future = Date.now() / 1000 + 5;
+    utimesSync(residualFile, future, future);
+    driveToReady(child);
+    // The pending migration is triggered by ANY outbound (session_state
+    // included), not just agent_start; emit an arbitrary envelope so the
+    // layer's wrapper scans the subdir.
+    child.stdout.write(
+      JSON.stringify({ type: 'event', event: 'message_update', data: null }) + '\n',
+    );
+
+    expect(layer.getManagerForKey(residualStem)).toBeUndefined();
+    expect(layer.getManagerForKey(`new:${workDir}`)).toBeDefined();
+
+    const newStem = '2026-09-10T00-00-00-000Z_new-session';
+    writeFileSync(path.join(sessionDir, `${newStem}.jsonl`), '', 'utf8');
+    child.stdout.write(
+      JSON.stringify({ type: 'event', event: 'message_update', data: { delta: 'go' } }) + '\n',
+    );
+
+    expect(layer.getManagerForKey(`new:${workDir}`)).toBeUndefined();
+    expect(layer.getManagerForKey(newStem)).toBeDefined();
+  });
+
+  it('1.5b same subdir binds only the post-snapshot concurrent file, never the snapshotted filename', () => {
+    const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-mig-concurrent-'));
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-mig-concurrent-ad-'));
+    trackTmp(workDir);
+    trackTmp(agentDir);
+    const sessionDir = path.join(
+      agentDir,
+      'sessions',
+      `--${encodeCwdForPi(workDir)}--`,
+    );
+    mkdirSync(sessionDir, { recursive: true });
+    // Deliberately give the snapshotted sibling a lexically newer timestamp:
+    // an unfiltered latest-file scan would choose it. The new file
+    // is the only candidate after snapshot exclusion.
+    const siblingStem = '2099-12-31T23-59-59-999Z_active-sibling';
+    const ownStem = '2026-09-10T00-00-00-000Z_own-session';
+    writeFileSync(path.join(sessionDir, `${siblingStem}.jsonl`), '', 'utf8');
+
+    const { layer, spawned } = makeLayer({ agentDir, workDirs: [workDir] });
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'concurrent-p1',
+      session: 'new',
+      payload: { content: 'go', work_dir: workDir },
+    });
+    writeFileSync(path.join(sessionDir, `${ownStem}.jsonl`), '', 'utf8');
+    driveToReady(spawned[0]!);
+    spawned[0]!.stdout.write(
+      JSON.stringify({ type: 'event', event: 'message_update', data: { delta: 'x' } }) + '\n',
+    );
+
+    expect(layer.getManagerForKey(siblingStem)).toBeUndefined();
+    expect(layer.getManagerForKey(ownStem)).toBeDefined();
+  });
+
+  it('1.5c missing-file migration retries every frame but warns at most once per work_dir per 5s', () => {
+    vi.useFakeTimers();
+    try {
+      const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-mig-warn-'));
+      trackTmp(workDir);
+      const { layer, spawned } = makeLayer({ workDirs: [workDir] });
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      warnSpy.mockClear();
+      layer.handleEnvelope({
+        v: PROTOCOL_VERSION,
+        kind: 'pi',
+        type: 'prompt',
+        id: 'warn-p1',
+        session: 'new',
+        payload: { content: 'go', work_dir: workDir },
+      });
+      const child = spawned[0]!;
+      driveToReady(child);
+      child.stdout.write(
+        JSON.stringify({ type: 'event', event: 'message_update', data: { delta: 'a' } }) + '\n',
+      );
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(4_999);
+      child.stdout.write(
+        JSON.stringify({ type: 'event', event: 'message_update', data: { delta: 'b' } }) + '\n',
+      );
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(1);
+      child.stdout.write(
+        JSON.stringify({ type: 'event', event: 'message_update', data: { delta: 'c' } }) + '\n',
+      );
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('1.5d tryDeriveStem forwards the exclude snapshot; empty set preserves latest semantics', () => {
+    const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-derive-'));
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-derive-ad-'));
+    trackTmp(workDir);
+    trackTmp(agentDir);
+    const sessionDir = path.join(
+      agentDir,
+      'sessions',
+      `--${encodeCwdForPi(workDir)}--`,
+    );
+    mkdirSync(sessionDir, { recursive: true });
+    const older = '2026-01-01T00-00-00-000Z_older';
+    const latest = '2027-01-01T00-00-00-000Z_latest';
+    writeFileSync(path.join(sessionDir, `${older}.jsonl`), '', 'utf8');
+    writeFileSync(path.join(sessionDir, `${latest}.jsonl`), '', 'utf8');
+    const { layer } = makeLayer({ agentDir, workDirs: [workDir] });
+
+    expect(layer.tryDeriveStem(workDir, new Set())).toBe(latest);
+    expect(layer.tryDeriveStem(workDir, new Set([`${latest}.jsonl`]))).toBe(older);
+  });
+
   it('1.6 after migration, a follow-up prompt under the new stem hits the same manager', () => {
     const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-mig2-'));
     trackTmp(workDir);
@@ -412,15 +546,6 @@ describe('BridgeSessionLayer 钉子 2 — pending key control', () => {
     const stem = `2026-09-08T16-00-00-000Z_${'b'.repeat(8)}-1111-2222-3333-444444444444`;
     const sessionJsonlPath = path.join(sessionDir, `${stem}.jsonl`);
     writeFileSync(sessionJsonlPath, '', 'utf8');
-    // E2E 修复 2026-09-09: same mtime-nudge as test 1.5 — see
-    // comment there for the rationale. Without it, the sinceMs
-    // filter (manager.firstSpawnedAt) rejects the jsonl as
-    // "pre-existing" and migration never happens. +1s slack
-    // (see test 1.5 for why mtime floor race matters).
-    {
-      const t = Date.now() / 1000 + 1;
-      utimesSync(sessionJsonlPath, t, t);
-    }
     driveToReady(child);
     child.stdout.write(JSON.stringify({ type: 'agent_start' }) + '\n');
     expect(layer.getManagerForKey(stem)).toBeDefined();
@@ -919,14 +1044,6 @@ describe('BridgeSessionLayer routing rules (PRD §2.7)', () => {
     mkdirSync(subdir, { recursive: true });
     const stemJsonl = path.join(subdir, `${stem}.jsonl`);
     writeFileSync(stemJsonl, '{"x":1}\n', 'utf8');
-    // E2E 修复 2026-09-09: see test 1.5 — nudge the jsonl's mtime
-    // past the manager's firstSpawnedAt so the sinceMs filter
-    // accepts it. +1s slack (see test 1.5 for the mtime-floor
-    // race rationale).
-    {
-      const t = Date.now() / 1000 + 1;
-      utimesSync(stemJsonl, t, t);
-    }
 
     // Drive to ready and trigger migration.
     driveToReady(child);

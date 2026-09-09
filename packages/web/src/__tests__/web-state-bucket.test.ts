@@ -847,6 +847,91 @@ describe('WsClient M4 task 08 review R4 — stem refilled bucket migration', () 
     // stem 桶未从 'new' 桶获得迁移内容。
     expect(ws.bucketFor('realStem-abc').streamingDraft).toBeNull();
   });
+
+  function setupPopulatedStem(ws: WsClient, fake: FakeWs): ReturnType<WsClient['bucketFor']> {
+    const stem = 'defensive-stem';
+    ws.setCurrentSessionKey(stem);
+    const snapshotId = ws.sendGetMessages();
+    simulateInbound(
+      ws,
+      snapshot(stem, snapshotId, [{ role: 'user', content: 'stem-message' }]),
+      fake,
+    );
+    simulateInbound(ws, sessionState(stem, 'idle'), fake);
+    const stemBucket = ws.bucketFor(stem);
+    ws.setCurrentSessionKey('new');
+    ws.bucketFor('new').workDir = '/h';
+    return stemBucket;
+  }
+
+  function expectStemUnchanged(ws: WsClient, original: ReturnType<WsClient['bucketFor']>): void {
+    const current = ws.bucketFor('defensive-stem');
+    expect(current).toBe(original);
+    expect(current.messages).toEqual([{ role: 'user', content: 'stem-message' }]);
+    expect(current.sessionPhase).toBe('idle');
+  }
+
+  it('7.6 populated stem + truly empty pending keeps the stem bucket intact', () => {
+    const { ws, fake } = makeConnectedWs();
+    const original = setupPopulatedStem(ws, fake);
+
+    simulateInbound(ws, sessionState('defensive-stem', 'idle', [], '/h'), fake);
+
+    expectStemUnchanged(ws, original);
+  });
+
+  it('7.7 populated stem + sessionList-only pending treats the mirror as discardable and preserves stem', () => {
+    const { ws, fake } = makeConnectedWs();
+    const original = setupPopulatedStem(ws, fake);
+    ws.bucketFor('new').sessionList = [
+      {
+        id: 'pending-list-entry',
+        name: null,
+        cwd: '/h',
+        created: '2026-09-10T00:00:00Z',
+        modified: '2026-09-10T00:00:00Z',
+        message_count: 0,
+        first_message: null,
+        running: false,
+        status: 'unknown',
+      },
+    ];
+
+    simulateInbound(ws, sessionState('defensive-stem', 'idle', [], '/h'), fake);
+
+    expectStemUnchanged(ws, original);
+  });
+
+  it('7.8 populated stem + phase-only pending preserves both buckets and warns once', () => {
+    const { ws, fake } = makeConnectedWs();
+    const original = setupPopulatedStem(ws, fake);
+    const pending = ws.bucketFor('new');
+    pending.sessionPhase = 'running';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    simulateInbound(ws, sessionState('defensive-stem', 'idle', [], '/h'), fake);
+    simulateInbound(ws, sessionState('defensive-stem', 'idle', [], '/h'), fake);
+
+    expectStemUnchanged(ws, original);
+    expect(ws.bucketFor('new')).toBe(pending);
+    expect(ws.bucketFor('new').sessionPhase).toBe('running');
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('7.9 truly empty pending + empty stem follows the normal whole-bucket migration path', () => {
+    const { ws, fake } = makeConnectedWs();
+    const stemBefore = ws.bucketFor('empty-stem');
+    ws.setCurrentSessionKey('new');
+    const pending = ws.bucketFor('new');
+    pending.workDir = '/h';
+
+    simulateInbound(ws, sessionState('empty-stem', 'ready', [], '/h'), fake);
+
+    expect(ws.bucketFor('empty-stem')).toBe(pending);
+    expect(ws.bucketFor('empty-stem')).not.toBe(stemBefore);
+    expect(ws.bucketFor('empty-stem').sessionPhase).toBe('ready');
+  });
 });
 
 // ---------------------------------------------------------------------------

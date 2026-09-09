@@ -353,6 +353,11 @@ export class WsClient {
    *  bucket is also a real bucket — it collects session-less inbound
    *  (M3-compat path / E2E 3 scenarios). */
   private _sessions: Record<string, SessionBucket> = {};
+  /** Stem keys that have already emitted the non-empty-pending
+   *  migration warning. A substantive pending bucket is retained
+   *  instead of overwritten, while this set prevents one warning per
+   *  subsequent session_state frame. */
+  private readonly pendingMigrationWarnings = new Set<string>();
   /** Mirror of `bridge/state.json` `work_dirs` array — the user-saved
    *  work directory list. Refreshed on every `work_dir_list` reply
    *  (and after every `work_dir_add` / `work_dir_remove` mutation;
@@ -1917,11 +1922,16 @@ export class WsClient {
    *    `=== stem` 也允许——App.tsx 回填 effect 已写过 hash 但本事件
    *    在 hashchange 之前到达）。
    *
-   *  行为：rename `_sessions['new']` 为 `_sessions[<stem>]`，保留
-   *  所有 8 字段（messages / streamingDraft / _draftHasDelta / queue
-   *  / sessionPhase / blockedOn / workDir / recovery / sessionList）；
-   *  删除 'new' 键。emitStateChange 触发 React 重渲染——ChatView
-   *  切到读 stem 桶时拿到完整历史。
+   *  行为：若 stem 桶不存在或为空，rename `_sessions['new']` 为
+   *  `_sessions[<stem>]`，保留全部桶字段（messages /
+   *  streamingDraft / _draftHasDelta / queue / sessionPhase /
+   *  blockedOn / workDir / recovery / sessionList）。若 stem 桶已有
+   *  实质状态，则仅在 pending 桶满足迁移契约的五项为空判据
+   *  （messages 为空、queue 两队列为空、streamingDraft 为 null、
+   *  sessionPhase 为 null、blockedOn 为空）时丢弃 pending；否则不
+   *  改动 stem 桶、保留 pending 桶并告警一次，禁止任何实质状态静默
+   *  丢失。`sessionList` 是可重查镜像，不参与五项实质状态判据。
+   *  emitStateChange 触发 React 重渲染。
    *
    *  失败路径：
    *  - 'new' 桶不存在（用户直接进现存会话，无早期累积）→ no-op；
@@ -1931,12 +1941,9 @@ export class WsClient {
    *  - currentSessionKey 既非 'new' 也非 stem → no-op（用户已离开
    *    pending 流——例如中途切到其他会话；'new' 桶内容不应被劫持）。
    *
-   *  副作用：
-   *  - emitStateChange 触发 useSyncExternalStore 重渲染——bucket
-   *    引用变化迫使 ChatView 重新选择桶对象；
-   *  - 删除 'new' 键后，bucketFor('new') 重新创建空桶（lazy
-   *    semantics）——用户再次切回 'new' 占位 URL 时是干净的桶，
-   *    与"新会话 = 全新历史"语义一致。*/
+   *  副作用：emitStateChange 触发 useSyncExternalStore 重渲染；删除
+   *  'new' 键后，bucketFor('new') 重新创建空桶（lazy semantics），
+   *  用户再次切回 'new' 占位 URL 时是干净的桶。*/
   private migratePendingBucket(stem: string, broadcastWorkDir: string | undefined): void {
     const pending = this._sessions[SESSION_NEW];
     if (pending === undefined) return;
@@ -1991,33 +1998,53 @@ export class WsClient {
     //   / `pi/get_messages` etc. will overwrite the stem bucket
     //   with fresh authoritative data).
     const existing = this._sessions[stem];
+    // The migration contract treats only these five fields as
+    // substantive pending state. `sessionList` is a refreshable mirror,
+    // so a pending bucket containing only that mirror is still safe to
+    // discard when the stem bucket already exists.
     const pendingIsEmpty =
-      pending.sessionPhase === null &&
       pending.messages.length === 0 &&
-      pending.blockedOn.length === 0 &&
+      pending.queue.steering.length === 0 &&
+      pending.queue.followUp.length === 0 &&
       pending.streamingDraft === null &&
-      pending.sessionList === null;
+      pending.sessionPhase === null &&
+      pending.blockedOn.length === 0;
     const stemHasState =
       existing !== undefined &&
       (existing.sessionPhase !== null ||
         existing.messages.length > 0 ||
-        existing.blockedOn.length > 0 ||
+        existing.queue.steering.length > 0 ||
+        existing.queue.followUp.length > 0 ||
         existing.streamingDraft !== null ||
+        existing.blockedOn.length > 0 ||
         existing.sessionList !== null);
-    if (pendingIsEmpty && stemHasState) {
-      // Drop the empty pending bucket; keep the existing stem bucket
-      // intact. The stem bucket will receive authoritative updates
-      // from the bridge as they arrive (the watcher's sendSessionList
-      // now fires AFTER setCurrentSessionKey, so the W4-guarded
-      // session_list reply lands on the stem bucket, not 'new').
-      delete this._sessions[SESSION_NEW];
-      this.emitStateChange();
+    if (stemHasState) {
+      if (pendingIsEmpty) {
+        // Drop only the refreshable/empty pending bucket. The populated
+        // destination remains untouched.
+        delete this._sessions[SESSION_NEW];
+        this.emitStateChange();
+        return;
+      }
+      // Never overwrite a populated destination: retaining both buckets
+      // is safer than silently losing pending messages, queue entries,
+      // draft, phase, or blocked_on state. A later authoritative update
+      // can converge the two buckets; warn once for observability.
+      if (!this.pendingMigrationWarnings.has(stem)) {
+        this.pendingMigrationWarnings.add(stem);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[WsClient] refusing to overwrite populated session bucket ${stem} during pending migration; retaining pending state`,
+        );
+      }
       return;
     }
-    // Rename: `new` 桶的所有累积状态搬到 `<stem>` 桶。
+    // Destination is absent or genuinely empty: move the entire pending
+    // bucket, including its session_list mirror, without dropping fields.
     this._sessions[stem] = pending;
     delete this._sessions[SESSION_NEW];
     this.emitStateChange();
+    return;
   }
 
   private setBucketSessionList(bucket: SessionBucket, entries: readonly SessionListEntry[]): void {

@@ -408,6 +408,11 @@ export class BridgeSessionLayer {
    *  pending key). */
   private readonly managerKeys = new Map<PiProcessManager, SessionKeyHolder>();
 
+  /** Last warning time for a missing post-snapshot session file, keyed
+   *  by work_dir. Migration is retried on every outbound frame, but a
+   *  slow pi must not turn that retry path into a log flood. */
+  private readonly missingStemWarningAt = new Map<string, number>();
+
   // ---- lifecycle ----
   private started = false;
   private stopped = false;
@@ -532,26 +537,6 @@ export class BridgeSessionLayer {
     return { migrated: false, broadcastedPhase: false };
   }
 
-  /** Read the manager's first-spawn stamp lazily — a manager
-   *  created in `exited` state has no stamp until its first
-   *  `spawnNow()`, so we use the current `Date.now()` fallback
-   *  for the very first attempt BEFORE the spawn completed.
-   *  In practice the spawn-trigger command (pi/prompt) and the
-   *  pi spawn happen in the same synchronous tick, so the
-   *  fallback is rarely used — kept for safety so a malicious /
-   *  testing call that triggers migration on a never-spawned
-   *  manager still produces a deterministic (sub-second) filter. */
-  private sinceMsFor(manager: PiProcessManager): number | undefined {
-    const stamp = manager.getFirstSpawnedAt();
-    if (stamp !== null) return stamp;
-    // Pre-spawn fallback — treat as "now" so the filter is a
-    // no-op (i.e. accept all files) for a manager that hasn't
-    // spawned yet. Returning `Date.now()` keeps the call cheap
-    // and consistent with the post-spawn filter intent.
-    return Date.now();
-  }
-
-
   /** Attempt the pending → stem migration for a manager. Idempotent:
    *  once the map key has been swapped from `new:<work_dir>` to the
    *  real stem, subsequent calls become no-ops (the early-return
@@ -578,6 +563,8 @@ export class BridgeSessionLayer {
     return this.attemptPendingMigration(manager, mapKey, null);
   }
 
+  /** Attempt the pending → stem migration using the manager's
+   *  immutable pre-spawn filename snapshot. */
   private attemptPendingMigration(
     manager: PiProcessManager,
     mapKey: string,
@@ -585,21 +572,28 @@ export class BridgeSessionLayer {
   ): { migrated: boolean; broadcastedPhase: boolean } {
     if (!mapKey.startsWith('new:')) return { migrated: false, broadcastedPhase: false };
     const workDir = mapKey.slice('new:'.length);
-    // E2E 2026-09-09: scope the stem scan to files created AT OR
-    // AFTER this manager's first spawn. Without the filter, a
-    // shared-agent-dir (e2e harness) or shared `~/.pi/agent/`
-    // (production with co-located tooling) makes the brand-new
-    // pending manager bind to a previous run's leftover jsonl.
-    const stem = this.deriveStemForWorkDir(workDir, this.sinceMsFor(manager));
+    // Scope the scan to filenames absent at this manager's first
+    // spawn. This excludes both residual and concurrent sibling
+    // sessions without relying on mtime or a shared clock.
+    const stem = this.deriveStemForWorkDir(
+      workDir,
+      manager.getPreExistingSessionFiles(),
+    );
     if (stem === null) {
-      // File not present yet. The probe showed the jsonl appears
-      // synchronously with the agent_start event (~50ms latency in
-      // our watcher); if the file is still missing, the next
-      // outbound frame will retry. Log warn so a long-running gap is
-      // observable but doesn't spam the log.
-      logger.warn(
-        `pending manager: session file not found in ${this.agentDir}/sessions/--${encodeCwdForPi(workDir)}--/ yet; will retry on next frame`,
-      );
+      // No un-snapshotted file yet: keep retrying on every outbound
+      // frame, but throttle this warning per work_dir. Never fall back
+      // to an unfiltered derivation — that would reintroduce binding to
+      // an old or concurrently active session. The manager's 60s
+      // spawning watchdog and 裁定 C recycling are the eventual
+      // cleanup fallbacks if pi never creates a file.
+      const now = Date.now();
+      const lastWarning = this.missingStemWarningAt.get(workDir);
+      if (lastWarning === undefined || now - lastWarning >= 5_000) {
+        this.missingStemWarningAt.set(workDir, now);
+        logger.warn(
+          `pending manager: session file not found in ${this.agentDir}/sessions/--${encodeCwdForPi(workDir)}--/ yet; will retry on next frame`,
+        );
+      }
       return { migrated: false, broadcastedPhase: false };
     }
     // Atomic migration (PRD §钉子 2: 三步原子 = 删旧键 + 设新键 + 广播，期间命令不误路由). JS single-threadedness makes
@@ -1018,24 +1012,23 @@ export class BridgeSessionLayer {
    *  Scans `<agentDir>/sessions/--<encodeCwdForPi(workDir)>--/` and
    *  returns the latest `<timestamp>_<uuid>` filename WITHOUT the
    *  `.jsonl` suffix, or `null` if the dir doesn't exist or has no
-   *  jsonl files yet.
+   *  eligible jsonl files yet.
+   *
+   *  `exclude` is the filename snapshot captured by the manager just
+   *  before its first spawn. Filename membership, rather than mtime,
+   *  excludes both old residual files and concurrently active sibling
+   *  sessions, and is immune to clock source, timestamp precision, and
+   *  filesystem clock jumps. An empty snapshot intentionally excludes
+   *  nothing (the empty-directory case).
    *
    *  We deliberately do NOT import `findLatestSession` here because
    *  that helper returns a full path (which is what `--session`
    *  wants); we want just the stem. The duplication is small and
-   *  keeps this method self-contained (the layer is otherwise free
-   *  of `pi-cwd-encoder` imports beyond `encodeCwdForPi` and
-   *  `sessionSubdir`).
-   *
-   *  Optional `sinceMs`: when set, only jsonl files whose mtime is
-   *  `>= sinceMs` are considered. Used by the e2e harness's
-   *  shared-agent-dir to prevent a brand-new pending manager from
-   *  binding to a previous spec's leftover session file. Production
-   *  (operator's real `~/.pi/agent/`) is also subject to this
-   *  race whenever a different tool / bridge instance writes
-   *  sessions into the same subdir, so the filter is a strict
-   *  improvement, not a test-only carve-out. */
-  private deriveStemForWorkDir(workDir: string, sinceMs?: number): string | null {
+   *  keeps this method self-contained. */
+  private deriveStemForWorkDir(
+    workDir: string,
+    exclude: ReadonlySet<string> = new Set(),
+  ): string | null {
     const subdir = sessionSubdir(this.agentDir, workDir);
     let entries: string[];
     try {
@@ -1045,27 +1038,12 @@ export class BridgeSessionLayer {
       return null;
     }
     if (entries.length === 0) return null;
+    entries = entries.filter((name) => !exclude.has(name));
+    if (entries.length === 0) return null;
 
-    // E2E 2026-09-09: when the caller passes `sinceMs`, only keep
-    // files whose mtime is AT OR AFTER the stamp. mtime is per-
-    // filesystem — filesystem clock granularity is millisecond on
-    // the harness, which is fine because the manager's first spawn
-    // and pi's first write are separated by the spawn write pipe
-    // round-trip (well above ms). Without this, the cross-spec
-    // shared-agent-dir race binds a brand-new pending manager to
-    // an earlier spec's leftover session — see commit log on
-    // `getFirstSpawnedAt` for the full bug.
-    if (sinceMs !== undefined) {
-      entries = entries.filter((name) => {
-        try {
-          return statSync(path.join(subdir, name)).mtimeMs >= sinceMs;
-        } catch {
-          return false;
-        }
-      });
-      if (entries.length === 0) return null;
-    }
-
+    // Enrich and stat each surviving filename exactly once. Filtering
+    // by the immutable filename snapshot above avoids the old mtime
+    // filter's second statSync and its clock/granularity assumptions.
     // Latest = highest ISO timestamp prefix, tiebreak mtime, tiebreak
     // uuid desc — matches `findLatestSession` semantics verbatim.
     const enriched = entries
@@ -1536,11 +1514,11 @@ export class BridgeSessionLayer {
     return this.workDirStore.list();
   }
 
-  /** Try to derive the sessionKey stem for a workDir's session
-   *  subdirectory (test seam — exposes the internal scan without
-   *  requiring a real spawned manager). */
-  tryDeriveStem(workDir: string): string | null {
-    return this.deriveStemForWorkDir(workDir);
+  /** Try to derive a stem through the scan test seam. `exclude` mirrors
+   *  the manager's pre-spawn filename snapshot; pass an empty set to
+   *  exercise the unfiltered "latest/tiebreak" semantics. */
+  tryDeriveStem(workDir: string, exclude: ReadonlySet<string> = new Set()): string | null {
+    return this.deriveStemForWorkDir(workDir, exclude);
   }
 }
 

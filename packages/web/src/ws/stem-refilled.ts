@@ -40,11 +40,19 @@
 // ## Side effects（执行顺序固定）
 //
 //   1. `window.location.hash = selectSessionHash(token, workDir, stem)`
-//      → 触发 App.tsx 的 `hashchange` 监听器 → 重新派生 auth +
-//      setCurrentSessionKey(stem)。
+//      → 触发 App.tsx 的 `hashchange` 监听器 → 重新派生 auth。
+//      另外同步调用 `wsClient.setCurrentSessionKey(stem)`，先于查询
+//      出站，确保查询 envelope.session 已是 stem。
 //   2. `wsClient.sendSessionList(workDir)` → ChoicePage level=2
 //      下次 mount 时拿到含新 session 的列表。
 //
+// 已知的两个良性副作用：
+//   - 在途的旧 `session_list` 回执可能因 W4 的 reply-id 守卫被静默丢弃
+//     一次；本 watcher 紧接着发出的 stem 查询会在下一 tick 收敛镜像。
+//   - hash-derived session 与 WsClient 镜像在当前同步 tick 内可能短暂不一致；
+//     watcher 先写镜像，随后 hashchange handler 写入同一个 stem，下一 tick
+//     即收敛，不会产生第二个 manager 或错误的持久化 session。
+////
 // ## 设计要点：辅助函数 + 自管 listener
 //
 // `watchStemRefilled` 是 framework-free helper：传入 token / workDir
