@@ -167,6 +167,32 @@ export function watchStemRefilled(
     // Side effect 2: fire session_list re-query for the current
     // work_dir so ChoicePage level=2's mirror catches up (钉子 5
     // — stem 回填后重查).
+    //
+    // CRITICAL ORDERING (e2e 修复 2026-09-09): we must update the
+    // WsClient's `currentSessionKey` mirror SYNCHRONOUSLY before
+    // calling `sendSessionList`. The watcher fires inside the
+    // session_state dispatch (synchronous, before the queued
+    // `hashchange` event flushes the App.tsx mirror update) —
+    // so the default `sendSessionList(workDir)` would still read
+    // `currentSessionKey === 'new'` and emit a session_list
+    // envelope with `session: 'new'`. The bridge's pending-key
+    // branch (BridgeSessionLayer.getOrCreateManagerForSession
+    // branch 3) maps `'new' + work_dir` to the `new:<work_dir>`
+    // map key. Post-migration that key is gone (replaced by
+    // `<stem>`), so the lookup misses, the bridge spawns a
+    // FRESH pending manager with no `--session` flag, the new
+    // pi creates a SECOND jsonl, and the new manager migrates to
+    // that different stem. Two managers, two jsonls, second
+    // prompt lands on the wrong one — the test's history assertion
+    // sees only one stem's messages.
+    //
+    // Fix: set the mirror first (so `sendSessionList` reads the
+    // post-refill session value) and then send. Both the App.tsx
+    // hashchange handler and this watcher write the mirror; the
+    // watcher is just earlier in the JS tick. The hashchange
+    // handler will later write the SAME value, making the
+    // mirror a stable point rather than a moving target.
+    wsClient.setCurrentSessionKey(newSession);
     wsClient.sendSessionList(workDir);
   };
 

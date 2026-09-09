@@ -46,7 +46,7 @@
 
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
@@ -347,6 +347,21 @@ describe('BridgeSessionLayer 钉子 2 — pending key control', () => {
     const stem = `2026-09-08T16-00-00-000Z_${'a'.repeat(8)}-1111-2222-3333-444444444444`;
     const sessionJsonlPath = path.join(sessionDir, `${stem}.jsonl`);
     writeFileSync(sessionJsonlPath, '', 'utf8');
+    // E2E 修复 2026-09-09: `deriveStemForWorkDir` now takes a
+    // `sinceMs` filter (manager's firstSpawnedAt) so a brand-new
+    // pending manager doesn't bind to a pre-existing jsonl left
+    // over from a prior spec (the e2e harness shares the agent
+    // dir across the 8 scenarios). Real pi writes the jsonl a
+    // few ms AFTER the manager's spawn, so we simulate the
+    // ordering by nudging the mtime past the spawn stamp with
+    // utimesSync. The mtime API takes whole seconds, so we add
+    // 1s of slack — mtime resolution is 1s on POSIX and any
+    // future drift in the same JS tick would otherwise race the
+    // integer floor.
+    {
+      const t = Date.now() / 1000 + 1;
+      utimesSync(sessionJsonlPath, t, t);
+    }
 
     // Drive the manager through ready; outbound shows spawning → ready.
     driveToReady(child);
@@ -395,13 +410,20 @@ describe('BridgeSessionLayer 钉子 2 — pending key control', () => {
     );
     mkdirSync(sessionDir, { recursive: true });
     const stem = `2026-09-08T16-00-00-000Z_${'b'.repeat(8)}-1111-2222-3333-444444444444`;
-    writeFileSync(path.join(sessionDir, `${stem}.jsonl`), '', 'utf8');
+    const sessionJsonlPath = path.join(sessionDir, `${stem}.jsonl`);
+    writeFileSync(sessionJsonlPath, '', 'utf8');
+    // E2E 修复 2026-09-09: same mtime-nudge as test 1.5 — see
+    // comment there for the rationale. Without it, the sinceMs
+    // filter (manager.firstSpawnedAt) rejects the jsonl as
+    // "pre-existing" and migration never happens. +1s slack
+    // (see test 1.5 for why mtime floor race matters).
+    {
+      const t = Date.now() / 1000 + 1;
+      utimesSync(sessionJsonlPath, t, t);
+    }
     driveToReady(child);
     child.stdout.write(JSON.stringify({ type: 'agent_start' }) + '\n');
     expect(layer.getManagerForKey(stem)).toBeDefined();
-
-    // Send a follow-up using the real stem — should land on stdin
-    // of the same child (no second spawn).
     layer.handleEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'pi',
@@ -895,7 +917,16 @@ describe('BridgeSessionLayer routing rules (PRD §2.7)', () => {
     const agentDir = (layer as unknown as { agentDir: string }).agentDir;
     const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
     mkdirSync(subdir, { recursive: true });
-    writeFileSync(path.join(subdir, `${stem}.jsonl`), '{"x":1}\n', 'utf8');
+    const stemJsonl = path.join(subdir, `${stem}.jsonl`);
+    writeFileSync(stemJsonl, '{"x":1}\n', 'utf8');
+    // E2E 修复 2026-09-09: see test 1.5 — nudge the jsonl's mtime
+    // past the manager's firstSpawnedAt so the sinceMs filter
+    // accepts it. +1s slack (see test 1.5 for the mtime-floor
+    // race rationale).
+    {
+      const t = Date.now() / 1000 + 1;
+      utimesSync(stemJsonl, t, t);
+    }
 
     // Drive to ready and trigger migration.
     driveToReady(child);

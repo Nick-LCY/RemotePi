@@ -1953,7 +1953,7 @@ export class WsClient {
     if (this._currentSessionKey !== SESSION_NEW && this._currentSessionKey !== stem) {
       // 用户已离开 pending 流；'new' 桶可能是其他并发流的累积
       // (理论上 M4 单端活动模型不会出现并发 pending，但保守
-      // 守卫防误迁移)。
+      // 守卫防误迁移）。
       return;
     }
     if (
@@ -1965,6 +1965,53 @@ export class WsClient {
       // session。No-op（不 console.warn 是因为 R2 兜底链路下
       // 工作目录判断可能受 store 镜像更新时机影响，留 false-negative
       // 容差）。
+      return;
+    }
+    // E2E 修复 2026-09-09: guard against overwriting a populated
+    // stem bucket with an empty pending bucket. Background:
+    //   A `session_list` / `get_state` / `get_messages` reply
+    //   carries `envelope.session === 'new'` (echoed from the
+    //   outbound envelope the web sent before the stem-refilled
+    //   mirror sync). The result handler routes by `envelope.session
+    //   ?? currentSessionKey ?? M3_LEGACY_KEY`, falling into
+    //   `bucketFor('new')` — which `createEmptyBucket()`s a fresh
+    //   bucket if the prior migration had just deleted the old
+    //   'new' bucket. Subsequent stem-bearing session_state
+    //   triggers `migratePendingBucket`; the now-empty pending
+    //   bucket would be renamed to the stem, clobbering the
+    //   accumulated messages / phase / blocked_on.
+    //
+    //   Defence: if the destination stem bucket already exists
+    //   with any meaningful state (phase / messages / blockedOn /
+    //   sessionList), the pending bucket is empty or work_dir-
+    //   less, and the rename would lose real data — drop the
+    //   pending bucket instead. The stem bucket is the source of
+    //   truth at this point (the bridge has been routing by stem
+    //   since the first migration; any future inbound `pi/prompt`
+    //   / `pi/get_messages` etc. will overwrite the stem bucket
+    //   with fresh authoritative data).
+    const existing = this._sessions[stem];
+    const pendingIsEmpty =
+      pending.sessionPhase === null &&
+      pending.messages.length === 0 &&
+      pending.blockedOn.length === 0 &&
+      pending.streamingDraft === null &&
+      pending.sessionList === null;
+    const stemHasState =
+      existing !== undefined &&
+      (existing.sessionPhase !== null ||
+        existing.messages.length > 0 ||
+        existing.blockedOn.length > 0 ||
+        existing.streamingDraft !== null ||
+        existing.sessionList !== null);
+    if (pendingIsEmpty && stemHasState) {
+      // Drop the empty pending bucket; keep the existing stem bucket
+      // intact. The stem bucket will receive authoritative updates
+      // from the bridge as they arrive (the watcher's sendSessionList
+      // now fires AFTER setCurrentSessionKey, so the W4-guarded
+      // session_list reply lands on the stem bucket, not 'new').
+      delete this._sessions[SESSION_NEW];
+      this.emitStateChange();
       return;
     }
     // Rename: `new` 桶的所有累积状态搬到 `<stem>` 桶。

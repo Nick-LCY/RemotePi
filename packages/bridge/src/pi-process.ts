@@ -641,6 +641,16 @@ export class PiProcessManager {
    *  1; subsequent crash-restarts increment). Tests use this to
    *  verify §2.7 spawn-trigger semantics ("spawn 计数 +1"). */
   private spawnCount = 0;
+  /** Wall-clock timestamp (ms) of the first `spawnNow()` invocation.
+   *  `null` before the first spawn. Used by the session layer's
+   *  stem-derivation scan to filter out pre-existing jsonl files
+   *  from earlier specs / runs (e2e harness's `tests/integration/
+   *  .tmp/<runTag>/agent-dir/` is shared across the 8 specs in
+   *  one `pnpm test:e2e` invocation, so a "new session" prompt
+   *  in spec (b) would otherwise bind to spec (a)'s leftover
+   *  jsonl — root cause of the 2026-09-09 e2e regression
+   *  that blocked (b) / (c) / (f) for 3 days). */
+  private firstSpawnedAt: number | null = null;
 
   /** Whether `start()` has been called. Guards against double-start
    *  (mirrors BridgeClient's idempotent start()). */
@@ -882,6 +892,13 @@ export class PiProcessManager {
   private spawnNow(): void {
     if (this.stopped) return;
     this.spawnCount++;
+    // Stamp first-spawn wall-clock once per manager lifetime
+    // (crash-restarts reuse the same stamp — the manager logically
+    // owns the same session even after a child crash; we don't want
+    // a new stamp to re-introduce the cross-spec bind bug).
+    if (this.firstSpawnedAt === null) {
+      this.firstSpawnedAt = Date.now();
+    }
     const subdir = sessionSubdir(this.agentDir, this.workDir);
     // Three-state session pinning (验收期第 3 缺口修复,
     // 2026-09-09 — `spawnManager` had been dropping this field
@@ -2055,6 +2072,14 @@ export class PiProcessManager {
    *  without having to parse `onOutboundEnvelope` outputs. */
   getPhase(): SessionPhase {
     return this.phase;
+  }
+
+  /** Read-only accessor used by `BridgeSessionLayer` to filter the
+   *  stem-derivation scan to files created AT OR AFTER this manager
+   *  first spawned. See the field's full rationale in its
+   *  declaration below. `null` until the first `spawnNow()` runs. */
+  getFirstSpawnedAt(): number | null {
+    return this.firstSpawnedAt;
   }
 
   /** Number of `spawnNow()` calls. The first spawn counts as 1;

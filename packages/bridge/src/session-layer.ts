@@ -532,6 +532,26 @@ export class BridgeSessionLayer {
     return { migrated: false, broadcastedPhase: false };
   }
 
+  /** Read the manager's first-spawn stamp lazily — a manager
+   *  created in `exited` state has no stamp until its first
+   *  `spawnNow()`, so we use the current `Date.now()` fallback
+   *  for the very first attempt BEFORE the spawn completed.
+   *  In practice the spawn-trigger command (pi/prompt) and the
+   *  pi spawn happen in the same synchronous tick, so the
+   *  fallback is rarely used — kept for safety so a malicious /
+   *  testing call that triggers migration on a never-spawned
+   *  manager still produces a deterministic (sub-second) filter. */
+  private sinceMsFor(manager: PiProcessManager): number | undefined {
+    const stamp = manager.getFirstSpawnedAt();
+    if (stamp !== null) return stamp;
+    // Pre-spawn fallback — treat as "now" so the filter is a
+    // no-op (i.e. accept all files) for a manager that hasn't
+    // spawned yet. Returning `Date.now()` keeps the call cheap
+    // and consistent with the post-spawn filter intent.
+    return Date.now();
+  }
+
+
   /** Attempt the pending → stem migration for a manager. Idempotent:
    *  once the map key has been swapped from `new:<work_dir>` to the
    *  real stem, subsequent calls become no-ops (the early-return
@@ -565,7 +585,12 @@ export class BridgeSessionLayer {
   ): { migrated: boolean; broadcastedPhase: boolean } {
     if (!mapKey.startsWith('new:')) return { migrated: false, broadcastedPhase: false };
     const workDir = mapKey.slice('new:'.length);
-    const stem = this.deriveStemForWorkDir(workDir);
+    // E2E 2026-09-09: scope the stem scan to files created AT OR
+    // AFTER this manager's first spawn. Without the filter, a
+    // shared-agent-dir (e2e harness) or shared `~/.pi/agent/`
+    // (production with co-located tooling) makes the brand-new
+    // pending manager bind to a previous run's leftover jsonl.
+    const stem = this.deriveStemForWorkDir(workDir, this.sinceMsFor(manager));
     if (stem === null) {
       // File not present yet. The probe showed the jsonl appears
       // synchronously with the agent_start event (~50ms latency in
@@ -1000,8 +1025,17 @@ export class BridgeSessionLayer {
    *  wants); we want just the stem. The duplication is small and
    *  keeps this method self-contained (the layer is otherwise free
    *  of `pi-cwd-encoder` imports beyond `encodeCwdForPi` and
-   *  `sessionSubdir`). */
-  private deriveStemForWorkDir(workDir: string): string | null {
+   *  `sessionSubdir`).
+   *
+   *  Optional `sinceMs`: when set, only jsonl files whose mtime is
+   *  `>= sinceMs` are considered. Used by the e2e harness's
+   *  shared-agent-dir to prevent a brand-new pending manager from
+   *  binding to a previous spec's leftover session file. Production
+   *  (operator's real `~/.pi/agent/`) is also subject to this
+   *  race whenever a different tool / bridge instance writes
+   *  sessions into the same subdir, so the filter is a strict
+   *  improvement, not a test-only carve-out. */
+  private deriveStemForWorkDir(workDir: string, sinceMs?: number): string | null {
     const subdir = sessionSubdir(this.agentDir, workDir);
     let entries: string[];
     try {
@@ -1011,6 +1045,26 @@ export class BridgeSessionLayer {
       return null;
     }
     if (entries.length === 0) return null;
+
+    // E2E 2026-09-09: when the caller passes `sinceMs`, only keep
+    // files whose mtime is AT OR AFTER the stamp. mtime is per-
+    // filesystem — filesystem clock granularity is millisecond on
+    // the harness, which is fine because the manager's first spawn
+    // and pi's first write are separated by the spawn write pipe
+    // round-trip (well above ms). Without this, the cross-spec
+    // shared-agent-dir race binds a brand-new pending manager to
+    // an earlier spec's leftover session — see commit log on
+    // `getFirstSpawnedAt` for the full bug.
+    if (sinceMs !== undefined) {
+      entries = entries.filter((name) => {
+        try {
+          return statSync(path.join(subdir, name)).mtimeMs >= sinceMs;
+        } catch {
+          return false;
+        }
+      });
+      if (entries.length === 0) return null;
+    }
 
     // Latest = highest ISO timestamp prefix, tiebreak mtime, tiebreak
     // uuid desc — matches `findLatestSession` semantics verbatim.
