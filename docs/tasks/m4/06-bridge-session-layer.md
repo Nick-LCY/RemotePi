@@ -244,3 +244,62 @@ status: done
 **测试基线更新**——单测 **656 → 659**（+3 回归钉子）/ 集成 **32**（零回归）/ e2e **8/8 全绿** / typecheck / lint / build 全绿；web build 252.91 KB 零增长。
 
 **教训呼应**（与首轮 fix 同款铁律再次验证）——本轮属于**解析器落盘细节**层偏差（窗口语义：IO 边界 vs 行边界），首轮属于**字段真实性**层偏差（占位 vs 实测）；两者同属「**凡未实测的细节均不可信**」铁律——且本轮是**用户真实语料**才暴露（合成 fixture 全部 <64KB，测不出）。与 [[tasks/m3/04-bridge-pi-process.md|任务 04 cwd 编码勘误]] / M3 bridge→pi 翻译层修复 / 本任务首轮字段真实性三笔独立 commit 反复验证：合成 fixture 永远不及真实语料分布广，**任何解析 / 窗口 / 边界类逻辑必须以真实语料回归才能闭环**。helper 头注旧"chunk-aligned approximation"措辞已在 commit `bae1e2f` 同步修订为"逐行字节游标，与 IO 分块解耦"，防未来重构再误回退。
+
+### 勘误注记（2026-09-09，验收期 · 3rd gap：sessionJsonlPath 丢失 + 派生绑错 race（3 commit 链））
+
+**用户手测发现根缺陷**——level2 点击任何旧会话或新建会话，进入的永远是最新会话。**根因三层**，依次揭示。
+
+#### 第 1 层 commit `8d8e5e5` —— `sessionJsonlPath` 丢失 + spawn argv 无条件取最新
+
+`BridgeSessionLayer.spawnManager` 解构 `sessionJsonlPath` 后**丢弃**——`PiProcessOptions` 类型层无此字段（types-as-implementation：**类型层缺字段使"丢弃"成为编译合法**），`spawnNow` 无条件调 `sessionArgv(subdir)`（M3 取最新）。**三条路径全部汇聚到 `--session <latest>`**：
+- **点旧会话**（branch 2）→ 应精确恢复但被解构丢弃 → 取最新
+- **新建会话**（branch 3 钉子 2 语义）→ 应不带 `--session` 让 pi 自开 → 取最新
+- **M3 兼容路径**（`M3_LEGACY_KEY` auto-spawn）→ 应保留 M3_LEGACY 取最新语义 → 取最新
+
+**修复**——`sessionJsonlPath` 三态贯通：
+- `undefined` = M3 取最新（`M3_LEGACY` 保持）
+- `null` = 全新（branch 3 钉子 2 语义——不带 `--session`）
+- `string` = 精确恢复（branch 2——`--session <jsonl 路径>`）
+
+**e2e 验证一度掉到 5/8**（场景 b/c/f 红）——揭示第 2 层根因。
+
+#### 第 2 层 commit `fe897c8` —— e2e 回归三个根因（**帧级证据**）
+
+**根因 ①**：共享 agent dir 下，pending manager stem 派生按 **mtime 取最新**——前序 spec 残留会话的 mtime 更新（即便是其他 spec 的活动），导致新 spec 的派生前序 stem 被错绑到该残留会话。
+
+**根因 ②**：web stem 回填 watcher 用**过期 `_currentSessionKey = 'new'`** 发 `session_list`——bridge 端按该 key 开出**第二个** pending manager；双 manager 共存触发 `InputBar` 锁死（两个 manager 互相解 pending 命令的 reply，UI 无法收敛）。
+
+**根因 ③**：派生前发出的 `session_list{session: 'new'}` 回执**复活空 `'new'` 桶**；迁移时空 `'new'` 桶覆盖已累积的 stem 桶（迁移契约未防御空桶覆盖）——迁移路径错误收敛。
+
+**初版修复提交时 e2e 5/8 红被以"非回归"定性带过**——reviewer 退回做实，触发第 3 层。
+
+#### 第 3 层 commit `3514919` —— review 收口（彻底根治）
+
+reviewer 判定前两修法"互相掩护"且零新增回归测试。**三笔根治**：
+
+**3.1 派生过滤从 mtime 比较改为文件名快照法**——首次 spawn 前 `readdir` 快照集合，派生时排除快照内文件。**三重免疫**：(a) mtime 粒度（文件系统 mtime 精度不可靠）；(b) 时钟源（容器 / WSL2 / 多 fs 跨挂载）；(c) 并发活跃会话（其他 spec 在跑时被同 agent-dir 干扰）。
+
+**3.2 `migratePendingBucket` 防御判据对齐迁移契约五字段**——`messages` / `queue` / `streamingDraft` / `sessionPhase` / `blockedOn` 任一非空即不整桶覆盖（防第 2 层根因 ③复发）。
+
+**3.3 warn 5s 节流**——派生失败等长流程事件的 `logger.warn` 加 5s 节流，避免高频 log flood。
+
+**3.4 8 条回归钉桩经 `stash` 验证旧实现必红**：
+- bridge `1.5a-d`（4 条派生过滤边界用例）
+- web `7.6-7.9`（4 条 watcher 时序用例）
+- `W8.1` 顺序断言（派生路径与 web 桶迁移的先后顺序钉死）
+
+#### 终态数字
+
+单测 **659 → 674**（+15：8 条回归钉桩 + 5 条派生过滤边界 + 2 条 migrate 防御）/ 集成 **32**（零回归）/ **e2e 8/8 全绿 × 2 次连跑** / typecheck / lint / build 全绿；web build **252.91 → 253.62 KB**（+0.71 KB）。
+
+#### 重要注记 —— commit message 失实以代码为准
+
+`fe897c8` 的 commit message 声称改了 result handler 空桶创建——**实际代码并未改**该路径。该路径由 `3514919` 的 migratePendingBucket 五字段判据重写**收口**（即 3.2 段）。**归档与代码语义对齐时一律以代码为准，commit message 表述不实已在 review 闭环时点出**。
+
+#### 三条教训（与本任务首轮/2nd gap + 历史 commit 同款铁律扩展）
+
+1. **类型层缺字段**——`PiProcessOptions` 无 `sessionJsonlPath`，使"丢弃"成为**编译合法**而非可见错误。**seam 不接 vs type 不接 vs runtime 不接**——三类盲区任一类未被显式防御就会让偏差存活到联调：seam 是接口契约（`packages/shared` schema 必含字段），type 是 seam 的本地视图（不可比 seam 少字段），runtime 是真实分发（必须能反向断言"被丢弃字段 0 个"——单测 e2e 都应钉）。
+2. **测试 seam 不捕获 spawn argv**——bridge→pi 的 `spawn(argv)` 调用是**三层翻译终点**（web wire → bridge 内部 → pi RPC schema → process argv），既有单测仅断 bridge→pi 帧结构（`translateToPiWire`），从未断 `spawn` argv 形态；**单文件 fixture** 模拟只覆盖"取最新"一种语义，"精确恢复"与"全新"语义在 fixture 中不可区分。本轮后 spawn argv 单测钉桩落地（bridge `1.5a-d`）。
+3. **修复合入时 e2e 红灯不许以"非回归"定性带过**——本轮 `fe897c8` 首版 e2e 5/8 红，提交时定性的"非回归"被 reviewer 抓出：e2e 场景是覆盖全部三条路径的全链路断言，红于 `b/c/f` 三个场景已是明确回归信号；**任何 e2e 红灯在合入前必须做实**（要么挂账修要么回滚）——"非回归"必须有**钉桩测试绿**的反向证据（同一红灯在 main 分支应**也**红），无钉桩就是定性错误。本轮 reviewer 退回做实后，3.4 段 8 条回归钉桩即"反向证据"。
+
+**与本任务首轮（字段真实性）/ 2nd gap（窗口 chunk 级）合并总结**——本任务验收期连出 3 个 gap：**字段真实性**（占位 vs 实测）+ **窗口语义偏差**（IO 边界 vs 行边界）+ **三层类型/seam/runtime 缺口 + 红灯定性错误**（sessionJsonlPath 缺失 + 派生绑错 race + "非回归"带过）。三者同属「**凡未实测的细节均不可信**」铁律的扩展：**第一型偏实施层（字段没真值）、第二型偏解析层（边界没正确理解）、第三型偏工程流程层（红灯没钉桩 + 合入失察）**——铁律三层均在同一任务验证。**任务 10 reviewer S6 同步指出"e2e harness 每 spec 共享 agent-dir 是 race 源头，可改为每 spec 独立 agent-dir 根治"**——正是第三型盲区的同类根因（harness 共用 state 跨 spec 即"非隔离 = 必然误信号"），登记 TODO / 阻塞待 M+ / M5 评估。
