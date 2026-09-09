@@ -1,5 +1,5 @@
 // stem-refilled watcher — extracted from App.tsx for unit-testability
-// (M4 task 08 review 修复轮 W8).
+// (M4 task 08 review 修复轮 W8) + M4 验收期 4th gap 修复（task 11）。
 //
 // ## What this watches
 //
@@ -18,6 +18,38 @@
 //   - F5 / share-link preserves the real session key;
 //   - ChoicePage level=2's session_list mirror gets a fresh query
 //     (钉子 5 — stem 回填后重查)。
+//
+// ## M4 验收期 4th gap 修复 — 流式打字机效果丢失
+//
+// 验收期发现：新会话首 turn 流式打字机效果被破坏——message_update
+// delta 期间 ChatView 被 `RecoveryInFlight` 顶替，delta 一次性渲染
+// 而非逐字出现。
+//
+// 根因（frame-level）：
+//   - 新会话走 `createReadyGate()` ready gate（'new' 键，无仪式）；
+//   - bridge pending → stem 迁移后 broadcast `session_state`；
+//   - 本 watcher 回填 hash → App 重派发到 recovery 分支；
+//   - gateForSession('<stem>') miss（'new' key ≠ '<stem>' key）→ 触发
+//     全新 `initiateRecovery()` 仪式 → gate.ready === false → ChatView
+//     卸载换 `<RecoveryInFlight/>`；
+//   - message_update delta 仍写入 stem 桶（R4 迁移已搬迁）但无人渲染；
+//   - 5s 仪式到点 + snapshot 落定 → ChatView 重挂 → 消息一次性出现。
+//
+// 修复（双管齐下）：
+//   1. 【核心】`onRefill` 回调——App 在 watcher fire 时执行 gate 重键
+//      （take-and-set）：`gateMap.set(stem, gateMap.get('new'))` +
+//      `gateMap.delete('new')`。语义依据：迁移来的 stem 是"刚建的全新
+//      会话"——历史为空，与 `session === 'new'` 走 `createReadyGate()`
+//      的既有理由完全一致，不该跑 get_messages 恢复仪式。Hash 翻转后
+//      `gateForSession(<stem>)` 命中既有 ready gate → ChatView 全程挂
+//      载，流式不断。R4 桶迁移（WsClient 层）已保证数据随键迁移，
+//      两层配合 ChatView 读写无缝。
+//   2. 【次要】`sendSessionList` 推迟——回填瞬间触发会阻塞 turn 开头
+//      ~309ms（实测 PiExperiment 22 文件 40MB 全目录扫描）。改为延迟
+//      到该会话 `agent_settled`（phase → idle）后触发 + 3s debounce
+//      兜底（whichever 先到即触发）。钉子 5 语义保持：stem 回填后
+//      level2 列表会重查——只是推迟到本轮对话结束，用户退回 level2
+//      前必然已刷新。
 //
 // ## 触发条件（review R4 钉桩）
 //
@@ -56,16 +88,18 @@
 // ## 设计要点：辅助函数 + 自管 listener
 //
 // `watchStemRefilled` 是 framework-free helper：传入 token / workDir
-// + wsClient，返回一个 unsub 闭包。App.tsx 在 useEffect 内调用，
-// deps 变化时 cleanup unsub。Effect 主体条件不满足时（如 session
-// 已非 'new'）→ 返回 no-op unsub，避免 React 警告。
+// + wsClient + onRefill 回调，返回一个 unsub 闭包。App.tsx 在 useEffect
+// 内调用，deps 变化时 cleanup unsub。Effect 主体条件不满足时（如
+// session 已非 'new'）→ 返回 no-op unsub，避免 React 警告。
 //
-// 测试用例（W8 落地）：见
+// 测试用例（W8 落地 + 4th gap 增项）：见
 // `packages/web/src/__tests__/stem-refilled.test.ts`。
-// 1. session_state{session:<stem>} → hash 写入 + sendSessionList fire。
+// 1. session_state{session:<stem>} → onRefill fire + hash 写入 +
+//    延迟 sendSessionList（test 11/12/13）。
 // 2. session_state{session:'new'} → 不 fire（仍是 pending）。
 // 3. session_state{session:undefined} → 不 fire（schema 防御）。
 // 4. URL session 切到非 'new' 后 → 卸载后不 fire。
+// 5. sendSessionList 推迟触发（fake timers / agent_settled）。
 
 import { PROTOCOL_VERSION, type Envelope } from '@remotepi/shared';
 
@@ -76,6 +110,22 @@ import { M3_LEGACY_KEY, type WsClient } from './WsClient.js';
  *  Calling it tears down the type listener immediately. Calling
  *  twice is safe (second call is a no-op). */
 export type Unsubscribe = () => void;
+
+/** Delay (ms) before the deferred `sendSessionList` is fired as a
+ *  fallback when the agent never settles to `idle`/`exited` within
+ *  this window. 钉子 5 重查在 turn 开头会触发 bridge 全目录扫描
+ *  （~309ms 实测 PiExperiment 22 文件 40MB），推迟到 turn 结束即
+ *  保证用户退回 level2 前列表已更新，又不阻塞流式。
+ *
+ *  3s 选定理由（PRD §4.2 + tasks/m4/07 §钉子 5）：
+ *    - 常规 multi-delta 流式 turn（user prompt → llm call → 5 deltas
+ *      → message_end → idle）总耗时通常 < 5s；3s 足够覆盖多数场景；
+ *    - 偶发 cold start + LLM provider slow 路径下 3s 兜底触发仍
+ *      显著优于 turn 开头触发的 309ms 阻塞（流式已开始，更晚的
+ *      sendSessionList 不阻塞渲染）；
+ *    - 与 PRD §6.1 RECOVERY_TIMEOUT_MS = 5s / PHASE_PROGRESS_TIMEOUT_MS
+ *      = 15s 一致的设计节律：用户感知阈值 + 安全余量。 */
+export const SESSION_LIST_DEFER_MS = 3_000;
 
 export interface WatchStemRefilledOptions {
   /** URL hash's session component (the watcher fires only when this
@@ -95,6 +145,28 @@ export interface WatchStemRefilledOptions {
    *  intentional no-jsdom policy + ADR-0009 §决策 4). The default
    *  is the production writer. */
   writeHash?: (hash: string) => void;
+  /** M4 验收期 4th gap 修复——stem 重键回调。App 在 watcher 触发
+   *  时执行 gate 重键（take-and-set）：
+   *    `gateMap.set(stem, gateMap.get('new'))` + `gateMap.delete('new')`
+   *  把 'new' 的 ready gate 移交到 stem 键，hash 翻转后
+   *  `gateForSession(<stem>)` 命中既有 ready gate → ChatView 全程挂
+   *  载，流式不断。
+   *
+   *  边界：
+   *    - 'new' gate 不存在（如时序边缘：用户在 stem 到达前已退回
+   *      level2）→ 回调应 no-op（fallback 维持既有 initiateRecovery
+   *      路径，不崩）。
+   *    - 回调 throw → 静默吞（log warn）继续后续副作用；这是用户
+   *      回调编程错误的容差路径，watcher 的主流程（hash + sendList）
+   *      不应被打断。
+   *
+   *  Production 调用点：App.tsx 通过 useCallback 闭包 gateMapRef
+   *  传入；测试可注入 recorder 断言触发次数与参数。
+   */
+  onRefill?: (stem: string, workDir: string) => void;
+  /** Override the deferred `sendSessionList` delay. Production uses
+   *  `SESSION_LIST_DEFER_MS`（3s）；测试注入更短窗口以加速断言。 */
+  deferMs?: number;
 }
 
 /** Subscribe to `control/session_state` envelopes and refill the URL
@@ -112,6 +184,8 @@ export function watchStemRefilled(
 ): Unsubscribe {
   const { currentSession, workDir, token } = options;
   const writeHash = options.writeHash ?? defaultWriteHash;
+  const onRefill = options.onRefill;
+  const deferMs = options.deferMs ?? SESSION_LIST_DEFER_MS;
   // Gating: only act when the URL is in the pending 'new' state.
   // All other states (level=1, level=2, recovery with stem,
   // M3-compat token-only) → no listener attached.
@@ -126,6 +200,62 @@ export function watchStemRefilled(
       /* no-op */
     };
   }
+
+  // M4 验收期 4th gap 修复——deferred sendSessionList 状态机。
+  // 维护一个 `pendingDeferred` 单例；watcher fire 时若已存在则忽略
+  // （防御：single-fire path 上 watcher 一生只 fire 一次——hash 一旦
+  // 翻转回 'new' 不会被此 useEffect 重新激活，effect 已 unsub），
+  // 但暴露显式 start/cancel 接口让 unsub 路径能取消挂起的 fire。
+  let pendingDeferred: DeferredSend | null = null;
+
+  // M4 验收期 4th gap 修复——refill 幂等标志。一旦真 stem fire
+  // 过一次 handler 走完所有检查 + 副作用，后续同 stem 的
+  // session_state 全部早退（hasRefilled gate 在最末尾）。
+  let hasRefilled = false;
+
+  const fireOrCancelDeferred = (reason: 'fire' | 'cancel'): void => {
+    const deferred = pendingDeferred;
+    if (deferred === null) return;
+    pendingDeferred = null;
+    if (reason === 'fire') {
+      wsClient.sendSessionList(workDir);
+    }
+    // Always cancel both branches — clearTimeout + unsub phase listener.
+    clearTimeout(deferred.timerHandle);
+    try {
+      deferred.phaseUnsub();
+    } catch (err) {
+      // Phase listener unsub throw 防御性吞（与 WsClient listener
+      // 隔离策略一致）：unsub 失败不影响 sendSessionList 是否落地。
+      // eslint-disable-next-line no-console
+      console.warn('[stem-refilled] deferred phase listener unsub threw:', err);
+    }
+  };
+
+  const startDeferredSessionList = (): void => {
+    if (pendingDeferred !== null) return; // 防御：重复启动 no-op
+    let fired = false;
+    const fire = (): void => {
+      if (fired) return;
+      fired = true;
+      fireOrCancelDeferred('fire');
+    };
+    const timerHandle = setTimeout(fire, deferMs);
+    // M4 验收期 4th gap 修复（次要）——agent_settled 监听：
+    // bridge session_state phase → 'idle' / 'exited' 立即触发
+    // sendSessionList（agent 落定本轮 turn 结束，列表重查不阻塞
+    // 流式）。浅相等守护由 wsClient.on 内部 fan-out 保证——
+    // 同一 phase 多次广播由 App 层 useSessionPhase 浅相等吞掉，
+    // 此处只关心 transition；重复调用 fire() 由 `fired` 标志吞。
+    const phaseUnsub = wsClient.on('session_state', (env: Envelope) => {
+      if (env.kind !== 'control' || env.type !== 'session_state') return;
+      const phase = env.payload.phase;
+      if (phase === 'idle' || phase === 'exited') {
+        fire();
+      }
+    });
+    pendingDeferred = { timerHandle, phaseUnsub };
+  };
 
   const handler = (envelope: Envelope): void => {
     if (envelope.kind !== 'control' || envelope.type !== 'session_state') return;
@@ -165,43 +295,82 @@ export function watchStemRefilled(
     if (envelope.payload.work_dir !== workDir) {
       return;
     }
-    // Side effect 1: refill the hash. The `hashchange` listener
+    // M4 验收期 4th gap 修复——refill 幂等性：
+    //   watcher 在 URL 翻转回 'new' 之前（hashchange listener + React
+    //   re-render + useEffect cleanup 是 async 链路）会持续接收
+    //   session_state（phase 迁移：spawning → ready → running → idle）。
+    //   每一帧都通过此 handler 路由——若不挡，第一次 fire 后的 sendSessionList
+    //   debounce / agent_settled 触发后会清空 pendingDeferred，下一帧
+    //   session_state 又 startDeferredSessionList 一个新的 → 重复
+    //   触发 sendSessionList，污染 ChoicePage level=2 镜像节奏。
+    //
+    //   正确语义：refill 是单次事件——首次 fire 后已 stem 移交 + hash 翻转，
+    //   后续同 stem 的 session_state 只更新 phase（recovery ceremony 内
+    //   subscribeToSessionState 路径），不动 refill 副作用。
+    //
+    //   防御：跟踪 `hasRefilled`——一旦真 stem fire 过一次，后续同 stem
+    //   的 session_state 全部 no-op。unsub 不重置（单次生命周期内）。
+    //   注：原行为（非 4th gap 修复前）下同一问题也存在——每次都 fire
+    //   sendSessionList——本修复是同一问题的同步根治。
+    if (hasRefilled) return;
+    // Side effect 1: gate rekey callback (M4 验收期 4th gap 核心)。
+    // 在 writeHash 之前调用——App 的 onRefill 会执行 take-and-set
+    // 把 'new' 的 ready gate 移交到 stem 键。Hash 翻转后
+    // `gateForSession(<stem>)` 命中既有 ready gate → ChatView 不
+    // 卸载换 `<RecoveryInFlight/>`，流式不断。
+    //
+    // 异常隔离：onRefill throw → log warn 继续后续副作用（hash +
+    // setCurrentSessionKey + 延迟 sendSessionList）。回调编程错误
+    // 不应阻断 watcher 的主流程；测试可注入 throw 回调验证隔离。
+    if (onRefill !== undefined) {
+      try {
+        onRefill(newSession, workDir);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[stem-refilled] onRefill callback threw:', err);
+      }
+    }
+    // Side effect 2: refill the hash. The `hashchange` listener
     // re-derives auth + updates WsClient mirror. Use the same
     // hash helper the rest of the app uses (single source of
     // truth — see hash.ts). `writeHash` is injectable so the
     // test surface (no jsdom) can record the would-be write
     // without touching `window.location`.
     writeHash(selectSessionHash(token, workDir, newSession));
-    // Side effect 2: fire session_list re-query for the current
-    // work_dir so ChoicePage level=2's mirror catches up (钉子 5
-    // — stem 回填后重查).
+    // Side effect 3: WsClient mirror update.
     //
     // CRITICAL ORDERING (e2e 修复 2026-09-09): we must update the
     // WsClient's `currentSessionKey` mirror SYNCHRONOUSLY before
-    // calling `sendSessionList`. The watcher fires inside the
-    // session_state dispatch (synchronous, before the queued
-    // `hashchange` event flushes the App.tsx mirror update) —
-    // so the default `sendSessionList(workDir)` would still read
-    // `currentSessionKey === 'new'` and emit a session_list
-    // envelope with `session: 'new'`. The bridge's pending-key
-    // branch (BridgeSessionLayer.getOrCreateManagerForSession
-    // branch 3) maps `'new' + work_dir` to the `new:<work_dir>`
-    // map key. Post-migration that key is gone (replaced by
-    // `<stem>`), so the lookup misses, the bridge spawns a
-    // FRESH pending manager with no `--session` flag, the new
-    // pi creates a SECOND jsonl, and the new manager migrates to
-    // that different stem. Two managers, two jsonls, second
-    // prompt lands on the wrong one — the test's history assertion
-    // sees only one stem's messages.
+    // any `sendSessionList` (now deferred) reads it. The watcher
+    // fires inside the session_state dispatch (synchronous, before
+    // the queued `hashchange` event flushes the App.tsx mirror
+    // update) — without this write, the deferred sendSessionList
+    // would still read `currentSessionKey === 'new'` (or worse,
+    // race with the hashchange handler) and emit a session_list
+    // envelope with `session: 'new'`. Post-migration that key is
+    // gone (replaced by `<stem>`), so the lookup misses, the
+    // bridge spawns a FRESH pending manager with no `--session`
+    // flag, the new pi creates a SECOND jsonl, and the new manager
+    // migrates to that different stem. Two managers, two jsonls,
+    // second prompt lands on the wrong one — the test's history
+    // assertion sees only one stem's messages.
     //
-    // Fix: set the mirror first (so `sendSessionList` reads the
-    // post-refill session value) and then send. Both the App.tsx
-    // hashchange handler and this watcher write the mirror; the
-    // watcher is just earlier in the JS tick. The hashchange
-    // handler will later write the SAME value, making the
-    // mirror a stable point rather than a moving target.
+    // The deferred trigger fires later (after `agent_settled` /
+    // debounce), at which point this mirror has been stable for
+    // many ticks. The hashchange handler will later write the SAME
+    // value, making the mirror a stable point rather than a
+    // moving target.
     wsClient.setCurrentSessionKey(newSession);
-    wsClient.sendSessionList(workDir);
+    // Side effect 4: deferred sendSessionList (M4 验收期 4th gap
+    // 次要)。不再 turn 开头同步触发（~309ms 全目录扫描阻塞），
+    // 改为等到该会话 `agent_settled`（phase → idle/exited）或
+    // 3s 兜底后触发（whichever 先到）。
+    startDeferredSessionList();
+    // M4 验收期 4th gap 修复——refill 幂等性 seal：标记已 fire 过，
+    // 后续同 stem 的 session_state 走顶部 `if (hasRefilled) return`
+    // 早退，避免重复触发 deferred sendSessionList 副作用（详见上方
+    // handler JSDoc 备注）。
+    hasRefilled = true;
   };
 
   const unsub = wsClient.on('session_state', handler);
@@ -212,7 +381,20 @@ export function watchStemRefilled(
     if (unsubscribed) return;
     unsubscribed = true;
     unsub();
+    // 清理挂起的 deferred state：unsub 时若仍有 pending fire，
+    // 取消掉（用户可能已退回 level2 / 换 session，延迟 fire 落地
+    // 会污染 level2 列表 / 触发不必要的 outbound）。
+    fireOrCancelDeferred('cancel');
   };
+}
+
+/** M4 验收期 4th gap 修复——deferred sendSessionList 内部状态。
+ *  闭包封装 setTimeout 句柄 + phase 监听 unsub，由
+ *  `fireOrCancelDeferred` 统一清理（任何路径 fire / cancel 都会
+ *  clearTimeout + phaseUnsub，二者一致清理避免泄漏）。 */
+interface DeferredSend {
+  readonly timerHandle: ReturnType<typeof setTimeout>;
+  readonly phaseUnsub: () => void;
 }
 
 // Re-export PROTOCOL_VERSION for test convenience (some tests may

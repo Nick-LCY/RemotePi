@@ -14,7 +14,7 @@
 //     pin the exact bucket it cares about and only re-render when that
 //     bucket's slice changes identity.
 
-import { useCallback, useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react';
+import { useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import { createContext } from 'react';
 import type { SessionListEntry, SessionPhase } from '@remotepi/shared';
 
@@ -59,23 +59,26 @@ export function useWsClient(): WsClient {
  * arrays/objects WsClient emits a new reference on every mutation.
  *
  * Subscribe / getSnapshot stability: `client.subscribe` is an arrow class
- * field on `WsClient` (stable per instance). `getSnapshot` here is wrapped
- * in `useCallback` so its identity is also stable across renders — the
- * selector is captured fresh each render via the inline arrow, but that
- * is harmless because the selector body only reads from its `client`
- * argument (no stale-closure concerns; the `client` instance is itself
- * stable). React's `useSyncExternalStore` doesn't *crash* on a fresh
- * getSnapshot ref each render, but it does re-validate and re-subscribe,
- * so memoising is a free win. The WsClient selectors return store field
- * references directly (e.g. `c.sessionPhase`), so the snapshot identity
- * check is stable as long as the underlying field hasn't been reassigned
- * — see WsClient.setSessionPhase / setBlockedOn / setQueue for the
- * replace-on-change guards that keep no-op updates from re-rendering.
+ * field on `WsClient` (stable per instance). `getSnapshot` is the inline
+ * arrow below — NOT memoised via useCallback — because the selector often
+ * closes over external variables (e.g. `useBucketField(sessionKey, ...)`
+ * captures `sessionKey` in the selector body). useCallback with `[client]`
+ * deps would freeze the closure at the first render's selector, returning
+ * stale data after sessionKey changes (e.g. after stem-refilled migration:
+ * `bucketFor('new')` keeps returning the post-migration empty bucket even
+ * though the same ChatView instance now reads via `bucketFor(<stem>)`).
+ * useSyncExternalStore tolerates a fresh getSnapshot per render (it just
+ * re-validates / re-subscribes — no extra cost beyond the equality check).
+ *
+ * The WsClient selectors return store field references directly (e.g.
+ * `c.sessionPhase`), so the snapshot identity check is stable as long as
+ * the underlying field hasn't been reassigned — see WsClient.setSessionPhase
+ * / setBlockedOn / setQueue for the replace-on-change guards that keep
+ * no-op updates from re-rendering.
  */
 export function useWsState<T>(selector: (client: WsClient) => T): T {
   const client = useWsClient();
-  const getSnapshot = useCallback(() => selector(client), [client]);
-  return useSyncExternalStore(client.subscribe, getSnapshot);
+  return useSyncExternalStore(client.subscribe, () => selector(client));
 }
 
 // ---- Convenience hooks -----------------------------------------------------

@@ -72,7 +72,7 @@
 //     bucket (M3_LEGACY bucket when `currentSessionKey === null`,
 //     which is the level=2 case).
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncExternalStore } from 'react';
 
 import { watchStemRefilled } from './ws/stem-refilled.js';
@@ -168,14 +168,43 @@ export function App() {
   // 以便单元测试（见 stem-refilled.test.ts W8.1-W8.4）。语义不变：
   // bridge session_state 携带真实 stem（且当前 URL session 仍 'new'）
   // → 回填 hash + sendSessionList work_dir 重查。
+  //
+  // M4 验收期 4th gap 修复（task 11）——新增 `onRefill` 回调：watcher
+  // fire 时执行 gate 重键（take-and-set），避免 hash 翻转后 ChatView
+  // 被 `RecoveryInFlight` 顶替导致流式打字机效果丢失。详见
+  // `ws/stem-refilled.ts` 顶部 §M4 验收期 4th gap 修复段 + `handleRefill`
+  // JSDoc。
+  const gateMapRef = useRecoveryGateMap();
+  const handleRefill = useCallback(
+    (stem: string, _refillWorkDir: string): void => {
+      // Take-and-set: 把 'new' 的 ready gate 移交到 stem 键，删除 'new' 键。
+      // Hash 翻转后 `gateForSession(<stem>)` 命中既有 ready gate → ChatView
+      // 全程挂载，流式不断。
+      //
+      // 边界：若 'new' gate 不存在（时序边缘——用户在 stem 到达前已退回
+      // level2 / 切换会话），no-op fallback：维持既有 gateForSession 路径
+      // （会触发 initiateRecovery 仪式，但这是降级路径而非崩溃）。
+      const map = gateMapRef.current;
+      if (map === null) return;
+      const newGate = map.get('new');
+      if (newGate === undefined) return;
+      map.set(stem, newGate);
+      map.delete('new');
+    },
+    // handleRefill 的 deps 必须稳定：gateMapRef 是 useRef 返回的
+    // identity-stable 对象（`useRecoveryGateMap` JSDoc 详述），`.current`
+    // 内部 Map 也是 mount-once 创建后不变。空 deps 即可。
+    [],
+  );
   useEffect(() => {
     if (auth.token === null || auth.workDir === null) return;
     return watchStemRefilled(client, {
       currentSession: auth.session,
       workDir: auth.workDir,
       token: auth.token,
+      onRefill: handleRefill,
     });
-  }, [client, auth.session, auth.workDir, auth.token]);
+  }, [client, auth.session, auth.workDir, auth.token, handleRefill]);
 
   const view = decideView(auth);
 
@@ -213,11 +242,13 @@ export function App() {
 
   // Token + work_dir + session → render the M3 chat surface via the
   // per-session dual-query recovery gate (task 08). The gate map is
-  // created once per mount and persisted in `RecoveryShell`; its
-  // lifecycle is independent of the WsClient's connection state
-  // (reconnects are WsClient-internal; a mid-recovery drop shows
+  // created once per mount and persisted in `useRecoveryGateMap` at
+  // App level (M4 验收期 4th gap 修复——lift up so `handleRefill` 闭包
+  // 可访问 gateMapRef 并执行 take-and-set）；see `RecoveryShell`
+  // 接 gateMapRef 作为 prop。map 生命周期与 WsClient 连接状态独立
+  // （reconnects are WsClient-internal; a mid-recovery drop shows
   // up as a `both_failed` after the 5s timer fires, and the user
-  // can retry). The token / session are non-null at this branch
+  // can retry）。The token / session are non-null at this branch
   // (`decideView` already proved them).
   //
   // M3-compat: the `decideView` M3 branch (token only) routes
@@ -238,6 +269,7 @@ export function App() {
           session={sessionForGate}
           workDir={auth.workDir ?? ''}
           client={client}
+          gateMapRef={gateMapRef}
         />
       </main>
     </WsClientProvider>
@@ -279,19 +311,26 @@ function RecoveryShell({
   session,
   workDir,
   client,
+  gateMapRef,
 }: {
   token: string;
   session: string;
   workDir: string;
   client: WsClient;
+  gateMapRef: { current: Map<string, RecoveryGate> | null };
 }) {
-  // `useRef` keeps the gate map stable per mount; the factory
-  // closes over the client from the current render. Token /
-  // session changes don't re-create the map — see `RecoveryView`
-  // for the auto-start contract that re-fires the ceremony on
-  // session change.
-  const gateMapRef = useRecoveryGateMap();
-  const gate = gateForSession(gateMapRef.current, session, workDir, client);
+  // `gateMapRef` is owned by App level (M4 验收期 4th gap 修复) so the
+  // `handleRefill` callback can execute take-and-set on the gate map
+  // during stem-refilled transitions. Token / session changes don't
+  // re-create the map — see `RecoveryView` for the auto-start contract
+  // that re-fires the ceremony on session change.
+  // Defensive: gateMapRef.current is null only if useRecoveryGateMap
+  // failed to initialize (e.g. React render path edge case). Fallback
+  // to a fresh typed Map — RecoveryShell re-creates it on next render
+  // if the gate map becomes empty.
+  const map: Map<string, RecoveryGate> =
+    gateMapRef.current ?? new Map<string, RecoveryGate>();
+  const gate = gateForSession(map, session, workDir, client);
   return <RecoveryView gate={gate} session={session} workDir={workDir} token={token} />;
 }
 
@@ -300,13 +339,25 @@ function RecoveryShell({
  *  doesn't create two maps and orphan the first one's gates
  *  (the gates hold `setTimeout` handles and reply resolvers
  *  that must persist). The map is created empty; the
- *  `gateForSession` helper fills it on demand. */
-function useRecoveryGateMap(): { current: Map<string, RecoveryGate> } {
+ *  `gateForSession` helper fills it on demand.
+ *
+ *  M4 验收期 4th gap 修复——`useRecoveryGateMap` 必须返回**稳定对象**
+ *  （identity-stable wrapper），因为 App 级 `handleRefill` 的
+ *  `useCallback` 闭包依赖此 ref；若每次 render 返回新 wrapper
+ *  对象，handleRefill 身份不稳定 → stem-refilled useEffect deps 变
+ *  → 每帧 re-attach watcher → 在 stem refill 到达前 unsub 旧 watcher
+ *  + 重新 attach，期间漏接 session_state → 流式不回填。
+ *
+ *  实际实现：`useRef<Map>(null)` 返回的是 ref object（identity stable
+ *  across renders），ref.current 的赋值仅在 mount-once 路径上发生。
+ *  调用者统一通过 `.current` 访问 Map——之前 inline `{ current: ref.current }`
+ *  wrapper 是 bug（每次 render 新对象）。返回 ref object 直传更省一层。*/
+function useRecoveryGateMap(): { current: Map<string, RecoveryGate> | null } {
   const ref = useRef<Map<string, RecoveryGate> | null>(null);
   if (ref.current === null) {
     ref.current = new Map();
   }
-  return { current: ref.current };
+  return ref;
 }
 
 /** Look up (or create) the gate for a given session key. The

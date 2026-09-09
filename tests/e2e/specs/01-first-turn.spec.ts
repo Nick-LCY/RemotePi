@@ -185,6 +185,12 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
     const observerPromise = page.evaluate(async () => {
       const samples: number[] = [];
       const draftSelector = '[data-testid="message-draft"]';
+      // M4 验收期 4th gap 修复——streaming continuity 断言：observer
+      // 还需要追踪 [data-testid="chat-view"] / [data-testid=
+      // "recovery-in-flight"] 在 stream 期间的可见性。若 ChatView 在
+      // 任何 delta 之间被 `<RecoveryInFlight/>` 顶替，ChatView 卸载
+      // → draft 元素从 DOM 移除 → 后续 delta 不渲染 → streaming
+      // 打字机效果丢失（验收期 4th gap 原症状）。
       const start = performance.now();
       const deadline = start + 20_000;
       // Observe the MessageList subtree (the closest stable
@@ -193,7 +199,7 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
       // message row mid-flight.
       const messageList = document.querySelector('[data-testid="message-list"]');
       if (messageList === null) {
-        return { samples, error: 'message-list not found at evaluate time' };
+        return { samples, recoveryInFlightSeen: false, chatViewSeen: false, error: 'message-list not found at evaluate time' };
       }
       const observer = new MutationObserver(() => {
         const draft = document.querySelector(draftSelector);
@@ -214,14 +220,25 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
         }
       });
       observer.observe(messageList, { childList: true, subtree: true, characterData: true });
-      // Poll until the deadline OR until the assistant terminal
-      // row is present (whichever comes first). We don't want to
-      // hold the observer alive past the natural end of the
-      // streaming phase.
+      // M4 验收期 4th gap 修复——streaming continuity tracker：
+      // 在 observer 生命周期内持续轮询 DOM，记录 chat-view 与
+      // recovery-in-flight 的可见状态。`chatViewSeen` 仅作 sanity
+      // 钉（observer 启动时 chat-view 应已可见）；`recoveryInFlightSeen`
+      // 是流式连续性的关键断言——若该值在 observer 期间变为 true，
+      // 即 ChatView 被 RecoveryInFlight 顶替，违反本 spec §4th gap
+      // 核心断言。
+      let chatViewSeen = false;
+      let recoveryInFlightSeen = false;
       while (performance.now() < deadline) {
         const assistant = document.querySelector(
           '[data-testid="message-row"].message-role-assistant',
         );
+        const chatView = document.querySelector('[data-testid="chat-view"]');
+        const recoveryInFlight = document.querySelector(
+          '[data-testid="recovery-in-flight"]',
+        );
+        if (chatView !== null) chatViewSeen = true;
+        if (recoveryInFlight !== null) recoveryInFlightSeen = true;
         if (assistant !== null) {
           // Wait one more animation frame to catch any final
           // MutationObserver flush before disconnecting.
@@ -231,7 +248,7 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
         await new Promise((r) => setTimeout(r, 20));
       }
       observer.disconnect();
-      return { samples, error: null };
+      return { samples, chatViewSeen, recoveryInFlightSeen, error: null };
     });
     await sendButton.click();
 
@@ -286,6 +303,21 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
       draftGrowthSamples.samples.length,
       `expected at least 2 distinct draft text lengths (monotonic growth signal); got [${draftGrowthSamples.samples.join(', ')}]`,
     ).toBeGreaterThanOrEqual(2);
+    // M4 验收期 4th gap 修复——streaming continuity 断言：
+    //   observer 期间 chat-view 必须持续可见（mount 不被卸载）；
+    //   recovery-in-flight 必须全程不在 DOM 中（ChatView 没被
+    //   RecoveryInFlight 顶替）。原 4th gap 症状即 hash 翻转后
+    //   gateForSession(<stem>) miss → initiateRecovery 触发 → 
+    //   ChatView 卸载换 RecoveryInFlight → delta 不渲染 → 流式
+    //   效果丢失。本断言是该缺口的 e2e 钉子。
+    expect(
+      draftGrowthSamples.chatViewSeen,
+      'chat-view should be visible throughout the streaming window (M4 4th gap fix)',
+    ).toBe(true);
+    expect(
+      draftGrowthSamples.recoveryInFlightSeen,
+      'recovery-in-flight must NOT appear during streaming window — would indicate ChatView was unmounted (M4 4th gap regression)',
+    ).toBe(false);
     // Verify strict monotonicity (this is the load-bearing
     // assertion — a non-monotonic sequence means the renderer
     // emitted shorter text after longer text, which is a real
