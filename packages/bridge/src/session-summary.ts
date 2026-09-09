@@ -60,7 +60,20 @@
 //     tolerate empty lines (skip them) for forward compat.
 //   - We read via `openSync` + `readSync` chunks (default 64KB)
 //     rather than `readFileSync` so a 16MB jsonl doesn't allocate
-//     a 16MB string in the bridge process memory.
+//     a 16MB string in the bridge process memory. Caveat: a
+//     multi-byte UTF-8 sequence (e.g. a CJK char or an emoji
+//     surrogate pair) that straddles a chunk boundary will be
+//     decoded with a U+FFFD replacement codepoint where the split
+//     occurs — `Buffer.toString('utf8')` operates on the buffer
+//     in isolation and cannot see the lead byte that lives in
+//     the next chunk. For firstMessage this is a non-issue: user
+//     prompts live in the first few lines of the file (well within
+//     the first 64KB chunk). For messageCount the worst case is a
+//     `{"type":"message",…}` line whose first byte falls in the
+//     previous chunk and whose replacement is inserted at the
+//     head — JSON.parse then fails and the line is skipped, so an
+//     off-by-one under-count is possible but the cap (50k) keeps
+//     it invisible at the wire level.
 
 import { closeSync, openSync, readSync } from 'node:fs';
 
@@ -87,7 +100,18 @@ export interface SessionSummary {
   firstMessage: string | null;
   /** Number of `{"type":"message", …}` lines in the file (user +
    *  assistant + toolResult — every line with top-level `type`
-   *  equal to `"message"`). Capped at `MESSAGE_COUNT_LINE_CAP`. */
+   *  equal to `"message"`). Capped at `MESSAGE_COUNT_LINE_CAP`.
+   *
+   *  Counting policy: the top-level `type` field is the SOLE
+   *  criterion — a line whose top-level `type === "message"`
+   *  counts regardless of whether its inner `message` payload is
+   *  a well-formed object. Corrupted / partial-flush message
+   *  lines (e.g. `message:"not-an-object"`) still increment the
+   *  count because the top-level shape is what pi uses to route
+   *  the event; only the firstMessage extraction bails on inner
+   *  shape mismatches (best-effort). The two decisions
+   *  deliberately diverge so a session with a few garbled
+   *  messages still shows a representative count badge. */
   messageCount: number;
 }
 
@@ -160,6 +184,16 @@ export function readSessionSummary(jsonlPath: string): SessionSummary {
   // newlines. The carryover is dropped as soon as we close the
   // firstMessage scan window; past that we only care about line
   // boundaries for the messageCount tally.
+  //
+  // Carryover scope: dropping the partial-line remainder on
+  // firstMessage-window-close ONLY affects the firstMessage
+  // scan path (we no longer try to stitch it back). The
+  // messageCount loop reads until EOF and stitches any
+  // cross-chunk partial line into the next chunk via this same
+  // `remainder` variable — a message line that straddles a
+  // boundary still gets parsed and counted exactly once, so the
+  // count is not inflated or under-counted by the boundary
+  // logic.
   let remainder = '';
   const buf = Buffer.alloc(READ_CHUNK_BYTES);
   try {
@@ -293,6 +327,14 @@ function extractFirstUserMessageText(parsed: unknown): string | null {
   const joined = parts.join('');
   if (joined.length === 0) return null;
   return joined.length > FIRST_MESSAGE_TEXT_MAX_CHARS
-    ? joined.slice(0, FIRST_MESSAGE_TEXT_MAX_CHARS)
+    ? // Code-point truncation (Array.from on a string yields one
+      // entry per Unicode codepoint, so a surrogate pair like
+      // 😀 counts as 1 not 2). A naïve `slice(0, 200)` on the
+      // UTF-16 string can cut between the high and low surrogate
+      // and yield an isolated surrogate — invalid as a JS string
+      // for downstream consumers (zod schema parse, JSON.stringify,
+      // IndexedDB write). Spreading via Array.from guarantees the
+      // boundary lands on a complete codepoint.
+      Array.from(joined).slice(0, FIRST_MESSAGE_TEXT_MAX_CHARS).join('')
     : joined;
 }

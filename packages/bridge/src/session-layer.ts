@@ -203,8 +203,8 @@ export interface SessionListEntry {
    *  (the jsonl is `<timestamp>_<uuid>.jsonl` with no name inside);
    *  the bridge never invents one. Stays `null` always — the wire
    *  field is kept nullable per the M3 lock-versioned schema for
-   *  forward compat (a future pi version that exposes a name
-   *  field via `--metadata` would populate it here). */
+   *  forward compat (a future pi metadata API exposing a name
+   *  would populate it here). */
   name: string | null;
   /** Work directory the session was created under. */
   cwd: string;
