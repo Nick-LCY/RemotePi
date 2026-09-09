@@ -61,7 +61,7 @@ const e2eRoot = fileURLToPath(new URL('..', import.meta.url));
 const runTag = `e2e-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
 const tmpRoot = path.join(e2eRoot, '.tmp', runTag);
 
-interface RunState {
+export interface RunState {
   /** Token written into the bridge config + used in the URL hash
    *  the page navigates to. */
   token: string;
