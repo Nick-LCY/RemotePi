@@ -302,7 +302,13 @@ export function start(options: StartOptions = {}): {
   log.info(`token: ${token}`);
   log.info(`share URL: ${shareLink}`);
   log.info(`worker URL: ${workerUrl}`);
-  log.info(`work_dir: ${config.work_dir}`);
+  // M4: `work_dir` is optional. When the operator has fully migrated
+  // to state.json (deleted the field from bridge.json) the
+  // single-M3-work_dir banner line prints "<none>" so the operator
+  // doesn't see a confusing `work_dir: undefined`. The
+  // `work_dirs: [...]` line right below it is always present and
+  // is the real source of truth for M4 multi-session.
+  log.info(`work_dir: ${config.work_dir ?? '<none>'}`);
   log.info(`work_dirs: ${JSON.stringify(workDirStore.list())}`);
 
   const client = new BridgeClient(workerUrl, token, {
@@ -363,9 +369,21 @@ export function start(options: StartOptions = {}): {
       spawnManager: (opts: { mapKey: string; workDir: string; sessionJsonlPath: string | null }) => unknown;
     };
     const internals = sessionLayer as unknown as LayerInternals;
+    // M4: `config.work_dir` is optional. The back-compat single-
+    // manager seam (`options.piProcessManager` injection) is a
+    // test-only pathway — production callers never set it. If a
+    // caller pairs the injection with an absent `work_dir`, fall
+    // back to a sentinel `'<unset>'` so the synthetic M3-legacy
+    // manager is still registered (the layer's `defaultWorkDir`
+    // propagation is what the M3-compat auto-spawn uses in
+    // production; here we just need a stable string for the test
+    // seam to keep working). Real session-less commands routed to
+    // this manager will fail at `manager.start()` (no real pi
+    // path), which is the same surface the test would see in M3
+    // with an empty `work_dir: ''`.
     internals.spawnManager({
       mapKey: 'm3-legacy',
-      workDir: config.work_dir,
+      workDir: config.work_dir ?? '<unset>',
       sessionJsonlPath: null,
     });
   } else {

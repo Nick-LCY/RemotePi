@@ -149,17 +149,50 @@ describe('loadBridgeConfig (config loading per M3 PRD §6.2)', () => {
     }
   });
 
-  it('4. rejects a config that omits work_dir with code=missing_field', () => {
+  it('4. accepts a config that omits work_dir (M4: work_dir is optional)', () => {
+    // M4 schema relaxation (PRD §2.1 文件分离 + getting-started §3.5
+    // 「M4 起 work_dir 可选」): an operator who has fully migrated to
+    // state.json is allowed to delete the work_dir field from
+    // bridge.json. The loader must NOT throw — `state.json` is the
+    // runtime source of truth for work_dirs, and BridgeSessionLayer's
+    // M3-compat fallback (defaultWorkDir === undefined) rejects
+    // session-less commands with `invalid_envelope` instead of
+    // crashing. The migration path (migrateFromBridgeConfig)
+    // tolerates an absent bridgeConfig.work_dir by writing an
+    // empty state.json and returning [].
     const configPath = writeConfig({
       worker_url: 'wss://remote-pi.sankabox.com/bridge',
       web_base_url: 'https://remote-pi.sankabox.com',
       // work_dir intentionally absent
       token: 'z'.repeat(32),
     });
+    const config = loadBridgeConfig(configPath);
+    expect(config.worker_url).toBe('wss://remote-pi.sankabox.com/bridge');
+    expect(config.web_base_url).toBe('https://remote-pi.sankabox.com');
+    expect(config.work_dir).toBeUndefined();
+    expect(config.token).toBe('z'.repeat(32));
+  });
+
+  it('4b. still rejects an empty-string work_dir (min(1) holds when present)', () => {
+    // `.optional()` only relaxes "field absent" — an explicitly empty
+    // `work_dir: ""` is meaningless (would surface later as a
+    // confusing ENOENT in the three-piece check) so the inner
+    // `min(1)` still rejects it at the schema layer with
+    // code=missing_field. This is a deliberate UX choice: an empty
+    // string is almost always a hand-edit typo ("oh I should blank
+    // out this field") and we want a loud failure rather than a
+    // silent "the bridge starts but every work_dir op fails".
+    const configPath = writeConfig({
+      worker_url: 'wss://remote-pi.sankabox.com/bridge',
+      web_base_url: 'https://remote-pi.sankabox.com',
+      work_dir: '',
+      token: 'z'.repeat(32),
+    });
     expect(() => loadBridgeConfig(configPath)).toThrow(ConfigError);
     try {
       loadBridgeConfig(configPath);
     } catch (err) {
+      expect(err).toBeInstanceOf(ConfigError);
       expect((err as ConfigError).code).toBe('missing_field');
       expect((err as ConfigError).message).toMatch(/work_dir/);
     }

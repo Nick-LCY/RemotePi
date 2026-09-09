@@ -860,4 +860,179 @@ describe('start (state.json wiring — M4 task 04)', () => {
     );
     result.client.stop();
   });
+
+  it('start() accepts bridge.json without work_dir (M4: optional) and prints "<none>" in the banner', () => {
+    // M4 schema relaxation (PRD §2.1 文件分离 + getting-started §3.5
+    // 「M4 起 work_dir 可选」): the operator can delete work_dir from
+    // bridge.json after fully migrating to state.json. The bridge
+    // must boot cleanly with no work_dir present — the empty
+    // state.json (or the no-state.json-at-all path) drives the
+    // work_dirs list. The banner's M3-style `work_dir:` line prints
+    // "<none>" so the operator doesn't see `work_dir: undefined`
+    // (which is the kind of cosmetic bug that erodes trust).
+    const createSocket = (): WebSocketLike => new NoopSocket();
+    const configPath = makeConfig({
+      worker_url: 'wss://optional.test/bridge',
+      web_base_url: 'https://optional.test',
+      // work_dir intentionally absent (M4 allowed).
+      token: 'o'.repeat(32),
+    });
+    const statePath = path.join(makeTmpdir(), 'state.json');
+    const result = start({
+      createSocket,
+      argv: [],
+      configPath,
+      statePath,
+    });
+    // Banner line: "<none>" not "undefined".
+    expect(infoSpy).toHaveBeenCalledWith('work_dir: <none>');
+    // work_dirs is the empty list (no migration, no state.json entries).
+    expect(result.workDirStore.list()).toEqual([]);
+    // state.json was written empty by the migration path (so the
+    // "state.json exists?" check on subsequent restarts returns
+    // true and skips the migration branch entirely).
+    expect(existsSync(statePath)).toBe(true);
+    const onDisk = JSON.parse(readFileSync(statePath, 'utf8')) as {
+      schema_version: number;
+      work_dirs: string[];
+    };
+    expect(onDisk.schema_version).toBe(1);
+    expect(onDisk.work_dirs).toEqual([]);
+    result.client.stop();
+  });
+
+  it('start() with no work_dir + session-less M3-compat command → invalid_envelope (not a crash)', async () => {
+    // Downstream tolerance check (C1 修复轮验收要点): when
+    // config.work_dir is absent, the BridgeSessionLayer receives
+    // `defaultWorkDir: undefined`. Per session-layer.ts Branch 6
+    // ("no session field and N managers in map"), a session-less
+    // command with zero managers and undefined defaultWorkDir
+    // must be rejected with `result{ok:false, error.code:
+    // 'invalid_envelope'}` rather than crashing on undefined
+    // propagation. This mirrors the M3 strictness on multi-session
+    // ambiguity — the M3-compat fallback is gated, not assumed.
+    //
+    // We use the CapturingSocket pattern from the wiring test
+    // (above) so we can assert on the outbound frame the bridge
+    // emits in response to the session-less prompt.
+    class CapturingSocket implements WebSocketLike {
+      static instances: CapturingSocket[] = [];
+      readyState = 0;
+      readonly sent: string[] = [];
+      onopen: ((ev: Event) => void) | null = null;
+      onclose: ((ev: CloseEvent) => void) | null = null;
+      onerror: ((ev: Event) => void) | null = null;
+      onmessage: ((ev: MessageEvent) => void) | null = null;
+      constructor(_url: string, _protocols: string[]) {
+        CapturingSocket.instances.push(this);
+        queueMicrotask(() => {
+          this.readyState = 1;
+          this.onopen?.(undefined as unknown as Event);
+        });
+      }
+      send(data: string): void {
+        this.sent.push(data);
+      }
+      close(): void {
+        this.readyState = 3;
+      }
+    }
+    CapturingSocket.instances.length = 0;
+    const createSocket = (url: string, protocols: string[]): WebSocketLike =>
+      new CapturingSocket(url, protocols);
+
+    const configPath = makeConfig({
+      worker_url: 'wss://optional-m3compat.test/bridge',
+      web_base_url: 'https://optional-m3compat.test',
+      // work_dir intentionally absent.
+      token: 'm'.repeat(32),
+    });
+    const statePath = path.join(makeTmpdir(), 'state.json');
+    const result = start({
+      createSocket,
+      argv: [],
+      configPath,
+      statePath,
+    });
+    // Flush the microtask queue so the constructor's queued
+    // `onopen` fires synchronously — mirroring the S3 wiring test
+    // pattern (above). Without this, `client.sendEnvelope` would
+    // see `readyState === 0` (CONNECTING) and buffer the outbound
+    // frame rather than flushing it to the socket's `sent` array.
+    await Promise.resolve();
+    await Promise.resolve();
+    // Session-less prompt (no `session` field) — the M3-compat
+    // fallback would normally auto-spawn a manager rooted at
+    // defaultWorkDir, but with defaultWorkDir === undefined the
+    // layer must reject.
+    result.sessionLayer.handleEnvelope({
+      v: 1,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'm3-compat-no-default',
+      payload: { content: 'no default work dir' },
+    });
+    const sock = CapturingSocket.instances[0]!;
+    const resultFrame = sock.sent
+      .map((s) => {
+        try {
+          return JSON.parse(s) as {
+            type?: string;
+            reply_to?: string;
+            payload?: { ok?: boolean; error?: { code?: string } };
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((p): p is NonNullable<typeof p> => p !== null)
+      .find((r) => r.type === 'result' && r.reply_to === 'm3-compat-no-default');
+    expect(resultFrame).toBeDefined();
+    expect(resultFrame!.payload?.ok).toBe(false);
+    expect(resultFrame!.payload?.error?.code).toBe('invalid_envelope');
+    // No manager was auto-spawned (no defaultWorkDir to spawn under).
+    expect(result.sessionLayer.getManagerCount()).toBe(0);
+    result.client.stop();
+  });
+
+  it('start() with no work_dir + state.json missing → state.json written empty + work_dirs = []', () => {
+    // The M3-migration path already tolerates an absent work_dir
+    // (state.test.ts §26); this end-to-end test asserts the same
+    // behaviour holds through `start()` — important because the
+    // flow is `loadBridgeConfig → migrateFromBridgeConfig →
+    // WorkDirStore.empty`. Each step has to forward the absent
+    // work_dir correctly (the load result is now an optional
+    // BridgeConfig.work_dir).
+    const createSocket = (): WebSocketLike => new NoopSocket();
+    const configPath = makeConfig({
+      worker_url: 'wss://no-migration.test/bridge',
+      web_base_url: 'https://no-migration.test',
+      // work_dir absent + no token field — both must be tolerated.
+    });
+    const statePath = path.join(makeTmpdir(), 'state.json');
+    const result = start({
+      createSocket,
+      argv: [],
+      configPath,
+      statePath,
+    });
+    // state.json was created with `[]` (the migration path writes
+    // an empty baseline when there's nothing to migrate).
+    expect(existsSync(statePath)).toBe(true);
+    const onDisk = JSON.parse(readFileSync(statePath, 'utf8')) as {
+      schema_version: number;
+      work_dirs: string[];
+    };
+    expect(onDisk.schema_version).toBe(1);
+    expect(onDisk.work_dirs).toEqual([]);
+    expect(result.workDirStore.list()).toEqual([]);
+    // No "migrated work_dir from bridge.json" log line (nothing was
+    // migrated — the migration log is gated on actually migrating
+    // something).
+    const migratedCalls = infoSpy.mock.calls.filter((args) =>
+      String(args[0]).includes('migrated work_dir from bridge.json'),
+    );
+    expect(migratedCalls).toHaveLength(0);
+    result.client.stop();
+  });
 });

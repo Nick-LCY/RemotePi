@@ -48,13 +48,22 @@ import path from 'node:path';
 import { z } from 'zod';
 import { generateToken, shareUrl } from './token.js';
 
-/** Shape of a parsed, validated bridge configuration. Three required
- *  fields are the connection contract; `token` is optional and only
- *  used when present + non-empty (see `readTokenOrGenerate`). */
+/** Shape of a parsed, validated bridge configuration. The two
+ *  URL fields are the connection contract; `token` is optional and
+ *  only used when present + non-empty (see `readTokenOrGenerate`);
+ *  `work_dir` is the M3 compatibility field that becomes **optional**
+ *  in M4 — operators who have fully migrated to `state.json` can
+ *  omit it (PRD §2.1 文件分离 + getting-started §3.5「M4 起 work_dir
+ *  可选」). When omitted, `state.json` is the sole source of truth for
+ *  `work_dirs` (or the bridge boots with an empty work_dirs list if
+ *  `state.json` is also absent). The three-piece `statSync` /
+ *  `isDirectory` / `accessSync` validation only fires when
+ *  `work_dir` is present. */
 export interface BridgeConfig {
   worker_url: string;
   web_base_url: string;
-  work_dir: string;
+  /** M3 compat field. M4 makes this optional — see JSDoc above. */
+  work_dir?: string;
   /** When present and non-empty, the bridge uses this token verbatim
    *  and skips token generation. Absent / empty triggers generation. */
   token?: string;
@@ -65,15 +74,18 @@ export interface BridgeConfig {
  *  intentional: a typo like `workerUrl` (camelCase) would otherwise
  *  silently drop on parse and surface later as "missing worker_url"
  *  — strict mode surfaces it as "unknown key" which is the actionable
- *  error. Strings are required for the 3 URL/dir fields; the optional
- *  `token` allows missing but if present must be a string (an empty
- *  string is accepted here and rejected later in
- *  `readTokenOrGenerate`). */
+ *  error. The two URL fields are required (`min(1)`); `token` is
+ *  optional. `work_dir` is **M4 optional** — `.optional()` lets the
+ *  field be absent while the inner `min(1)` still rejects empty
+ *  strings (an empty `work_dir: ""` is meaningless and would
+ *  previously fall through to the M3 three-piece check with a
+ *  confusing ENOENT message). The three-piece validation only fires
+ *  when `work_dir` is present (see `loadBridgeConfig`). */
 const BridgeConfigSchema = z
   .object({
     worker_url: z.string().min(1),
     web_base_url: z.string().min(1),
-    work_dir: z.string().min(1),
+    work_dir: z.string().min(1).optional(),
     token: z.string().optional(),
   })
   .strict();
@@ -172,31 +184,45 @@ export function loadBridgeConfig(path: string): BridgeConfig {
   // names the precise problem (missing vs. file-not-directory vs.
   // not-readable) instead of dumping the underlying errno and
   // forcing the operator to translate.
+  //
+  // M4: `work_dir` is optional. When absent, the three-piece check
+  // is skipped entirely — `state.json` (or the absence of any
+  // work_dirs) is the runtime source of truth for M4 multi-session
+  // mode, and the M3-compat auto-spawn path (BridgeSessionLayer's
+  // `defaultWorkDir`) falls back to `undefined` when the layer has
+  // zero managers, which rejects session-less commands with
+  // `invalid_envelope` (see session-layer.ts Branch 6) instead of
+  // crashing. The `state.json` migration path
+  // (`migrateFromBridgeConfig`) already tolerates an absent /
+  // empty `bridgeConfig.work_dir` (writes an empty state.json and
+  // returns `[]`).
   const { work_dir } = result.data;
-  let stat: import('node:fs').Stats;
-  try {
-    stat = statSync(work_dir);
-  } catch (err) {
-    throw new ConfigError(
-      'work_dir_invalid',
-      `work_dir is not accessible: ${work_dir} (${(err as Error).message})`,
-      err,
-    );
-  }
-  if (!stat.isDirectory()) {
-    throw new ConfigError(
-      'work_dir_invalid',
-      `work_dir is not a directory: ${work_dir}`,
-    );
-  }
-  try {
-    accessSync(work_dir, constants.R_OK);
-  } catch (err) {
-    throw new ConfigError(
-      'work_dir_invalid',
-      `work_dir is not readable: ${work_dir} (${(err as Error).message})`,
-      err,
-    );
+  if (work_dir !== undefined) {
+    let stat: import('node:fs').Stats;
+    try {
+      stat = statSync(work_dir);
+    } catch (err) {
+      throw new ConfigError(
+        'work_dir_invalid',
+        `work_dir is not accessible: ${work_dir} (${(err as Error).message})`,
+        err,
+      );
+    }
+    if (!stat.isDirectory()) {
+      throw new ConfigError(
+        'work_dir_invalid',
+        `work_dir is not a directory: ${work_dir}`,
+      );
+    }
+    try {
+      accessSync(work_dir, constants.R_OK);
+    } catch (err) {
+      throw new ConfigError(
+        'work_dir_invalid',
+        `work_dir is not readable: ${work_dir} (${(err as Error).message})`,
+        err,
+      );
+    }
   }
 
   return result.data;
