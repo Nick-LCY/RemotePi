@@ -228,3 +228,19 @@ status: done
 **教训一句**（与 [[tasks/m3/04-bridge-pi-process.md|任务 04 cwd 编码勘误]] / M3 bridge→pi 翻译层修复同款铁律再次验证）：**凡未实测的 wire / 落盘细节均不可信**——本次属**review 层也未实测字段真实性**（实施 + review 双层均未真正读 jsonl 内容，错把占位放行）；占位 vs 实测的偏差存活到联调后用户验收期才被戳穿。任务 04 cwd 编码勘误是实施层同类偏差（占位实现与 pi 真实算法错位存活到联调），M3 bridge→pi 翻译层修复是 wire 层同类偏差（旧测试 §1.3 长期断言错误 wire 形状使字段名 bug 存活到联调），本次属 review 层同类偏差——**三层（实施 / 测试 / review）任一层放行都会让偏差存活到验收期**，唯一可靠防线是验收期真实环境实测。三笔独立 commit 反复验证这条铁律，不再独立成段。
 
 **任务书原文推荐实现（占位三字段 + "forward compat"放行口径）不再成立**。本轮修复落地后任务 06 `scanSessionsForWorkDir` 三字段真化（受上述边界决策表保护），PRD §2.4 性能预算注释同步在 [[prds/m4-multi-session.md|M4 PRD]] §修订注记追加（"单次 < 10ms 基于纯 readdir 假设，验收期缺口修复后每行解析为 O(file-size) 受 50k 行 cap 保护，实际约束为 web 侧 `SESSION_LIST_TIMEOUT_MS = 5_000` 看门狗"——PRD 主体未改）。
+
+### 勘误注记（2026-09-09，验收期 · 2nd gap：firstMessage 字节窗口 chunk 级误判）
+
+**同一 helper（`packages/bridge/src/session-summary.ts`）的**第二处落盘细节偏差**——首轮修复让 `first_message` 三字段真化落盘后，用户实测发现 ≥64KB 的会话文件仍大量 `first_message: null`。**根因**：首条 user message 字节窗口判断误用 **chunk 级累计 `bytesRead`**——IO 读完首个 64KB chunk 即 `bytesRead = 65536`，与窗口上限相等，**内层行循环在判定 `bytesRead >= FIRST_MESSAGE_BYTE_LIMIT` 后从未启动**就触发窗口关闭。helper 头注曾以"chunk-aligned approximation"自许该近似无副作用，**该假设对 chunk 头部行（即首条 user 消息所处的位置）不成立**——首条 user message 几乎总落在第 1 个 chunk 内部，而该 chunk 任何行都会被 `bytesRead >= 64KB` 这一提前为真的谓词挡在循环外。
+
+**用户真实数据暴露**——`~/.pi/agent/sessions/--home-sankabox-code-PiExperiment--/` 21 个会话样本中 **18/21 first_message null**（与首轮 fix 后 0/21 → 24/24 自测 fixture 形态完全矛盾；首轮 fixture 全部 <64KB，**测不出**这一边界——合成数据不覆盖真实语料分布）。
+
+**修复（commit `bae1e2f`，本地未 push）**——`session-summary.ts` 窗口判断改**逐行字节游标 `windowBytesSeen`**（与 IO 分块解耦：累加当前行字节后再与上限比，行循环可正常迭代；chunk 大小不再影响窗口关闭时机）+ **3 条回归钉子**：
+- **7.1 大文件首行提取**——合成 ≥64KB 文件 + 首行 user message 在 chunk 头部，旧实现 null、新实现正确提取
+- **7.2 边界跨切**——首行恰好跨 chunk 边界（旧 IO 分块下可能被拆为两个不完整 JSON，旧窗口在新游标下正确累加字节）
+- **7.3 真超限保持 null**——首条 user 行字节已超 64KB（旧实现误关返 null 是对的结果，新实现需保持同一语义）
++ **真实语料 21/21 验证**——18/21 null → 21/21 正确提取。
+
+**测试基线更新**——单测 **656 → 659**（+3 回归钉子）/ 集成 **32**（零回归）/ e2e **8/8 全绿** / typecheck / lint / build 全绿；web build 252.91 KB 零增长。
+
+**教训呼应**（与首轮 fix 同款铁律再次验证）——本轮属于**解析器落盘细节**层偏差（窗口语义：IO 边界 vs 行边界），首轮属于**字段真实性**层偏差（占位 vs 实测）；两者同属「**凡未实测的细节均不可信**」铁律——且本轮是**用户真实语料**才暴露（合成 fixture 全部 <64KB，测不出）。与 [[tasks/m3/04-bridge-pi-process.md|任务 04 cwd 编码勘误]] / M3 bridge→pi 翻译层修复 / 本任务首轮字段真实性三笔独立 commit 反复验证：合成 fixture 永远不及真实语料分布广，**任何解析 / 窗口 / 边界类逻辑必须以真实语料回归才能闭环**。helper 头注旧"chunk-aligned approximation"措辞已在 commit `bae1e2f` 同步修订为"逐行字节游标，与 IO 分块解耦"，防未来重构再误回退。
