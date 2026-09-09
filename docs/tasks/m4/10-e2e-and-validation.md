@@ -4,6 +4,8 @@ status: todo
 ---
 # 任务：E2E 场景 (d) 目录浏览 + (e) 多端各看各的 + (f) 跨会话 blocked_on 隔离 + (g) 钉子 3 work_dir_remove 活会话 + (h) 钉子 2 pending 键控 + 既有 (a)(b)(c) retry 容错断言简化 + 三端联调手测清单
 
+> **范围变化注记（2026-09-08，由 [[tasks/m4/08-web-multi-session-store.md|08 完成情况]]挂账）**：既有 E2E 场景 (a)(b)(c) **已随任务 08 迁移到 M4 URL 流**——M3 token-only URL `#<token>` 形态（→ RecoveryView → ChatView）翻转为 M4 URL 形态（`#<token>` → level1 → 选 work_dir → level2 → 选 session / 新建 → ChatView，详见 [[tasks/m4/08-web-multi-session-store.md#35120fc-r6-e2e-三场景迁移-m4-url-流|08 完成情况 §`35120fc` R6 e2e 三场景迁移]]）。**3/3 绿 × 2 次连跑**（10.9s）。**任务 10 保留范围 =**：(i) 新增 (d)-(h) 5 场景（PRD §9.6）；(ii) 原「既有 (a)(b) retry 容错断言简化」仍在本任务（沿用 [[architecture/decisions/0009-headless-browser-e2e.md|ADR-0009]] §开放点 1 长期路径落实，任务 08 实施后 (a)(b) 已天然简化——见任务 08 R5「测试与生产现实对齐」段，本任务进一步收敛 retry helper 依赖）；(iii) §10 用户手测清单落地。
+
 ## 目标
 按 [[prds/m4-multi-session.md|PRD §9.6 + §10]] 扩展 E2E 套件 + 落地用户手测清单：新增 5 条场景覆盖 M4 关键钉子与裁定；既有 3 条场景（流式 / F5 / 多端弹窗）retry 容错断言简化为纯等 ChatView（[[architecture/decisions/0009-headless-browser-e2e.md|ADR-0009]] §开放点 1 长期路径落实）；落地 §10 用户手测清单口径（保留清单但不勾选——验收由用户执行）。沿用 [[tasks/m3/12-e2e-harness.md|tasks/m3/12]] + [[tasks/m3/13-e2e-scenarios.md|tasks/m3/13]] 既有装配（wrangler dev + bridge 子进程 + 真 pi + 假 LLM 进程）。
 

@@ -4,6 +4,12 @@ status: todo
 ---
 # 任务：docs 同步（envelope/control/pi 四文档 + ADR-0003 补注裁定 C + 钉子 4 + ADR-0007 关闭占用检测 + ADR-0010 校对 + current-state + getting-started [URL hash 三字段示例]）+ REPLY_TIMEOUT_MS 6 处漂移更正（grep 验证零残留）
 
+> **任务 08 落地后最小侵入注记（2026-09-08，由 [[tasks/m4/08-web-multi-session-store.md|08 完成情况]]挂账）**：
+>
+> - **注记 1（M3_LEGACY 退役评估输入）**——任务 06 C2 移交义务 + 任务 08 完成情况「5 项边界决策要点」第 4 条**已落地 grep 清单**（`M3_LEGACY_KEY` / `m3-legacy` / `resolveM3CompatManager` / `defaultWorkDir` 在 bridge / web 出现位置 + 用途），任务 08 评估结论 = **保留三处代码 + JSDoc 互引**。**本任务 09 范围增列**：(a) PRD §修订注记是否需追加「2026-09-08 任务 08 退役评估条」（结论 = 暂不退役，挂账 M+ / M5 评估——任务 10 E2E 全部迁移到带 session 字段后再次评估）；(b) ADR-0008 §影响段无需改（M3-compat 路径未变）；(c) getting-started URL hash 文档无需改（M3 老链接兼容已说明）。详见 [[tasks/m4/08-web-multi-session-store.md#5-项边界决策要点|08 完成情况 5 项边界决策要点 §4]]。
+> - **注记 2（PRD §4.3 SessionBucket 实际 9 字段 vs PRD 7 字段补注）**——任务 08 实施期 `SessionBucket` 实际落地 **9 字段**（PRD §4.3 写 7 字段：messages / streamingDraft / queue / sessionPhase / blockedOn / workDir / recovery；实施期增 `sessionList` 按桶镜像 + `_draftHasDelta` 内部 flag，详见 [[tasks/m4/08-web-multi-session-store.md#264cefc-实施sessionbucket-分桶-路由-per-session-视图全量|08 完成情况 §`264cefc` 实施]]）。**本任务 09 范围增列**：PRD §修订注记追加「§4.3 实施期增 2 字段（`sessionList` 替代 `WebState.sessionList` 全局字段、`_draftHasDelta` 守护 React 死循环）」一行，**不改 PRD 主体**（依项目惯例）。
+
+
 ## 目标
 按 [[prds/m4-multi-session.md|PRD §8 文档同步表全部行]] 同步 M4 落地后的文档：envelope.md / control.md / pi.md 三协议文档（破锁 9 → 13 type + 演进规则 (a) 字段扩展 + 多会话扩展正式落地）；ADR-0003 末尾追加"M4 多会话化补注"（裁定 C ready 5min idle + 钉子 4 spawning 60s 超时）；ADR-0007 §验证与后续段删除"会话被外部进程占用检测"挂账（正式关闭）；ADR-0010 已在 02-shared-protocol-v3 落盘则此处校对；current-state.md（M4 PRD 定稿 + 任务拆分 + 看板更新 + TODO 挂账回收）；getting-started.md（state.json 说明 + URL hash 三字段格式 + ready 5min 回收告知）。同时 **`REPLY_TIMEOUT_MS` → `RECOVERY_TIMEOUT_MS` 共 6 处统一更正**（grep 实证零结果）。
 
