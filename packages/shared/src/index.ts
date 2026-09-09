@@ -30,10 +30,12 @@
 //
 // The split mirrors the M3 family split — each family owns its own
 // envelope schemas, and the top-level `Envelope` union lives in
-// `envelope.ts`. To add a new control-family message: define its payload
-// schema + envelope schema in `./protocol/control.ts` and append the
-// envelope to the `ControlBranch` discriminated union there. For pi
-// additions: same pattern in `./protocol/pi.ts` / `PiBranch`.
+// `envelope.ts`. To add a new control-family message: from M4 onward, keep
+// the payload shape and any result revalidation schema in a dedicated
+// submodule (for example, `protocol/work-dirs.ts` /
+// `protocol/session-list.ts`) so `control.ts` stays compact; keep the
+// envelope wrapper and `ControlBranch` registration in `./protocol/control.ts`.
+// For pi additions: same pattern in `./protocol/pi.ts` / `PiBranch`.
 export * from './protocol/envelope.js';
 export * from './protocol/control.js';
 export * from './protocol/pi.js';

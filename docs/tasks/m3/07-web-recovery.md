@@ -73,7 +73,7 @@ PRD §非目标明确"环形缓冲补发"归 M+，故 5s 超时设计不留补�
 - `exited` 状态时 bridge 收 `get_messages` 触发带 `--session` 的 spawn（PRD §2.7，任务 04 已落）；spawn 启动 pi 子进程 + 加载历史可能耗时 1-2s（本地实测），bridge 处理 snapshot + 转发 envelope 再 0.5-1s。
 - 5s timer 给整条链路（web send → bridge 收 → spawn → pi 加载 → bridge 转发 → web 收）预留 2-3s 真实业务耗时 + 1-2s 余量。
 - 若超时真触发 → `error: 'snapshot_failed'`（或 `state_failed`）→ `RecoveryErrorCard` 显示「重试」按钮，用户可手动重发；不会卡死或静默丢。
-- 5s 常量集中在 `recovery.ts` 顶部 `const REPLY_TIMEOUT_MS = 5000`（任务内单点，调参改一处），未暴露配置项（M3 范围内无此需求）。
+- 5s 常量集中在 `recovery.ts` 顶部 `const RECOVERY_TIMEOUT_MS = 5000`（任务内单点，调参改一处），未暴露配置项（M3 范围内无此需求）。
 
 ### web 链 06→07 收官
 

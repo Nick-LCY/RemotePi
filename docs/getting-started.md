@@ -81,7 +81,7 @@ pnpm --filter @remotepi/bridge dev   # 默认读 ~/.config/remotepi/bridge.json�
 pnpm --filter @remotepi/bridge dev -- --config /path/to/bridge.json   # 自定路径
 ```
 
-M3 起 bridge 全量配置走 JSON 文件，**启动前需先**写到默认路径或用 `--config <path>` 指定。配置 JSON 字段说明见 §3.5。**真正运行 bridge 前**请确保 `pi` v0.84.4+ 已全局安装并在 PATH（M3 实测 0.85.1）：
+M3 起 bridge 全量配置走 JSON 文件，**启动前需先**写到默认路径或用 `--config <path>` 指定。**M4 起**配置文件分为两份：用户手编的 `bridge.json` + bridge 运行时写的 `state.json`（详见 §3.5）。**M3 用户的 `bridge.json.work_dir` 字段会在首次启动时自动迁移到 `state.json`**，字段无需手动删除。**真正运行 bridge 前**请确保 `pi` v0.84.4+ 已全局安装并在 PATH（M3 实测 0.85.1）：
 
 ```bash
 npm i -g @earendil-works/pi-coding-agent
@@ -171,11 +171,30 @@ pnpm --filter @remotepi/web dev
 http://localhost:5173/#<token>
 ```
 
-**验证要点**（M3 ChatView 可见行为验证 — M2 时代的 `PingTester` / `BroadcastLog` 验证组件已在 [[tasks/m3/06-web-chat.md|task 06]] 删除，**勿**在新手测中寻找这两个组件）：
+**M4 多会话**（已上线）：share URL hash 三字段全存，格式 `#<token>&work_dir=<encoded>&session=<key|new>`（裁定 B）。用户进网页流程采用"目录 → 会话"**强制两级顺序**（裁定 A，详见 [[prds/m4-multi-session.md|M4 PRD §4.2]]）：
+
+```
+# 仅 token （M3 老分享链接 / M4 首次进入 / 退出会话回到 level=1）
+https://remote-pi.sankabox.com/#<token>
+
+# token + work_dir （选定目录 / 进入 level2 ）
+https://remote-pi.sankabox.com/#<token>&work_dir=%2FUsers%2Fme%2Fprojects%2Fmyapp
+
+# token + work_dir + session （已选会话 / 进入 ChatView ；session=new 为新建会话占位）
+https://remote-pi.sankabox.com/#<token>&work_dir=%2FUsers%2Fme%2Fprojects%2Fmyapp&session=2026-09-08T10-30-00_a3f9b2c1-4d5e-...
+```
+
+- `token` 首位无键名（与 M3 同，房间密钥不递变）。
+- `work_dir` `encodeURIComponent` 编码后传（绝对路径）；`session` = 真实 sessionKey stem 或字面量 `new`。
+- M3 老分享链接 `#<token>` 不失效（web 解析后视作"无 work_dir 无 session"→ ChoicePage level=1 强制两级起点——裁定 B + 钉子 6，自然兜底老链接）。
+- 退出会话 → 清 `session` 留 `work_dir`（回 level=2）；更换目录 → 清 `work_dir + session`（回 level=1）。
+- F5 / 书签携带完整三字段 → 直接进 ChatView；缺字段则按裁定 A 三态分派（仅 token → level=1；token+work_dir 无 session → level=2；全有 → ChatView）。
+
+**验证要点**（M4 ChatView 可见行为验证 — M2 时代的 `PingTester` / `BroadcastLog` 验证组件已在 [[tasks/m3/06-web-chat.md|task 06]] 删除，M3 老 token-only URL 验证路径仅适用于 dev / 回归 — 新用户只走 M4 ChoicePage 三态分派路径）：
 
 - **StatusBar 绿** — 状态条出现 `online` + `bridge_status.reason='connected'`，表示 handshake 通过。
 - **ChatView 渲染** — `<ChatView />` 挂在 `<App />` 内（`packages/web/src/components/ChatView.tsx`），由 `PhaseIndicator` / `MessageList` / `QueueIndicator` / `InputBar` / `DialogHost` 五块组成；恢复仪式完成后自动渲染，先显示 `RecoveryInFlight` spinner，到位切 ChatView。
-- **对话闭环** — 在 `<InputBar />` 输入文字点 Send → `<MessageList />` 出现打字机暂显（`message_update` 流式渲染）+ `<PhaseIndicator />` 从 `ready` 转 `running` → pi 收尾（`message_end` + `agent_settled`）后转 `idle` + 输入框可用 + 提示"5 分钟自动休眠"。**多轮对话**：每条消息按 `<MessageList />` 顺序追加，刷新（F5）后聊天记录 / phase / blocked_on 全部恢复（web 端无 localStorage）。
+- **对话闭环** — 在 `<InputBar />` 输入文字点 Send → `<MessageList />` 出现打字机暂显（`message_update` 流式渲染）+ `<PhaseIndicator />` 从 `ready` 转 `running` → pi 收尾（`message_end` + `agent_settled`）后转 `idle` + 输入框可用 + 提示"**5 分钟无输入后会话将自动关闭并回到会话列表**"。**多轮对话**：每条消息按 `<MessageList />` 顺序追加，刷新（F5）后聊天记录 / phase / blocked_on 全部恢复（web 端无 localStorage）。**M4 ready 回收告知**：ready 相位同样以 5min 倒计时计入 idle 回收路径（裁定 C，与 running → idle 同一计时器逻辑）；仅 `spawning` / `blocked_on` 显式忙碌相位豁免——用户切走会话后，后台会话 5min 无论 ready / running / idle 都按 5min 倒计时回收；详见 [[architecture/decisions/0003-session-lifecycle-and-history-source.md|ADR-0003]] §补注（M4 多会话化补注）。
 - **4 类阻塞弹窗** — pi 内部扩展触发 `extension_ui_request`（4 类：select / confirm / input / editor）→ bridge 透传 → `<DialogHost />` 渲染对应弹窗（`<SelectDialog />` / `<ConfirmDialog />` 三按钮 Cancel=cancelled:true / No=value:false / Yes=value:true / `<InputDialog />` / `<EditorDialog />`）；倒计时显示（editor 无超时除外）；提交后 `<DialogHost />` 自动收起。
 - **双 tab 广播** — 开两个 tab 都粘同一 token；M3 已无独立 `<BroadcastLog />`，弹窗先答者胜——任一 tab 提交，两端 `<DialogHost />` 同步收起；后续答者收 toast"已过期"+ 自动收起。
 - **杀 bridge 变离线** — 在终端 B 按 `Ctrl+C`，两 tab 5 秒内 StatusBar 变 `offline` + `reason='closed'`。
@@ -185,42 +204,62 @@ http://localhost:5173/#<token>
 
 > bridge 端 PID 取法：`pgrep -f 'remotepi/bridge'` 或 `ps aux | grep bridge` 都行；`tsx watch` 起的进程组是同一棵，`kill -- -<pgid>` 可一并清掉子进程。
 
-### 3.5 配置文件 JSON 字段说明（M3 起）
+### 3.5 配置文件 JSON 字段说明（M3 起 / M4 拆分 state.json）
 
-bridge **不**再接受 CLI 参数或环境变量覆盖——所有配置都走 JSON 配置文件。M3 默认路径：
+bridge **不**再接受 CLI 参数或环境变量覆盖——所有配置都走 JSON 配置文件。**M4 起**配置文件分为两份：
+- `bridge.json`——用户手编（静态配置；`worker_url` / `web_base_url` / `work_dir`[M3 兼容] / `token`）。
+- `state.json`——bridge 运行时写（M4 起持久化用户保存的工作目录清单 `work_dirs: string[]`；**不**污染用户手编的 `bridge.json`）。
+
+M4 默认路径：
 
 ```
-$XDG_CONFIG_HOME/remotepi/bridge.json        # XDG 优先
-~/.config/remotepi/bridge.json               # fallback（XDG_CONFIG_HOME 未设时）
+$XDG_CONFIG_HOME/remotepi/bridge.json        # 用户手编
+$XDG_CONFIG_HOME/remotepi/state.json         # bridge 运行时写（用户手编会丢）
 ```
 
-显式指定路径：`pnpm --filter @remotepi/bridge dev -- --config /path/to/bridge.json`（`--config <path>` 与 `--config=<path>` 等价；遇 `--` 终止符停止扫描；未知 flag 静默忽略）。
+显式指定 bridge 配置路径：`pnpm --filter @remotepi/bridge dev -- --config /path/to/bridge.json`（`--config <path>` 与 `--config=<path>` 等价；遇 `--` 终止符停止扫描；未知 flag 静默忽略）。
 
-**完整字段表**：
+**`bridge.json` 完整字段表**（用户手编）：
 
 | 字段 | 必填 | 类型 | 语义 | 示例 |
 |------|------|------|------|------|
 | `worker_url` | ✅ | string (ws/wss URL) | bridge 连的 WSS 端点；本地三端联调填 `ws://localhost:8787/bridge`，连生产填 `wss://remote-pi.sankabox.com/bridge` | `"ws://localhost:8787/bridge"` |
 | `web_base_url` | ✅ | string (https URL) | 拼 share URL 的 base；粘到浏览器的那条 `https://<web_base_url>/#<token>` | `"https://remote-pi.sankabox.com"` |
-| `work_dir` | ✅ | string (绝对路径) | pi 子进程的工作目录（也是 session 扫描的 cwd 锚点） | `"/Users/me/projects/myapp"` |
+| `work_dir` | ❌（M4 起可选） | string (绝对路径) | **M3 兼容字段**：M3 单 work_dir 配置；M4 起仅在首次启动时被自动迁移到 `state.json` 作为 `work_dirs` 清单第一项，之后字段可从 `bridge.json` 删除（迁移幂等 no-op） | `"/Users/me/projects/myapp"` |
 | `token` | ❌ | string | 启动 token；缺省时 bridge 启动随机生成 **32 字符 base64url**（`crypto.randomBytes(24).toString('base64url')`） | `"xCwytpk-..."` |
+
+**`state.json` 格式**（bridge 运行时写，**用户手编会丢**）：
+
+```jsonc
+{
+  "schema_version": 1,
+  "work_dirs": ["/abs/path/a", "/abs/path/b"]   // 用户保存的工作目录清单
+}
+```
+
+- **写时机**：`work_dir_add` / `work_dir_remove` 命令成功后**同步**写回 state.json（atomic rename：先写 tmp → rename 覆盖，防并发写半截）；失败回滚内存 + `internal` 错误码。
+- **读时机**：bridge 启动一次性加载到内存 `workDirs: string[]`，后续 `work_dir_list` / `add` / `remove` 操作这份内存。
+- **M3 自动迁移**：bridge 启动时若 `state.json` 不存在但 `bridge.json` 有 `work_dir` 字段 → 自动把该字段写入 `state.json` 作为 `work_dirs` 第一项；**不回写** `bridge.json`（用户手编配置不被运行时污染）；一次性迁移 + 打印日志 `migrated work_dir from bridge.json → state.json`。后续启动幂等 no-op。
+- 启动时严格校验沿用 M3 §2.1 三件套（存在 + 是目录 + 可读）。
+
+**新增工作目录**（M4 推荐方式）：用户在网页 ChoicePage level=1 点 **"浏览添加"** → DirectoryBrowser 组件调 bridge `control/list_directories` 选目录 → 触发 `work_dir_add` 命令 → state.json 同步写入。**无需手编 state.json**。若想直接手编 `state.json` 也合法（bridge 启动读 + 严格校验），但不推荐（与运行时迁移语义不一致）。
 
 **最小示例**（本地三端联调）：
 
 ```json
 {
   "worker_url": "ws://localhost:8787/bridge",
-  "web_base_url": "https://remote-pi.sankabox.com",
-  "work_dir": "/Users/me/projects/myapp"
+  "web_base_url": "https://remote-pi.sankabox.com"
 }
 ```
 
-连生产环境把 `worker_url` 改为 `wss://remote-pi.sankabox.com/bridge`，其余字段同上。
+连生产环境把 `worker_url` 改为 `wss://remote-pi.sankabox.com/bridge`，其余字段同上。**M3 用户的 `bridge.json` 仍带 `work_dir` 字段无需手动删除**——首次启动自动迁移，后续字段可保留（迁移幂等 no-op 不报错）；不删也可以。
 
 **关键行为**（出错会退出 1）：
 
-- `worker_url` / `web_base_url` / `work_dir` 三选一缺失 → `ConfigError{code: 'missing_field'}` + 友好 stderr；
-- `work_dir` 路径不存在 / 不是目录 / 不可读 → `ConfigError{code: 'work_dir_invalid'}`；**bridge 不会自动 `mkdir`**（M2 时代的"默认空 work_dir"已废）；
+- `worker_url` / `web_base_url` 缺失 → `ConfigError{code: 'missing_field'}` + 友好 stderr；
+- `bridge.json.work_dir` 路径不存在 / 不是目录 / 不可读 → `ConfigError{code: 'work_dir_invalid'}`；**bridge 不会自动 `mkdir`**（M2 时代的"默认空 work_dir"已废）。**M4 起**该字段为可选——缺失时若 `state.json` 也不存在 / `work_dirs` 为空，则 ChoicePage level=1 空态提示用户添加目录（**不**报错退出 1）；
+- `state.json.work_dirs` 中每项启动时校验三件套（存在 + 是目录 + 可读）——任一失败 → `StateError` + 友好 stderr + 退出 1（fail-fast；与 M3 同口径但作用于清单）；
 - `token` 字段**缺省**时随机生成 **32 字符 base64url**（`crypto.randomBytes(24)`），但**不**回写到配置文件——M2 时代每启都换 token 是有意的（粘到浏览器的那条 URL 失效即失效，运维不依赖持久 token）；
 - 配置文件 JSON 解析失败 → `ConfigError{code: 'parse_failed'}`；
 - **未知 CLI flag 静默忽略**（systemd 风格 `-D` / `-E` 不会误吞 `--config`；遇 `--` 终止符停止扫描——编排裁定，2026-09-05）。
@@ -250,14 +289,14 @@ export ANTHROPIC_API_KEY=sk-ant-...   # provider 决定环境变量名
 
 **高级覆盖：`PI_CODING_AGENT_DIR`**——bridge spawn 不注入此变量，子进程继承宿主环境，使 TUI 与 bridge 共享同一份会话与认证。用户若把 pi 装到自定义目录（如包级改名 / fork 版改了 env 名）需自行设置 `PI_CODING_AGENT_DIR`，bridge 会同步透传并以该目录为扫描基准；详见 [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] 的“已知布局局限”。
 
-**XDG 路径解析顺序**：
+**XDG 路径解析顺序**（M4 起 bridge.json / state.json 同源）：
 
 ```
-XDG_CONFIG_HOME 环境变量存在 → $XDG_CONFIG_HOME/remotepi/bridge.json
-否则                       → ~/.config/remotepi/bridge.json
+XDG_CONFIG_HOME 环境变量存在 → $XDG_CONFIG_HOME/remotepi/{bridge.json, state.json}
+否则                       → ~/.config/remotepi/{bridge.json, state.json}
 ```
 
-自定义路径覆盖默认：见上文 `--config <path>`。
+`bridge.json` 自定义路径覆盖默认：见上文 `--config <path>`。`state.json` 路径**不可配置**（沿用 XDG 默认，与 `bridge.json` 同根目录；用户手编会丢——bridge 运行时独占写）。
 
 ---
 

@@ -39,7 +39,7 @@
 
 落地 [[prds/m3-single-session.md|M3 PRD §2]] + [[tasks/m3/04-bridge-pi-process.md|tasks/04]] + [[tasks/m3/07-web-recovery.md|tasks/07]] 后回写以下 4 段关键实现期裁定（任务 [[tasks/m3/08-docs-and-validation.md|08]] 落地）：
 
-1. **恢复措辞与"双查询恢复仪式"对齐**。原 §3 "web 断线重连后由 bridge 推送 session 状态快照"的措辞落地为 web 端**握手后无 ack 即并行**发两条命令：`pi/get_messages`（拉历史，无 `since` 全量）与 `control/get_state`（拉会话态 + blocked_on；后者由 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]] 破锁增补）。两条都到才渲染聊天视图（任务 [[tasks/m3/07-web-recovery.md|07]] `RecoveryGate` 状态机），任意一条失败（超时 / `ok:false`）显示"恢复失败，请重试"按钮，不静默丢。F5 刷新走完全相同路径（web 端无 localStorage，刷新 = 重新走 WSS + 仪式）。`get_messages` 在当前 `phase === 'exited'` 时由 bridge 触发带 `--session <path>` 的 spawn（§2.7 exited 语义——见第 4 段），`get_state` 由 bridge 内存作答（**不**触发 spawn）。**双查询超时上限统一 5s**（含 exited 时 spawn 余量：web send → bridge 收 → spawn pi → 加载 → bridge 转发 → web 收 整链路实测 2-3s + 1-2s 余量），常量集中在 `REPLY_TIMEOUT_MS = 5000`（任务 [[tasks/m3/07-web-recovery.md|07]] 单点）。
+1. **恢复措辞与"双查询恢复仪式"对齐**。原 §3 "web 断线重连后由 bridge 推送 session 状态快照"的措辞落地为 web 端**握手后无 ack 即并行**发两条命令：`pi/get_messages`（拉历史，无 `since` 全量）与 `control/get_state`（拉会话态 + blocked_on；后者由 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]] 破锁增补）。两条都到才渲染聊天视图（任务 [[tasks/m3/07-web-recovery.md|07]] `RecoveryGate` 状态机），任意一条失败（超时 / `ok:false`）显示"恢复失败，请重试"按钮，不静默丢。F5 刷新走完全相同路径（web 端无 localStorage，刷新 = 重新走 WSS + 仪式）。`get_messages` 在当前 `phase === 'exited'` 时由 bridge 触发带 `--session <path>` 的 spawn（§2.7 exited 语义——见第 4 段），`get_state` 由 bridge 内存作答（**不**触发 spawn）。**双查询超时上限统一 5s**（含 exited 时 spawn 余量：web send → bridge 收 → spawn pi → 加载 → bridge 转发 → web 收 整链路实测 2-3s + 1-2s 余量），常量集中在 `RECOVERY_TIMEOUT_MS = 5000`（任务 [[tasks/m3/07-web-recovery.md|07]] 单点）。
 
 2. **idle 计时不会被阻塞弹窗误触发**。与 [[architecture/decisions/0004-extension-ui-dialog-forwarding.md|ADR-0004]] 协同：阻塞期间 pi 不会发 `agent_settled`，bridge 仅识别 `agent_settled` 作为 idle 计时启动判据——任何 `extension_ui_request` / blocked_on 状态变化都不迁移 `running → idle`，计时器不启动 / 不刷新。**额外边界**：实现期发现 idle 计时器起跳前需守门 `phase === 'running'`（而非原 §3 "收到 agent_settled 事件"无相位的写法），避免 ready 阶段意外事件误触——见补注第 4 段 ready 阶段忽略 `agent_settled` 的裁定。
 
@@ -77,7 +77,23 @@
 
 按 [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] 用户裁定（commit `1985fbd`）落地：session 扫描基准由历史隔离目录 `<configDir>/pi-agent/` 改为宿主机共享 agent 目录（`resolvePiAgentDir()` 解析：`PI_CODING_AGENT_DIR` 优先 / tilde 展开 / 默认 `~/.pi/agent`，与 pi `getAgentDir()` 一致）。本 ADR §2 第 3 条“session 落盘路径”仍准确；§3 第 1 条中“bridge 专属目录”表述为历史状态，修订为：spawn 不注入 `PI_CODING_AGENT_DIR`、子进程继承宿主环境，使 web 端能接管同一 `work_dir` 最近会话（含终端里正在聊的）。已接受的设计后果（同会话双写 / 非官方布局局限）详见 ADR-0007 与 [[tasks/m3/09-host-shared-agent-dir.md|tasks/09]]。
 
-## 双向引用（M3 协同）
+## 补注（M4 多会话化补注，2026-09-08）
+
+按 [[prds/m4-multi-session.md|M4 PRD]] §1.4 + §1.5 + §2.3 + §2.7 + [[tasks/m4/06-bridge-session-layer.md|任务 06]] + [[tasks/m4/08-web-multi-session-store.md|任务 08]] 落地（commit `5276d1a` ~ `f1ede7d`）。本 ADR §3 / §决策 5 在 M3 单会话下成立；M4 引入 `Map<sessionKey, PiProcessManager>` 多 manager 复数化后，多会话语义逐 manager 复制：
+
+1. **idle 计时逐会话复制**。`IDLE_TIMEOUT_MS = 5 * 60_000` 不再挂单例 manager 一次，而是每个 manager 各自持有独立 idle timer；N 个 manager 各跑各自的 5min 倒计时，互不干扰。idle / ready 超时 kill 走原 §补注 3 的自主 kill 标记路径（先置位再发 SIGTERM→1s→SIGKILL；exit 回调走"标记在→不重启"），manager 独立 exited 广播（与 §决策 5 广播语义不变）。
+
+2. **`session_state` 每 manager 各 broadcast**。bridge `BridgeSessionLayer` 不再 fan-out 单一 manager 的状态，而是 N 个 manager 在各自 phase 迁移 / blocked_on 变化时各自广播 `session_state{session: <sessionKey>, ...}`（envelope `session` 字段携带本 manager 的 sessionKey，详见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.3 + [[architecture/protocol/pi.md#多会话扩展正式落地|pi.md §多会话扩展正式落地]]）。web 端按 `envelope.session` 字段路由入站到对应 session 桶（详见 [[tasks/m4/08-web-multi-session-store.md|任务 08]] `WsClient` 入站 4 类 envelope 路由），不污染其他会话视图。**跨会话 idle 互不干扰**：A manager 5min idle 进入 exited 广播与 B manager 完全独立；A 退出不会触发 B 任何状态迁移。
+
+3. **裁定 C：ready 相位 5min 无写命令回收**（M4 落地）。原 §3 "收到 `agent_settled` 后开始 5 分钟空闲计时"仅在 `running → idle` 迁移时起计时；M4 扩展到 `ready` 相位——ready 5min 内无任何写命令（`prompt` / `steer` / `follow_up` / `extension_ui_response` 等）也按 idle 路径起 5min 倒计时，与 `running → idle` 共用同一计时器逻辑。**豁免**：`spawning` / `blocked_on` 显式忙碌相位不计入（沿用 §补注 2 ready 阶段忽略 agent_settled 的语义——agent_settled 是工作量收敛判据，ready 阶段尚无工作量谈不上 idle）。**迁移条件**：`phase === 'ready'` + 5min 内未收到任何写命令 → `ready → idle` 计时迁移（同 `running → idle` 路径）；计时窗口内收到写命令则重置（沿用原 §3）。**用户感受变化**：M3 ready 阶段长期可用（不计时），M4 ready 5min 无输入会被回收——见 [[getting-started.md|getting-started]] 网页使用流程说明。**实现细节**：bridge `BridgeSessionLayer` 构造参数沿用 `idleTimeoutMs`，manager 内 `startReadyIdleTimer()` 与 `startIdleTimer()` 共用 `setTimeout(IDLE_TIMEOUT_MS)`，仅触发条件分别绑定 `ready` / `running → idle` 迁移。详见 [[tasks/m4/06-bridge-session-layer.md|任务 06]] 完成情况「裁定 C ready 5min idle」段 + [[prds/m4-multi-session.md|M4 PRD]] §2.3 + 决策 21。
+
+4. **钉子 4：spawning 相位 60s 超时自主 kill**（M4 落地）。M3 状态机在 `spawning` 相位无超时——一旦 pi 冷启动失败（stdout 无输出 / handshake 无响应），manager 永久停留在 spawning。**M4 修订**：构造参数新增 `spawnTimeoutMs` = `SPAWN_TIMEOUT_MS = 60_000`（默认 60s）。manager 在 spawning 相位启动 `setTimeout(SPAWN_TIMEOUT_MS)`——超时未完成握手（未收到 pi 的 `agent_start` / 首次非 handshake stdout 事件）→ **复用自主 kill 标记路径**（先置位再发 SIGTERM→1s→SIGKILL；exit 回调走"标记在→不重启"，M3 §补注 3 已落地）→ exited 广播；**同时 `BridgeSessionLayer` 同步 `managers.delete(<map键>)`**（含 pending `new:<work_dir>` 键同步 delete）。**为何复用自主 kill 标记**：`SPAWN_TIMEOUT_MS` 是"应该死了但还没死"的语义，与 idle 超时同构——沿用既有路径保证不悬挂（不依赖外部 GC），exit 三路径语义不变。**60s 边界**：在慢机器 / 冷启动机器（IO 慢 / 首启）下可能不够——任务 06 实施期实测真 pi 冷启动时长覆盖 P95 后再定（实测本机 ~500ms），必要时调整上限；超时后通过自主 kill 标记路径保证不悬挂。详见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.6 + [[tasks/m4/06-bridge-session-layer.md|任务 06]] 完成情况「钉子 4 SPAWN_TIMEOUT_MS watchdog」段 + [[prds/m4-multi-session.md|M4 PRD]] §2.3 + 决策 25。
+
+5. **新会话 pending 键控与 map 迁移**（钉子 2，M4 落地）——非 idle / ready / spawning 计时层面，但与 §3 生命周期强相关：bridge 收到 `session: 'new'` + `payload.work_dir` → `managers.set('new:' + work_dir, manager)`（内部 pending 键，详见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.5）→ spawning → ready 期间 manager 派生真实 stem → `managers.delete('new:' + work_dir); managers.set(stem, manager)` + 广播 `session_state{session: <stem>}`。**生命周期一致性**：pending 阶段 manager 走完整生命周期（spawning → idle/exited），不豁免 §1/§4 的 idle / spawning 计时；只是 map 键在 pending 与真实 stem 间迁移。
+
+**双向引用**：本补注与 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] §决策.6（SPAWN_TIMEOUT_MS）+ §决策.3（envelope `session` 字段启用规则）+ §决策.5（pending 键控）协同；与 [[prds/m4-multi-session.md|M4 PRD]] §2.3 + §2.7（裁定 C ready idle + 钉子 4 spawning 超时）一致；与 [[tasks/m4/06-bridge-session-layer.md|任务 06]] 完成情况（钉子 2/3/4 + 裁定 C 全量落地）一致。
+
+## 双向引用（M3 协同 + M4）
 
 - [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] —— session 扫描基准已由历史隔离目录修订为宿主机 agent 目录；共享池的“取最新”与同会话双写后果见该 ADR。
 - [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]] —— control 8 → 9 type 破锁，`get_state` 是恢复仪式中两条命令之一。
@@ -85,3 +101,7 @@
 - [[architecture/protocol/envelope.md#锁版承诺v1-存续期内不可变|envelope.md 锁版承诺]] —— control type 数量与演进规则 (a)/(b) 同步修订的承载点。
 - [[tasks/m3/04-bridge-pi-process.md|tasks/04]] —— 5 相位状态机 + 自主 kill 标记 + exited 触发集 + ready 忽略 agent_settled 裁定。
 - [[tasks/m3/07-web-recovery.md|tasks/07]] —— 双查询仪式 + 5s 超时常量 + F5 同路径。
+- [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]] —— M4 多会话解锁：control 9 → 13 type + envelope (a) 多字段 + pending 键控 + SPAWN_TIMEOUT_MS；本 ADR §补注（M4 多会话化补注）与 ADR-0010 §决策.3 / §决策.5 / §决策.6 协同。
+- [[tasks/m4/06-bridge-session-layer.md|任务 06]] —— `BridgeSessionLayer` 多 manager 复数化（钉子 2 pending 键控 + 钉子 4 SPAWN_TIMEOUT_MS watchdog + 裁定 C ready 5min idle + 钉子 3 work_dir_remove 不 kill 活 manager）+ sessionKey 路由 + sessionKey 派生真 pi 探针验证。
+- [[tasks/m4/08-web-multi-session-store.md|任务 08]] —— web `SessionBucket` 9 字段按 session 分桶 + 入站按 envelope.session 路由 + 出站自动带 session + stem 回填 watcher + `M3_LEGACY_KEY` 兜底；与本 ADR §补注（M4 多会话化补注）§2 `session_state` 每 manager 各 broadcast 协同（web 端按 envelope.session 分桶接收）。
+- [[prds/m4-multi-session.md|M4 PRD]] §2.3 + §2.7 + 决策 21/25 —— 裁定 C ready idle + 钉子 4 spawning 超时的 PRD 级承诺。

@@ -22,7 +22,7 @@
 >
 > **修订注记（2026-09-08，技术裁定 3：协议演进清单）**：见 §1 完整版——control 家族新增 4 type（`list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove`），envelope (a) 增字段（`session_list.payload.work_dir` 过滤 / `session_state.payload.work_dir` 显示 / `pi/prompt.payload.work_dir` 仅 `session:'new'` 携带 / `result.data.work_dirs[]` 形状）；pi 家族仅 envelope (a) 增字段、零新增 type；envelope `session` 字段在多会话下"由 web / bridge 双方按惯例必填"，schema 仍 optional（wire兼容，零 schema 改动）。
 >
-> **修订注记（2026-09-08，文档漂移更正，纳入本 PRD）**：6 处文档写 `REPLY_TIMEOUT_MS`，源码实为 `RECOVERY_TIMEOUT_MS`——`docs/current-state.md` / `docs/tasks/m3/07-web-recovery.md` / `docs/tasks/m3/12-e2e-harness.md` / `docs/tasks/m3/13-e2e-scenarios.md` / `docs/architecture/decisions/0009-headless-browser-e2e.md` 等；随本任务统一更正为 `RECOVERY_TIMEOUT_MS`。
+> **修订注记（2026-09-08，文档漂移更正，纳入本 PRD）**：6 处文档常量名漂移（`docs/current-state.md` / `docs/tasks/m3/07-web-recovery.md` / `docs/tasks/m3/12-e2e-harness.md` / `docs/tasks/m3/13-e2e-scenarios.md` / `docs/architecture/decisions/0009-headless-browser-e2e.md` 等写错常量名，源码常量为 `RECOVERY_TIMEOUT_MS`）；已由 [[tasks/m4/09-docs-sync.md|任务 09 docs-sync]] 统一更正为 `RECOVERY_TIMEOUT_MS`（grep 实证零残留，2026-09-08）。
 >
 > **修订注记（2026-09-08，任务 06 实施修订，不改定稿正文）**：
 > - **§1.5 实测修订**：pi 0.85.1 **无 `entry_appended` 事件**——探针实测（`tests/integration/probes/PROBE-SESSIONKEY-RESULT.md`，pin pi 版本 0.85.1 + 复跑命令 `pnpm tsx tests/integration/probes/sessionkey-probe.ts`）确认 `entry_appended` 字段始终为 `null`（pi 走裸 `message_update`/`message_end` 流而非 entry 序列化）。**stem 派生点改写**——原 PRD §1.5 候选信号「首个 `entry_appended` 或 ready 后第一次 `message_start`」不适用；实施期实测后实测结论为「**首个非 handshake stdout 事件**（即 `agent_start`）+ **agent_dir 扫描**」双保险策略。`sessionFile` 字段在 `agent_start` 帧内携带（绝对路径）——可作为 fast-path 直接消费；当前 bridge 实现走 agent_dir 扫描 fallback（更通用，应对未来 pi 版本不再携带该字段）。**两种 spawn 模式下 jsonl 出现时机不同**——withFlag（带 `--session`）jsonl 在 spawn 时已存在（spawnedAt 53ms 即预创建）；withoutFlag（无 `--session`）jsonl 在 `agent_start` 后 ~52ms 落盘；桥端必须能处理两种时序。「`pi/prompt.payload.work_dir` 仅 `session:'new'` 携带」裁定 A 方案 A 的 PRD 假设沿用，web 端契约不变。详见 [[tasks/m4/06-bridge-session-layer.md#完成情况|tasks/06 完成情况]]「探针实测结论」段。
@@ -41,6 +41,11 @@
 > 4. **spawning 悬挂超时**：新增 `SPAWN_TIMEOUT_MS = 60_000`——spawning 相位超 60s 未完成握手 → 自主 kill（复用自主 kill 标记路径）→ exited 广播。ADR-0003 补注一并覆盖（ready idle + spawning 超时）。
 > 5. **level2 会话列表刷新时机**：进入 level2 时查询一次 + 从 ChatView 退回 level2 时重查 + 新会话 stem 回填后重查；不做轮询。
 > 6. **导航三态收敛（修复原 §4.2 歧义）**：渲染分派严格按 hash 三键——无 token → TokenPrompt；有 token 无 work_dir → level1；有 token+work_dir 无 session → level2；有 token+session（含 new）→ RecoveryView/ChatView。退出会话=清 session 留 work_dir（回 level2）；更换目录=清 work_dir+session（回 level1）。
+
+> **修订注记（2026-09-08，任务 08 实施期增）**：
+> - **§4.3 SessionBucket 实际 9 字段 vs PRD 写 7 字段补注**：任务 08 实施期落地 9 字段（PRD §4.3 写 7 字段：`messages` / `streamingDraft` / `queue` / `sessionPhase` / `blockedOn` / `workDir` / `recovery`；实施期增 `sessionList` 按桶镜像 + `_draftHasDelta` 内部 flag，详见 [[tasks/m4/08-web-multi-session-store.md|任务 08]]「实施」段 + 「5 项边界决策要点」§2）。`sessionList` 取代 PRD 原意「`WebState.sessionList` 全局字段」语义——任务 08 web store 按 session 分桶后改为每个 session 桶独立持有该 session 自己的会话列表快照（与 ChatView per-session 一致性更佳）；`_draftHasDelta` 是内部 flag，守护 `streamingDraft` 与 `messages` 收敛时的 React 死循环（与 M3 任务 07 snapshot 死循环根因一类，详见 [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md|ADR-0008]] §关键 wire 发现）。**PRD §4.3 主体未改**，仅本修订注记补注实施期增 2 字段（依项目惯例）。
+
+> **修订注记（2026-09-08，任务 08 落地后增，M3_LEGACY 退役评估）**：任务 06 §C2 移交义务评估点（`M3_LEGACY_KEY` / `resolveM3CompatManager` / `defaultWorkDir` 三处代码退役）经 [[tasks/m4/08-web-multi-session-store.md|任务 08]] 落地后实地评估，**结论 = 暂不退役**。**退役触发条件尚未满足**：M4 正常 web 流程不依赖 session-less 命令（任务 06 C2 + 任务 08 R2 翻转后所有出站入站带 session 字段）；M3-compat 路径仅剩后台兼容语义——`#<token>` 老链接现在正确落入 ChoicePage level1（M3 老链接兼容走 `choiceLevel1` 决策表分支 + 入站 `session_state{session: 'm3-legacy'}` 经 `WsClient` 兜底入 `m3-legacy` 桶无消费者）；bridge 内部 3 处仍在持有（`M3_LEGACY_KEY` / `resolveM3CompatManager` / `defaultWorkDir` —— grep 清单见 [[tasks/m4/08-web-multi-session-store.md#5-项边界决策要点|任务 08 完成情况 §5]]），JSDoc 互引保留。**重新评估条件**：任务 10 E2E 全部迁移到带 session 字段后再次评估（任务 10 E2E 5 新场景已天然带 session 字段，预计 10 完成时 `M3_LEGACY_KEY` 路径无活跃消费者，可定退役时机）。
 
 ## 背景
 
@@ -67,7 +72,7 @@ M4 是 roadmap §5第四步"工作目录与 session 切换 / 新建 / 恢复 / �
 8. **后台会话存在感 = 列表状态可见**：ChoicePage 会话清单的每行带状态徽章（exited / idle / running，等价于该 session 当前 PiProcessManager 的 phase简化）；不做推送 / 角标 / 桌面通知。**状态同步机制**：bridge 每次 phase迁移都广播 `session_state{session}`，web 在 ChoicePage 也会监听并更新列表行（无需进 ChatView 也在更新）。
 9. **后台 blocked_on 隔离**：弹窗组件按 session 隔离——只处理当前 session 的 blocked_on；切到后台 session 时，dialog 暂存于 store 列表但不显示；切回时恢复显示并更新倒计时。
 10. **恢复仪式 5s修复**（web 链前置任务01）：B+C 合体方案，详见修订注记技术裁定 2 与 §6；ADR-0009 §开放点 1 长期路径落实，e2e retry 容错断言可简化为纯等 ChatView。
-11. **文档漂移更正**：`REPLY_TIMEOUT_MS` → `RECOVERY_TIMEOUT_MS` 共 6 处。
+11. **文档漂移更正**：6 处文档常量名漂移（源码常量为 `RECOVERY_TIMEOUT_MS`）；已由 [[tasks/m4/09-docs-sync.md|任务 09 docs-sync]] 统一更正（grep 实证零残留，2026-09-08）。
 12. **idle 回收扩展到 ready 相位**（裁定 C）：ready 5min 无任何写命令（无 prompt / steer / follow_up 等写操作）也按 idle 回收路径处理（与 running/idle 一致进入 5min 倒计时）；仅 spawning / blocked_on 显式忙碌相位豁免。ADR-0003 §补注一并覆盖（任务 09 范围）。
 13. **SPAWN_TIMEOUT_MS 60_000**（钉子 4）：spawning 相位超 60s 未完成握手（未收到 pi 的 `agent_start` / 首次 stdout entry） → 复用 PiProcessManager 既有自主 kill 标记路径（self-kill → exited 广播）；同时清理 map 键（含 pending `new:<work_dir>` 键同步 delete）。避免冷启动失败时 manager 永久停留在 spawning 相位。
 14. **pending 新会话键控**（钉子 2）：bridge 侧 `session:'new'` 命令按 work_dir 键控（`new:<work_dir>` 内部键），同一目录同时至多一个未落盘新会话——若已有 pending 则复用（web 侧短时多次点击"新建会话"合并为同一个 pending）；stem 派生（首个 `entry_appended` 或 ready 后第一次 message_start）后 map 键迁移为真实 stem 并广播 `session_state{session: <stem>}`，web 收到后回填 hash `&session=<stem>`。
@@ -468,7 +473,7 @@ RecoveryErrorCard.errorHint:
 | `docs/architecture/decisions/0007-host-shared-pi-agent-dir.md` | §验证与后续段删除"会话被外部进程占用检测"挂账（正式关闭） |
 | ADR-0010（任务 02 落盘，暂未创建） | **新增 ADR**——记录 control 9 → 13 type 破锁决策（沿用 ADR-0006 范式）+ envelope (a) 字段扩展清单（含 `pi/prompt.payload.work_dir` 裁定 A 方案 A 备注）+ envelope session 字段启用规则 + sessionKey 计算 + 每会话独立进程推论 + **pending 键控决策**（钉子 2：`new:<work_dir>` 内部键 + map 迁移时序）+ **SPAWN_TIMEOUT_MS 决策**（钉子 4：60_000 + 复用自主 kill 路径） |
 | `docs/current-state.md` | 活跃需求追加 M4 PRD 链接；TODO 删"会话被外部占用检测"（已关单）+ 删"恢复仪式 5s 超时"（M4 任务 01 修）；任务看板增 M4 行 |
-| `docs/tasks/m3/{07,12,13}*.md`、`docs/architecture/decisions/0009-headless-browser-e2e.md`、`docs/current-state.md` | **`REPLY_TIMEOUT_MS` → `RECOVERY_TIMEOUT_MS` 共 6 处统一更正**（grep 实证：`grep -rn REPLY_TIMEOUT_MS docs/` 应零结果） |
+| `docs/tasks/m3/{07,12,13}*.md`、`docs/architecture/decisions/0009-headless-browser-e2e.md`、`docs/current-state.md` | **`RECOVERY_TIMEOUT_MS` 漂移更正**（6 处文档常量名统一更正，grep 实证零残留，2026-09-08 由 [[tasks/m4/09-docs-sync.md\|任务 09]] 统一落地） |
 | `getting-started.md` | bridge 配置章节增 state.json 说明 + M3 work_dir 自动迁移提示；网页使用流程补"目录 → 会话"两级选择说明（含裁定 A 强制两级顺序 + URL hash 三字段格式示例） |
 
 ### §9 测试
@@ -567,7 +572,7 @@ RecoveryErrorCard.errorHint:
 | 06 | bridge work_dir_list/add/remove control + BridgeSessionLayer 多 PiProcessManager Map复数化（含**钉子 2 pending 键控 `new:<work_dir>`** / **钉子 4 SPAWN_TIMEOUT_MS 60_000** / **裁定 C ready 5min idle** / **钉子 3 work_dir_remove 不 kill 活 manager**）+ sessionKey 路由 + 跨 manager广播隔离 + **sessionKey 派生真 pi 探针验证** | 03/04/05 |
 | 07 | web readAuthFromHash **三字段**（**钉子 1**）+ URL hash token/work_dir/session + ChoicePage **三态分派**（**钉子 6**）+ level1/level2 + DirectoryBrowser组件 + store work_dirs 镜像 + **level2 列表刷新时机**（**钉子 5**） | 03/04 |
 | 08 | web WebState 按 session 分桶 + 入站按 session 路由 + 出站自动带 session（**裁定 A**：session_list 自动带 currentWorkDir）+ ChatView per-session + RecoveryGate per-session + 跨会话 blocked_on 隔离 | 03/06/07 |
-| 09 | docs 同步（envelope/control/pi/ADR-0003 [补注**裁定 C + 钉子 4**：ready idle + spawning 超时]/0007/0010 + current-state + getting-started [URL hash 三字段示例]）+ `REPLY_TIMEOUT_MS` 6 处更正 | 02 |
+| 09 | docs 同步（envelope/control/pi/ADR-0003 [补注**裁定 C + 钉子 4**：ready idle + spawning 超时]/0007/0010 + current-state + getting-started [URL hash 三字段示例]）+ `RECOVERY_TIMEOUT_MS` 漂移更正（6 处文档常量名统一更正，2026-09-08 完成）| 02 |
 | 10 | E2E 场景 (d) 目录浏览 + (e) 多端各看各的 + (f) 跨会话 blocked_on 隔离 + **(g) 钉子 3 work_dir_remove 活会话** + **(h) 钉子 2 pending 键控** + 场景 (a)(b) retry 容错断言简化 + 三端联调手测清单（含裁定 A/B/C + 钉子 1-6 全覆盖） | 08/09 |
 
 依赖链：
@@ -615,7 +620,7 @@ RecoveryErrorCard.errorHint:
 - **level2 列表不轮询的取舍**（钉子 5）：不轮询 = 后台会话 phase 变化无法主动反映到 level=2 列表行 status 徽章；但 ChoicePage 仅在用户实际进入时刷新 + stem 回填触发 → 用户实际可观测性 OK；后台跨会话状态更新走 session_state 广播兜底（用户切回 level=2 看到的是实时快照，详见 §4.4）。如后续要后台实时状态，需引入定向订阅（M4 defer）。
 - **worker DO 路由 default 转发兜底**：任务 02 实施期严格走 default 兜底补 4 个新 control type；M3 任务 01 review 误放行教训（M3 联调 hotfix `1c86aca`），本任务实施时对应补漏——worker DO `routeOpenMessage` switch 必须含全部 13 control type + 全部 9 pi type 的 default 分支。
 - **ADR-0010 与 envelope.md 锁版承诺描述同步**：破锁修订需在 envelope.md 与 ADR 双向引用，确保后续维护者找到决策源头。
-- **REPLY_TIMEOUT_MS 文档漂移**：grep 全仓库确认 6 处全部更正；grep 验证 `REPLY_TIMEOUT_MS` 零结果。
+- **`RECOVERY_TIMEOUT_MS` 文档漂移**：grep 全仓库确认 6 处文档常量名漂移全部更正；grep 实证零残留（2026-09-08 由 [[tasks/m4/09-docs-sync.md|任务 09]] 落地）。
 - **文档维护两 PRD 风格统一**：M4 PRD 与 M3 PRD 同样以"决策导向、给 ADR / 协议文档留引用锚位"为准；不为 M4 创新文档格式。
 
 ## 相关
@@ -640,7 +645,7 @@ RecoveryErrorCard.errorHint:
 14. **URL hash 格式**：`#<token>&session=<sessionKey>`；新会话占位 `&session=new`，bridge spawn 后回填实际 stem。（后被决策 20/22 修订为三字段格式）
 15. **弹窗归属会话**：blocked_on 按 session 隔离；后台 dialog 暂存 +切回时恢复（含倒计时）；多端先答者胜沿用 ADR-0004 §补注 3。
 16. **后台会话状态可见**：ChoicePage level=2 列表行 status 徽章由 `session_state.payload.phase` 派生，不做推送 / 角标 / 桌面通知。
-17. **文档漂移更正**：`REPLY_TIMEOUT_MS` → `RECOVERY_TIMEOUT_MS` 共 6 处统一更正，纳入任务 09。
+17. **文档漂移更正**：6 处文档常量名漂移（源码常量为 `RECOVERY_TIMEOUT_MS`）；已纳入 [[tasks/m4/09-docs-sync.md|任务 09 docs-sync]] 统一更正（grep 实证零残留，2026-09-08）。
 18. **E2E 扩展**：新增 3 场景（目录浏览 / 多端各看各的 / 跨会话 blocked_on 隔离）；现有场景 (a)(b) retry 容错断言在恢复仪式修复后简化为纯等 ChatView。
 19. **裁定 A（强制两级选择 + session_list 必带 work_dir）**：不再提供"所有 session 的列表"——用户必须先选 work_dir 才能看会话列表。`session_list` 操作惯例必带 work_dir；schema 仍 optional兼容 M3；bridge `listAllSessions()` 全量扫描弱化为按目录扫描。配合新会话携带 work_dir（裁定 A 方案 A）：envelope (a) 给 pi 家族 `prompt` payload 增可选 `work_dir` 字段，**仅 `session:'new'` 的 prompt 携带**（新会话第一条消息是唯一入口），其他命令不带、bridge 忽略；bridge 收到后以该目录为 cwd spawn 不带 `--session` 的新 manager。
 20. **裁定 B（URL hash 三字段全存）**：格式 `#<token>&work_dir=<encoded>&session=<key|new>`；token 首位无键名（与 M3 同）；work_dir URL 编码；M3 老分享链接 `#<token>` 不失效——web 解析后视作"无 work_dir 无 session"→ level1 强制两级顺序自然兜底。

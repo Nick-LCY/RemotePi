@@ -75,7 +75,7 @@ v1 一旦发布，以下几项即固化，存续期内不再变更：
   - `result.data.work_dirs?: string[]`——`work_dir_list` 回执字段。
   - `result.data.entries?: { name: string, path: string }[]`——`list_directories` 回执字段。
   - `result.data.sessions?: SessionListEntry[]`（M4 沿用 M3 `session_list` 回执 shape，**新增** `status` 字段：`'exited' | 'idle' | 'running' | 'spawning' | 'unknown'`，5 枚举 + `unknown` 语义；既有字段与 `running` boolean 语义保留）。
-- **(b) 扩充 type 集合**：可向 `pi` 家族新增 type（见 [[architecture/protocol/pi.md]]）；`control` 家族 v1 内除已破锁的 `get_state` / `list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove` 外不再新增 type（M3 破锁依据见 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]；M4 破锁依据见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]]；错误码 `unsupported_type` 触发时另议，见 [[architecture/protocol/control.md#8-error]]）。
+- **(b) 扩充 type 集合**：可向 `pi` 家族新增 type（见 [[architecture/protocol/pi.md]]）；`control` 家族 v1 内除已破锁的 `get_state` / `list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove` 外不再新增 type（M3 破锁依据见 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]]，control 8 → 9 加 `get_state`；M4 破锁依据见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]]，control 9 → 13 加 4 个 work-dir 相关 type——两者沿用同范式"v1 无第三方消费者 + 三端锁步部署"。**破锁历史一览**：M2 锁定 8 个 control type（v1 不再新增承诺起点）→ M3 破锁增 `get_state`（ADR-0006）→ M4 破锁增 4 个 work-dir type（ADR-0010）；错误码 `unsupported_type` 触发时另议，见 [[architecture/protocol/control.md#8-error]]）。
 - **(c) pi/event 的 event 名开放集合**：`event` 的 `event` 字段名集合开放，pi 升级新增事件无须改本协议。
 
 ### 未知项处理

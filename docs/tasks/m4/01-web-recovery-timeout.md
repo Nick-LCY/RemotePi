@@ -22,7 +22,7 @@ status: done
   - `'both_failed'`：`'bridge离线或无法拉取会话状态与历史消息。请刷新页面或检查 bridge 状态后重试。'`（改：明示 bridge 离线可能）
   - `'bridge_offline'`：`'bridge 当前离线。请检查 bridge 进程是否运行后重试。'`（新增，优先于 `both_failed` 在 bridgeStatus 离线时显示）
 
-> **文档漂移更正不在本任务**——`REPLY_TIMEOUT_MS` → `RECOVERY_TIMEOUT_MS` 共 6 处统一更正纳入 09-docs-sync（grep 实证零残留）。
+> **文档漂移更正不在本任务**——6 处文档常量名统一更正为 `RECOVERY_TIMEOUT_MS` 由 [[tasks/m4/09-docs-sync.md|任务 09 docs-sync]] 统一落地（grep 实证零残留，2026-09-08），本任务仅消费 `RECOVERY_TIMEOUT_MS` 常量名。
 
 ## 完成标准
 - [ ] `packages/web/src/ws/recovery.ts`：`RECOVERY_TIMEOUT_MS = 5_000` 保留 + 新增 `PHASE_PROGRESS_TIMEOUT_MS = 15_000`；语义改"无进度窗口"——snapshot 定时器在 `phase` 字段实际变化时重置为 15s；无进度维持 5s 兜底失败

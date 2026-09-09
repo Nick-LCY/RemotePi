@@ -151,7 +151,7 @@
      - **短期**（不阻塞立项）：`RecoveryErrorCard` 有 retry，E2E 容忍一次 retry——断言写成"等 ChatView；若先见 `recovery-error` 则点一次 retry 再等"。
      - **根治**（建议实施前先决议挂账）：TODO 已有候选 A/B/C/D，倾向 B+C 轻量合体（B bridge_status 感知：offline 秒失败 + online 给宽限；C 相位感知计时器：`session_state{phase:'spawning'}` 广播重置 snapshot 计时器）。
      - 本 ADR 立场：标注依赖关系，不阻塞立项；实施排期时先看挂账是否已决议，据此选断言写法。
-     - 文档漂移一处顺手记下：`docs` 写 `REPLY_TIMEOUT_MS`，源码实为 `RECOVERY_TIMEOUT_MS`，修文档时一并更正。
+     - 文档漂移一处顺手记下：原 `docs` 文档常量名漂移（源码实为 `RECOVERY_TIMEOUT_MS`）——已随 [[tasks/m4/09-docs-sync.md|任务 09 docs-sync]] 统一更正为 `RECOVERY_TIMEOUT_MS`（grep 实证零残留，2026-09-08）。
   2. **实施任务拆分与归属待排期**——本 ADR 只定决策。实施至少两块：(i) web 组件补 `data-testid`（§4，`packages/web` 唯一改动，可独立先行、零风险）；(ii) `tests/e2e/` 套件本体（config/helper/三场景）。拆两个任务还是一个两阶段、归 M3 收尾还是 M4，**待排期时定**。建议 (i) 先落——零风险且让 (ii) 实施者直接有抓手。
   3. **决策条文里显式标注的"待实施时敲定"项汇总**：Playwright config 的 `.ts` 是否撞 ESLint `projectService`（§1）；场景 (c) 的 `request_expired` 竞态构造手法（§3）；`data-testid` 具体命名与最终数量（§4）；env 构造逻辑取抽取共用还是复制（§5）；build 塞脚本还是 `globalSetup`（§7.1）；bridge 就绪探针取 stdout 还是 StatusBar（§7.5）；`.gitignore` 具体条目（§7.7）；timeout/retries 具体值（影响-代价段）。
 
