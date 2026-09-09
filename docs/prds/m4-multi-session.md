@@ -47,6 +47,8 @@
 
 > **修订注记（2026-09-08，任务 08 落地后增，M3_LEGACY 退役评估）**：任务 06 §C2 移交义务评估点（`M3_LEGACY_KEY` / `resolveM3CompatManager` / `defaultWorkDir` 三处代码退役）经 [[tasks/m4/08-web-multi-session-store.md|任务 08]] 落地后实地评估，**结论 = 暂不退役**。**退役触发条件尚未满足**：M4 正常 web 流程不依赖 session-less 命令（任务 06 C2 + 任务 08 R2 翻转后所有出站入站带 session 字段）；M3-compat 路径仅剩后台兼容语义——`#<token>` 老链接现在正确落入 ChoicePage level1（M3 老链接兼容走 `choiceLevel1` 决策表分支 + 入站 `session_state{session: 'm3-legacy'}` 经 `WsClient` 兜底入 `m3-legacy` 桶无消费者）；bridge 内部 3 处仍在持有（`M3_LEGACY_KEY` / `resolveM3CompatManager` / `defaultWorkDir` —— grep 清单见 [[tasks/m4/08-web-multi-session-store.md#5-项边界决策要点|任务 08 完成情况 §5]]），JSDoc 互引保留。**重新评估条件**：任务 10 E2E 全部迁移到带 session 字段后再次评估（任务 10 E2E 5 新场景已天然带 session 字段，预计 10 完成时 `M3_LEGACY_KEY` 路径无活跃消费者，可定退役时机）。
 
+> **修订注记（2026-09-09，验收期，§2.4 性能预算注释——任务 06 `scanSessionsForWorkDir` 占位实现修复后）**：§2.4 原文 "单次< 10ms" 预算**基于纯 readdir 假设**（仅列文件名 + stat 不解析内容）。验收期缺口修复（[[tasks/m4/06-bridge-session-layer.md#勘误注记2026-09-09验收期|任务 06 勘误注记（2026-09-09，验收期）]]——新增 `packages/bridge/src/session-summary.ts` 解析器）后，`session_list` 每行扫描为 **O(file-size)**（受 `MESSAGE_COUNT_LINE_CAP` 50 000 行 + `FIRST_MESSAGE_BYTE_LIMIT` 64KB ∪ `FIRST_MESSAGE_LINE_LIMIT` 200 行窗口上限保护——边界决策表详见勘误注记）。**实际约束**为 web 侧 `SESSION_LIST_TIMEOUT_MS = 5_000` 看门狗（`packages/web/src/components/ChoicePage.tsx:56`）：常规规模（数十会话 × KB-MB 级单文件）余量充足；**极端大会话目录**（数百会话 × 10MB+ 单文件）可能触及看门狗。后续如需可加按需加载（lazy parse）/ 缓存（mtime-keyed 内存缓存）/ 摘要落盘（**M+ 候选**）。PRD §2.4 主体未改（依项目惯例）。
+
 ## 背景
 
 M3 收官（2026-09-08）。单 session 闭环已通：bridge 接 pi 子进程 + web 聊天界面 + 4 类阻塞弹窗 + 状态恢复 + ADR-0009 无头浏览器 E2E 三场景落地。M3 终点状态——浏览器只剩 TokenPrompt → RecoveryView → ChatView 三段式，看不到任何"选择"操作。

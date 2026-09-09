@@ -194,3 +194,37 @@ status: done
 | 关键 seam | envelope `session` 启用规则（schema 仍 optional）+ ADR-0010 | `WorkDirStore` + `StateError` | 纯函数 + 单点映射 | `BridgeSessionLayer` 多 manager Map + SPAWN_TIMEOUT_MS + ready idle + pending 键控 |
 | review 结论 | 0C / 4W / 7S（6 项落地 + 3 项递延任务 09）| **1C 闭合 / 6W 全修 / 4S**（S2 转任务 06 义务：StateError→internal 映射）| 0C / 4W / 8S（S1 转任务 06：list_directories 接线随迁）| **2C / 7W / 9S 全部处置**（C2 m3-legacy 文档化转任务 08 退役评估；S15/S17/S18 三项合理跳过）|
 | 教训承接 | M3 `1c86aca` worker 转发链教训 | M3 `config.ts` 三件套模式 + atomic write POSIX 语义 | M3 `normalizeCommandError` 同类「domain-level outcome + wire-level 翻译」分层 | M3 `get_messages.reply_to` 翻译层教训 + M3 `completeHandshake` 握手写入教训 + **真 pi 探针铁律**（凡未实测的落盘细节不可信）|
+
+### 勘误注记（2026-09-09，验收期）
+
+**任务 06 `scanSessionsForWorkDir` 三字段（`message_count: 0` / `first_message: null` / `name: null`）原为占位实现——JSDoc 自述"does not currently parse jsonl"**——任务 06 review 时被定性为"forward compat"放行（**该放行定性错误**：[[prds/m4-multi-session.md|PRD §4.2]] level2 列表行**明确要求显示 first_message 摘要作为用户识别会话的主线索**，占位即不可用，非"延后实现"语义）。用户验收实测发现 level2 列表全部 `first_message: null` → 会话列表对几十～上百条会话完全无摘要可辨，强制用户逐条点进 ChatView 才能识别——**违反 PRD §4.2 level2 设计意图**。
+
+**修复（commit `1d934de`，bridge 侧 worker 未提交）**——新增 `packages/bridge/src/session-summary.ts`（tiny + isolated helper，无 bridge / worker / shared 依赖）：
+
+- **first_message 解析**：扫文件首 `FIRST_MESSAGE_BYTE_LIMIT` 字节 ∪ 首 `FIRST_MESSAGE_LINE_LIMIT` 行（whichever 先到），命中首条 `{"type":"message", ..., "message":{"role":"user", ...}}` 行 → 取 `content[]` 中 `type:"text"` 元素按序拼接 + `FIRST_MESSAGE_TEXT_MAX_CHARS` 码点级硬截断（**无省略号后缀**——码点级而非字符级，代理对不孤悬，W1 修复 `Array.from(...).length` 正确处理 CJK / emoji）；窗口外停止查找（**不**扫整文件——16MB+ jsonl 不应为列表行摘要做全量解析）
+- **message_count 解析**：扫整文件但 `MESSAGE_COUNT_LINE_CAP` 行上限封顶；O(file-size) 受 50k 行 cap 保护；非 `type:"message"` 行不计；坏行静默跳过（**不抛**——一条坏 jsonl 不能让整个 `session_list` 回执失败）
+- **`name` 维持 `null`**——pi jsonl 不携带 session name 字段，PRD §非目标明确不做自动命名；wire `name` 字段保持 `null` + JSDoc 钉桩（防未来"好心"实现误造）
+- **24 条单测**（`packages/bridge/src/__tests__/session-summary.test.ts` 新建，6 个 describe 组：happy-path / content-shape / role-semantics / messageCount / tolerance / window）+ **session-layer.test.ts 6.5–6.7 三条端到端钉桩**（钉桩 6.5 真 pi jsonl 形状三字段真化 / 钉桩 6.6 仅 assistant 无 user → first_message null 语义 / 钉桩 6.7 不可读 / 空 jsonl → `message_count: 0` + `first_message: null` 不抛）
+
+**边界决策表**（写代码即定档于 helper 头注 JSDoc，验收期落地后值守边界）：
+
+| 维度 | 上限 | 触发语义 |
+|------|------|----------|
+| `first_message` 扫描窗口 | 首 64KB ∪ 首 200 行（先到） | 典型 pi jsonl 首条 user 消息在 5–10 行内（`session` / `model_change` / `thinking_level_change` 元数据之后），64KB/200 行是宽松安全余量 |
+| `first_message` 文本截断 | 200 码点（codepoint 级，无省略号） | 列表行摘要够用即可，长文回 ChatView 看 |
+| `message_count` 行上限 | 50 000 行 | 极端大会话文件（数 MB）不卡 `session_list`；超过后语义为"+ many more"近似值（web 列表行徽章可接受）|
+| 坏 JSON 行容忍 | 静默跳过 + count 继续 | 一行截断 / fs 损坏不能击穿整次回执 |
+| `name` 字段 | 恒 `null` | pi jsonl 不携带 + PRD 非目标 |
+
+**测试基线（验收期修复后）**：单测 **629 → 656**（+24 session-summary + 3 session-layer 钉桩）/ 集成 **32**（零回归）/ e2e **8/8 全绿 × 2 次连跑** / typecheck 4 包 / lint 0 错 / build 4 包（web 252.91 KB 零增长）。
+
+**review 修复轮（worker 未提交）**——W1 / W2 / W4 / W5 / S6 共 6 项落地：
+- **W1** 代理对截断修复——`first_message` 截断从字符级 `.length` 改码点级 `Array.from(...).length`，CJK 字符 / emoji 代理对不孤悬、不半截；测试 2.4b（199 ASCII + 😀 边界）钉桩
+- **W2** JSDoc 澄清——`scanSessionsForWorkDir` 头注与 helper 顶部段从"does not currently parse jsonl / returns hardcoded zeros"改写为"delegates to `readSessionSummary` (see `./session-summary.ts`) — every line parsed by the helper"
+- **W4** JSDoc 澄清——helper 头注"Encoding notes"段扩写 chunk 边界多字节 UTF-8 替换字符代价（first_message 不受影响，message_count 可能有 off-by-one under-count 但 cap 50k 不可见）
+- **W5** `--metadata` 措辞软化——helper 头注"past the window we stop looking — for typical pi jsonls the first user message appears within the first 5–10 lines (after `session` / `model_change` / `thinking_level_change` metadata)" 改"after `session` / `model_change` / `thinking_level_change` events"——避免硬指 metadata 段（pi 不同版本可能改名 / 重组）
+- **S6** cap 断言健壮化（655 → 656）——session-summary 4.4 cap 测试补一条边界用例（恰好 cap + 1 行 + 后续坏行不影响），测试基线 655 → 656；其余 5 项 review 处置钉桩于代码 / 测试
+
+**教训一句**（与 [[tasks/m3/04-bridge-pi-process.md|任务 04 cwd 编码勘误]] / M3 bridge→pi 翻译层修复同款铁律再次验证）：**凡未实测的 wire / 落盘细节均不可信**——本次属**review 层也未实测字段真实性**（实施 + review 双层均未真正读 jsonl 内容，错把占位放行）；占位 vs 实测的偏差存活到联调后用户验收期才被戳穿。任务 04 cwd 编码勘误是实施层同类偏差（占位实现与 pi 真实算法错位存活到联调），M3 bridge→pi 翻译层修复是 wire 层同类偏差（旧测试 §1.3 长期断言错误 wire 形状使字段名 bug 存活到联调），本次属 review 层同类偏差——**三层（实施 / 测试 / review）任一层放行都会让偏差存活到验收期**，唯一可靠防线是验收期真实环境实测。三笔独立 commit 反复验证这条铁律，不再独立成段。
+
+**任务书原文推荐实现（占位三字段 + "forward compat"放行口径）不再成立**。本轮修复落地后任务 06 `scanSessionsForWorkDir` 三字段真化（受上述边界决策表保护），PRD §2.4 性能预算注释同步在 [[prds/m4-multi-session.md|M4 PRD]] §修订注记追加（"单次 < 10ms 基于纯 readdir 假设，验收期缺口修复后每行解析为 O(file-size) 受 50k 行 cap 保护，实际约束为 web 侧 `SESSION_LIST_TIMEOUT_MS = 5_000` 看门狗"——PRD 主体未改）。
