@@ -111,6 +111,7 @@ import {
   encodeCwdForPi,
   sessionSubdir,
 } from './pi-cwd-encoder.js';
+import { readSessionSummary } from './session-summary.js';
 import {
   StateError,
   WorkDirStore,
@@ -198,10 +199,12 @@ export interface SessionListEntry {
   /** session file stem (the `<timestamp>_<uuid>` portion of the
    *  filename). Identical to `sessionKey` in this layer. */
   id: string;
-  /** Pi may not have assigned a session name; `null` is the M3
-   *  convention. The bridge never reads pi's session metadata today
-   *  (no `--metadata` access); the field is `null` always and may
-   *  be populated in M+ when web needs a friendlier display name. */
+  /** Pi session jsonl does NOT carry a session name field today
+   *  (the jsonl is `<timestamp>_<uuid>.jsonl` with no name inside);
+   *  the bridge never invents one. Stays `null` always — the wire
+   *  field is kept nullable per the M3 lock-versioned schema for
+   *  forward compat (a future pi version that exposes a name
+   *  field via `--metadata` would populate it here). */
   name: string | null;
   /** Work directory the session was created under. */
   cwd: string;
@@ -211,13 +214,21 @@ export interface SessionListEntry {
   created: string;
   /** ISO-8601 modified timestamp (file mtime). */
   modified: string;
-  /** Message count — bridge does not currently parse jsonl entries
-   *  for this (would require reading the file); defaults to 0. The
-   *  field is included in the wire shape for forward compatibility
-   *  with a future M+ bridge that pre-counts entries. */
+  /** Real message count parsed from the on-disk jsonl by
+   *  `readSessionSummary` (`./session-summary.ts`) — every line
+   *  with top-level `type === "message"` counts (user + assistant
+   *  + toolResult entries). Capped at
+   *  `MESSAGE_COUNT_LINE_CAP` (50k). Unreadable / malformed
+   *  jsonls degrade to 0. See `readSessionSummary` JSDoc for
+   *  rationale on cap and tolerance semantics. */
   message_count: number;
-  /** First message text — same caveat as `message_count`, defaults
-   *  to `null`. */
+  /** First user message text — joined `content[].text` elements of
+   *  the first `{"type":"message", "message":{"role":"user", …}}`
+   *  line within the firstMessage scan window (64KB / 200 lines).
+   *  Truncated to 200 chars. `null` when no user message appears
+   *  within the window OR the user message has no text elements
+   *  OR the jsonl is unreadable. See `readSessionSummary` JSDoc
+   *  for the full breakdown of when `null` is returned. */
   first_message: string | null;
   /** M3 field — boolean for "the session's pi process is alive (any
    *  non-exited phase)". Preserved alongside `status` so M3 consumers
@@ -1172,14 +1183,23 @@ export class BridgeSessionLayer {
         }
         const m = this.managers.get(stem);
         const phase: SessionPhase | null = m !== undefined ? m.getPhase() : null;
+        // Parse the on-disk jsonl for real message_count +
+        // first_message. readSessionSummary is fault-tolerant
+        // (missing file / IO error / corrupt lines → null / 0) so
+        // a single broken jsonl can never abort session_list —
+        // it shows up as a row with the file mtime + status badge
+        // but empty summary fields, matching the "graceful
+        // degradation" contract for this handler.
+        const jsonlPath = path.join(subdir, name);
+        const summary = readSessionSummary(jsonlPath);
         return {
           id: stem,
           name: null,
           cwd: workDir,
           created: new Date(stat.birthtimeMs).toISOString(),
           modified: new Date(stat.mtimeMs).toISOString(),
-          message_count: 0,
-          first_message: null,
+          message_count: summary.messageCount,
+          first_message: summary.firstMessage,
           running: phase !== null && phase !== 'exited',
           status: this.mapPhaseToStatus(phase),
         };
@@ -1424,3 +1444,9 @@ export { WorkDirStore, StateError };
 /** Re-export the `encodeCwdForPi` helper for the test suite's
  *  fixture setup. */
 export { encodeCwdForPi };
+
+/** Re-export `readSessionSummary` so the test suite (and any
+ *  future consumer that wants to surface the same per-row summary
+ *  shape) can import it from the layer module without knowing
+ *  about `./session-summary.js` directly. */
+export { readSessionSummary };

@@ -1242,6 +1242,150 @@ describe('BridgeSessionLayer session_list — status mapping', () => {
     const data = result.payload.data as { sessions: { id: string }[] };
     expect(data.sessions.length).toBe(2);
   });
+
+  it('6.5 real-shape jsonl: message_count + first_message populated by readSessionSummary', () => {
+    // [M4 验收期缺口修复 — task brief] bridge session_list
+    // 6.x 既有断言只钉死 id/status，未钉三字段。本任务修复后，
+    // 真实 pi jsonl 内容应让 message_count / first_message 真
+    // 解析：首条 user message 文本 + 全部 message 条目数（含
+    // user/assistant/toolResult）。name 维持 null（pi jsonl 无
+    // name 字段）。
+    const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-sl5-'));
+    trackTmp(workDir);
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-sl5-ad-'));
+    trackTmp(agentDir);
+    const stem = '2026-09-08T10-00-00-000Z_sl5-real';
+    const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
+    mkdirSync(subdir, { recursive: true });
+    // 写一个与真实 fixture 同形状的 jsonl：session + model +
+    // thinking + 5 条 message（user/assistant/assistant toolCall/
+    // toolResult/再 user）。
+    writeFileSync(
+      path.join(subdir, `${stem}.jsonl`),
+      [
+        '{"type":"session","version":3,"id":"x","cwd":"/work"}',
+        '{"type":"model_change","id":"m","provider":"anthropic","modelId":"claude"}',
+        '{"type":"thinking_level_change","id":"t","thinkingLevel":"off"}',
+        '{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"hello-from-test"}]}}',
+        '{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"reply"}]}}',
+        '{"type":"message","id":"a2","message":{"role":"assistant","content":[{"type":"toolCall","id":"t1","name":"x","arguments":{}}]}}',
+        '{"type":"message","id":"tr1","message":{"role":"toolResult","toolCallId":"t1","content":[{"type":"text","text":"done"}]}}',
+        '{"type":"message","id":"u2","message":{"role":"user","content":[{"type":"text","text":"next"}]}}',
+      ].join('\n') + '\n',
+      'utf8',
+    );
+
+    const { layer, outbound } = makeLayer({ agentDir, workDirs: [workDir] });
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'session_list',
+      id: 'sl-5',
+      payload: { work_dir: workDir },
+    });
+    const result = findResult(outbound, 'sl-5')!;
+    if (result.kind !== 'control' || result.type !== 'result') throw new Error('expected result');
+    if (!result.payload.ok) throw new Error('expected ok');
+    const data = result.payload.data as {
+      sessions: {
+        id: string;
+        name: string | null;
+        message_count: number;
+        first_message: string | null;
+        status: string;
+      }[];
+    };
+    expect(data.sessions.length).toBe(1);
+    const row = data.sessions[0]!;
+    expect(row.id).toBe(stem);
+    expect(row.name).toBeNull(); // pi jsonl 无 name 字段
+    expect(row.status).toBe('unknown');
+    expect(row.message_count).toBe(5); // 5 条 type:"message"（user + assistant + assistant toolCall + toolResult + 再 user）
+    expect(row.first_message).toBe('hello-from-test');
+  });
+
+  it('6.6 jsonl with assistant-only (no user message) → message_count 精确 + first_message null (语义: 首条 user 消息)', () => {
+    // 钉桩 6.5 的对称：没 user 消息时 first_message = null。
+    // PRD §4.2 设计意图是让用户认出会话，语义 = 首条 user 消息。
+    const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-sl6-'));
+    trackTmp(workDir);
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-sl6-ad-'));
+    trackTmp(agentDir);
+    const stem = '2026-09-08T10-00-00-000Z_sl6-assist';
+    const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
+    mkdirSync(subdir, { recursive: true });
+    writeFileSync(
+      path.join(subdir, `${stem}.jsonl`),
+      [
+        '{"type":"session","version":3,"id":"x","cwd":"/work"}',
+        '{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"only-assistant"}]}}',
+        '{"type":"message","id":"tr1","message":{"role":"toolResult","content":[{"type":"text","text":"ok"}]}}',
+      ].join('\n') + '\n',
+      'utf8',
+    );
+    const { layer, outbound } = makeLayer({ agentDir, workDirs: [workDir] });
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'session_list',
+      id: 'sl-6',
+      payload: { work_dir: workDir },
+    });
+    const result = findResult(outbound, 'sl-6')!;
+    if (result.kind !== 'control' || result.type !== 'result') throw new Error('expected result');
+    if (!result.payload.ok) throw new Error('expected ok');
+    const data = result.payload.data as {
+      sessions: { message_count: number; first_message: string | null }[];
+    };
+    expect(data.sessions[0]!.message_count).toBe(2);
+    expect(data.sessions[0]!.first_message).toBeNull();
+  });
+
+  it('6.7 unreadable / empty jsonl → message_count 0 + first_message null (graceful degradation per-file)', () => {
+    // 钉桩: 一条会话的 jsonl 不可读（这里是空文件）→ 该 row 的
+    // message_count=0 + first_message=null，但不抛、不影响其他 row。
+    // 这是 readSessionSummary 的容忍语义钉桩：session_list 不
+    // 因单个坏文件失败。
+    const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-sl7-'));
+    trackTmp(workDir);
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-sl7-ad-'));
+    trackTmp(agentDir);
+    const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
+    mkdirSync(subdir, { recursive: true });
+    // 空文件 (size=0)
+    writeFileSync(path.join(subdir, '2026-09-08T10-00-00-000Z_sl7-empty.jsonl'), '', 'utf8');
+    // 正常 jsonl
+    const goodStem = '2026-09-08T10-00-00-000Z_sl7-good';
+    writeFileSync(
+      path.join(subdir, `${goodStem}.jsonl`),
+      [
+        '{"type":"session","version":3,"id":"y"}',
+        '{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"real-user"}]}}',
+      ].join('\n') + '\n',
+      'utf8',
+    );
+
+    const { layer, outbound } = makeLayer({ agentDir, workDirs: [workDir] });
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'control',
+      type: 'session_list',
+      id: 'sl-7',
+      payload: { work_dir: workDir },
+    });
+    const result = findResult(outbound, 'sl-7')!;
+    if (result.kind !== 'control' || result.type !== 'result') throw new Error('expected result');
+    if (!result.payload.ok) throw new Error('expected ok');
+    const data = result.payload.data as {
+      sessions: { id: string; message_count: number; first_message: string | null }[];
+    };
+    expect(data.sessions.length).toBe(2);
+    const byId = new Map(data.sessions.map((s) => [s.id, s]));
+    expect(byId.get('2026-09-08T10-00-00-000Z_sl7-empty')!.message_count).toBe(0);
+    expect(byId.get('2026-09-08T10-00-00-000Z_sl7-empty')!.first_message).toBeNull();
+    expect(byId.get(goodStem)!.message_count).toBe(1);
+    expect(byId.get(goodStem)!.first_message).toBe('real-user');
+  });
 });
 
 // ---------------------------------------------------------------------------
