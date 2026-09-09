@@ -252,8 +252,49 @@ test.describe('scenario (c) — multi-tab first-responder wins', () => {
     // hash — both contexts view the same session for the multi-tab
     // first-responder semantics. We can't `Promise.all` because B
     // needs A's refilled hash.
+    //
+    // M4 task 08 review 修复轮 R6 flow note: the bridge's pending
+    // manager (钉子 2, mapKey = `new:<work_dir>`) is only spawned
+    // when the user sends the FIRST `pi/prompt` (Branch 3) — the
+    // M4 flow's `session: 'new'` uses `createReadyGate()` (no
+    // ceremony, task 08 R3) so the recovery ceremony is bypassed.
+    // This is different from the M3 flow where the ceremony fired
+    // `pi/get_messages` + `control/get_state` on mount and triggered
+    // the manager spawn immediately. In M4, A must send its FIRST
+    // prompt BEFORE the stem can be derived (the manager is
+    // lazy-spawned on the first outbound command with `session:
+    // 'new'` + `payload.work_dir`). We therefore install the dialog
+    // script and send the prompt FIRST, then wait for the stem
+    // refilled watcher to fire, then create B with the refilled
+    // hash. B then subscribes to the same session for the multi-tab
+    // first-responder semantics.
     ctxA = await openChatOnContext(browser, baseUrl, token, state.workDir);
-    // Wait for stem refilled on A so we can build B's URL.
+    expect(ctxA).toBeDefined();
+
+    // Step 2: install the dialog script BEFORE A sends the
+    // prompt (so the LLM call that fires after A's prompt hits
+    // our scripted toolUseReply and opens the dialog). The
+    // follow-up text is the response after the dialog commits.
+    await injectScript(fakeLlmUrl, buildScenarioCScript('scenario-c follow-up text'));
+
+    // Step 3: A sends the prompt that triggers the manager spawn
+    // (Branch 3) → pi subprocess cold start → jsonl creation →
+    // stem derivation → bridge pending→stem migration → bridge
+    // session_state{session:<stem>} broadcast → web stem-refilled
+    // watcher refills the hash from `&session=new` to
+    // `&session=<stem>`.
+    const inputA = ctxA.page.locator('[data-testid="input-field"]');
+    await inputA.waitFor({ state: 'visible', timeout: 10_000 });
+    await inputA.fill('trigger confirm dialog');
+    await ctxA.page.locator('[data-testid="input-send"]').click();
+
+    // Step 3.5: wait for the App.tsx stem-refilled watcher to fire
+    // (see R6 M4 flow note above — the watcher only refills the
+    // hash after the pending manager derives a real stem, which
+    // requires A's first prompt to land on the bridge). 30s budget
+    // covers cold pi spawn + jsonl write + bridge migration + WS
+    // round-trip; the test (a) R6 spec comment notes typical
+    // completion is well under 5s on a local machine.
     await expect
       .poll(
         async () => {
@@ -273,20 +314,7 @@ test.describe('scenario (c) — multi-tab first-responder wins', () => {
     const refilledHashOnA = await ctxA.page.evaluate(() => window.location.href);
     // B opens the same session via the full refilled M4 hash.
     ctxB = await openChatOnExistingContext(browser, refilledHashOnA);
-    expect(ctxA).toBeDefined();
     expect(ctxB).toBeDefined();
-
-    // Step 2: install the dialog script BEFORE A sends the
-    // prompt (so the LLM call that fires after A's prompt hits
-    // our scripted toolUseReply and opens the dialog). The
-    // follow-up text is the response after the dialog commits.
-    await injectScript(fakeLlmUrl, buildScenarioCScript('scenario-c follow-up text'));
-
-    // Step 3: A sends the prompt that triggers the dialog.
-    const inputA = ctxA.page.locator('[data-testid="input-field"]');
-    await inputA.waitFor({ state: 'visible', timeout: 10_000 });
-    await inputA.fill('trigger confirm dialog');
-    await ctxA.page.locator('[data-testid="input-send"]').click();
 
     // Step 4: both sides see the dialog. We use a short wait
     // because the dialog's lifetime is bounded by pi's 1st-turn

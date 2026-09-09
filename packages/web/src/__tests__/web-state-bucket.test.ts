@@ -367,6 +367,48 @@ describe('WsClient M4 task 08 — inbound per-session routing', () => {
     simulateInbound(ws, sessionState('new', 'spawning', [], '/h'), fake);
     expect(ws.bucketFor('new').sessionPhase).toBe('spawning');
   });
+  // M4 task 08 review 修复轮 R2 + R4 加固：bridge outbound wrapper
+  // forwards the pending manager's FIRST session_state (before the
+  // jsonl is on disk, so the migration broadcast can't fire yet)
+  // with `envelope.session === 'new:<work_dir>'` — the bridge's
+  // internal pending-key map key (task 06 §钉子 2). Web must:
+  //   (a) route the session_state payload to the 'new' bucket
+  //       (NOT create a `new:<work_dir>` bucket that holds the
+  //       user's early messages hostage);
+  //   (b) skip the pending→stem bucket migration (the stem isn't
+  //       known yet — the real stem arrives in the migration
+  //       broadcast on the next session_state).
+  it('2.5b session=pending-key "new:<work_dir>" routes to "new" bucket + skips migration', () => {
+    const { ws, fake } = makeConnectedWs();
+    ws.setCurrentSessionKey('new');
+    // (1) Pre-populate the 'new' bucket with an early message so
+    //     we can detect that the migration didn't accidentally move
+    //     it to a `new:<work_dir>` bucket.
+    simulateInbound(ws, snapshot('new', 'seed', [
+      { role: 'user', content: [{ type: 'text', text: 'pre-pending msg' }] },
+    ]), fake);
+    expect(ws.bucketFor('new').messages).toHaveLength(1);
+
+    // (2) The bridge forwards the pending manager's first
+    //     session_state with the pending key as the session field.
+    simulateInbound(ws, sessionState('new:/h', 'spawning', [], '/h'), fake);
+
+    // (a) Payload lands in the 'new' bucket (NOT a 'new:/h' bucket).
+    expect(ws.bucketFor('new').sessionPhase).toBe('spawning');
+    // (b) No 'new:/h' bucket was created (would orphan the early
+    //     message once the real stem arrives).
+    expect(ws.bucketFor('new:/h').messages).toEqual([]);
+
+    // (3) The real stem broadcast arrives — migration should now
+    //     move the 'new' bucket contents to the <stem> bucket.
+    simulateInbound(ws, sessionState('realStem-abc', 'ready', [], '/h'), fake);
+    // 'new' bucket cleared.
+    expect(ws.bucketFor('new').messages).toEqual([]);
+    // <stem> bucket now holds the early message.
+    expect(ws.bucketFor('realStem-abc').messages).toHaveLength(1);
+    expect(ws.bucketFor('realStem-abc').sessionPhase).toBe('ready');
+  });
+
 
   it('2.6 cross-session isolation: blockedOn in A is NOT touched by B session_state', () => {
     const { ws, fake } = makeConnectedWs();

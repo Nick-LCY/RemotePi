@@ -1064,13 +1064,41 @@ export class WsClient {
         //   该迁移必须发生在写入之前（写入针对 stem 桶，迁移前
         //   new 桶尚有累积内容；写完后再迁移则 stem 桶被孤立为
         //   空，`new` 桶内容仍残留——这正是要修的 bug）。
-        const sessionKey = envelope.session ?? M3_LEGACY_KEY;
+        // Route the session_state to the right bucket. The bridge's
+        // internal `pending-key` format (`new:<work_dir>` — task 06
+        // §钉子 2) is the bridge's per-manager map key BEFORE
+        // migration; from the web's view it represents the same
+        // session the user is currently looking at (the 'new'
+        // bucket), so collapse it to `SESSION_NEW` to keep the
+        // user's early messages in one bucket. The migration to
+        // the real stem happens on the next session_state that
+        // carries `envelope.session` as an actual stem.
+        const rawSession = envelope.session;
+        const isPendingKey = typeof rawSession === 'string' && rawSession.startsWith('new:');
+        const sessionKey = isPendingKey ? SESSION_NEW : (rawSession ?? M3_LEGACY_KEY);
         if (
-          envelope.session !== undefined &&
-          envelope.session !== 'new' &&
-          envelope.session !== M3_LEGACY_KEY
+          rawSession !== undefined &&
+          rawSession !== 'new' &&
+          rawSession !== M3_LEGACY_KEY &&
+          // Skip the bridge's internal `pending-key` format
+          // (`new:<work_dir>` — see task 06 §钉子 2 + stem-refilled
+          // JSDoc). The bridge forwards the pending manager's FIRST
+          // session_state with `envelope.session === 'new:<work_dir>'`
+          // BEFORE the migration; this is the wrapper's passthrough
+          // of the original envelope (migration attempt failed because
+          // the jsonl wasn't on disk yet, so `broadcastedPhase` was
+          // `false`). Treating this as a real stem (Branch 1+2)
+          // would (a) rename the 'new' bucket to a 'new:<work_dir>'
+          // bucket, losing the user's early messages, and (b) make
+          // the recovery ceremony fire with `session: 'new:<work_dir>'`
+          // which the bridge rejects (no such jsonl). The correct
+          // behaviour is to route this envelope to the 'new' bucket
+          // (since the manager hasn't derived a real stem yet) and
+          // skip the migration — the next session_state with a real
+          // stem will trigger the proper migration broadcast.
+          !isPendingKey
         ) {
-          this.migratePendingBucket(envelope.session, envelope.payload.work_dir);
+          this.migratePendingBucket(rawSession, envelope.payload.work_dir);
         }
         const bucket = this.bucketFor(sessionKey);
         const now = Date.now();
@@ -1912,6 +1940,16 @@ export class WsClient {
   private migratePendingBucket(stem: string, broadcastWorkDir: string | undefined): void {
     const pending = this._sessions[SESSION_NEW];
     if (pending === undefined) return;
+    // Defensive: skip the bridge's internal `pending-key` format
+    // (`new:<work_dir>` — task 06 §钉子 2). The bridge's outbound
+    // wrapper may forward the pending manager's FIRST session_state
+    // (before migration) with this session value; the upstream
+    // `case 'session_state':` handler now filters this out, but a
+    // belt-and-suspenders check here prevents a future caller from
+    // accidentally renaming the 'new' bucket to a 'new:<work_dir>'
+    // bucket. The actual migration is driven by the subsequent
+    // session_state carrying the real stem.
+    if (stem.startsWith('new:')) return;
     if (this._currentSessionKey !== SESSION_NEW && this._currentSessionKey !== stem) {
       // 用户已离开 pending 流；'new' 桶可能是其他并发流的累积
       // (理论上 M4 单端活动模型不会出现并发 pending，但保守

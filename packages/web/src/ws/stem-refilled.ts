@@ -130,6 +130,21 @@ export function watchStemRefilled(
     ) {
       return;
     }
+    // Skip the bridge's internal `pending-key` format
+    // (`new:<work_dir>` — see task 06 §钉子 2). The bridge's outbound
+    // wrapper forwards a pending manager's FIRST `session_state`
+    // broadcast with `envelope.session === 'new:<work_dir>'` BEFORE
+    // the migration (jsonl not yet on disk) — the migration broadcast
+    // (with the real stem) is what we want to act on. Refilling the
+    // hash with the pending key makes the URL `&session=new:<work_dir>`
+    // which is a real stem from the bridge's view (Branch 1+2, not
+    // Branch 3): the bridge map misses, the agent-dir scan finds no
+    // jsonl for that name, and the subsequent recovery ceremony's
+    // `get_state` / `get_messages` get rejected. Only the migration
+    // broadcast (with the real stem) should drive the hash refill.
+    if (newSession.startsWith('new:')) {
+      return;
+    }
     // Skip envelope without work_dir (defensive — bridge may omit
     // it; we can't refill the hash with an ambiguous work_dir).
     if (envelope.payload.work_dir === undefined) {

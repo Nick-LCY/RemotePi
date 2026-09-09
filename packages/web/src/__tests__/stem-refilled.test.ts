@@ -246,6 +246,49 @@ describe('watchStemRefilled — W8 (review 修复轮)', () => {
     unsub();
   });
 
+  // M4 task 08 review 修复轮 W8.10 — the bridge's outbound wrapper
+  // forwards the pending manager's FIRST session_state (before the
+  // jsonl is on disk, so the migration broadcast can't fire yet)
+  // with `envelope.session === 'new:<work_dir>'` — the bridge's
+  // internal pending-key map key (task 06 §钉子 2). Without this
+  // filter, the watcher would treat it as a real stem and refilled
+  // the hash with `&session=new:<work_dir>` — the bridge then sees
+  // the recovery ceremony's `get_state` / `get_messages` carrying
+  // `session: 'new:<work_dir>'` and rejects them (no such jsonl).
+  it('W8.10 session_state{session:"new:<work_dir>"} (pending-key format) does NOT fire', () => {
+    const { ws, fake, sentFrames } = makeConnectedWs();
+    ws.setCurrentWorkDir('/home/me');
+
+    const rec = makeHashRecorder();
+    const unsub = watchStemRefilled(ws, {
+      currentSession: 'new',
+      workDir: '/home/me',
+      token: 'tok',
+      writeHash: rec.writeHash,
+    });
+
+    // The bridge forwards the pending manager's session_state with
+    // the literal pending key (e.g. `new:/home/me`) before the
+    // migration broadcast carries the real stem.
+    simulateInbound(ws, sessionState('new:/home/me', 'spawning', '/home/me'), fake);
+    // Watcher must NOT treat the pending key as a real stem.
+    expect(rec.writes).toEqual([]);
+    // No sendSessionList fire either (钉子 5 trigger is on a real
+    // stem only — firing on a pending key would have ChoicePage
+    // re-query with a meaningless work_dir bucket association).
+    const sessionListFrame = sentFrames().find((f) => f.type === 'session_list');
+    expect(sessionListFrame).toBeUndefined();
+
+    // The NEXT broadcast (migration → real stem) should still
+    // fire normally — the filter only excludes the pending key,
+    // not all session_states.
+    simulateInbound(ws, sessionState('realStem-abc', 'ready', '/home/me'), fake);
+    expect(rec.writes).toHaveLength(1);
+    expect(rec.writes[0]!).toContain('session=realStem-abc');
+
+    unsub();
+  });
+
   it('W8.7 unsub is idempotent (StrictMode double-invoke safe)', () => {
     const { ws } = makeConnectedWs();
     ws.setCurrentWorkDir('/home/me');
