@@ -6,7 +6,7 @@
 // Style: bare-file fixtures (tmp dir + writeFileSync), small set of
 // per-line JSON literals, numbered cases that each pin one decision.
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -485,5 +485,202 @@ describe('readSessionSummary — firstMessage scan window', () => {
     // future constants being zeroed out by accident).
     expect(FIRST_MESSAGE_BYTE_LIMIT).toBeGreaterThan(0);
     expect(FIRST_MESSAGE_LINE_LIMIT).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. firstMessage byte-window granularity — per-line cursor (M4 验收期 2nd-gap)
+//
+// The byte budget used to be tracked at CHUNK granularity
+// (`bytesRead += n` after `readSync`), so a single chunk of ≥
+// 64 KB immediately closed the window for every line in that
+// chunk — even when the actual user prompt lived at byte ~400
+// of the chunk. This section钉s the regression at three
+// boundaries:
+//
+//   7.1 user prompt early + file > 64 KB → must extract
+//       (the钉子钉的 bug: old code returned null).
+//   7.2 user prompt straddles the 64 KB byte boundary → must
+//       extract (line-START position is what gates; the body
+//       can extend past the limit without losing the line).
+//   7.3 user prompt genuinely past the byte limit → must remain
+//       null (window-guard sanity on the new cursor).
+//
+// The fixtures use precise padding sizes so the user-prompt
+// start byte lands exactly where we claim — a comment above
+// each fixture shows the arithmetic.
+describe('readSessionSummary — byte-window per-line cursor', () => {
+  it('7.1 REGRESSION 钉子: 3-line preamble + user prompt at line 4 + file > 64 KB → firstMessage extracted', () => {
+    // Layout (exact bytes):
+    //   line 1: session metadata, ~71 bytes incl. newline
+    //   line 2: model_change, ~76 bytes incl. newline
+    //   line 3: thinking_level_change, ~61 bytes incl. newline
+    //   line 4: USER prompt — start byte ≈ 209, length ~50
+    //           (well within the 64 KB window)
+    //   lines 5..N: ~80 padding lines of ~1100 bytes each →
+    //               pushes file size to ~88 KB (well past 64 KB)
+    //
+    // Bug repro (old chunk-aligned logic):
+    //   - `readSync` reads the first 64 KB chunk in one shot
+    //     (file is > 64 KB).
+    //   - `bytesRead = 65536` immediately after that one read.
+    //   - Per-line check `bytesRead >= FIRST_MESSAGE_BYTE_LIMIT`
+    //     fires on line 1 → `firstMessageWindowClosed = true`
+    //     → every line in the chunk is bypassed → firstMessage
+    //     is null even though the user prompt sits at byte ~209.
+    //
+    // New logic (per-line cursor):
+    //   - `windowBytesSeen` advances only as lines are processed:
+    //     after line 1 ≈ 72, line 2 ≈ 148, line 3 ≈ 209.
+    //   - At line 4 start: `windowBytesSeen = 209`, NOT > 64 KB
+    //     → user prompt is processed → firstMessage extracted.
+    //   - The line-4 body is fully processed even though it's
+    //     in the same chunk as lines that cross 64 KB later.
+    const dir = makeTmp();
+    const userText = 'preamble-prompt-extracted';
+    const padding = 'x'.repeat(1100); // ~1.1 KB per line
+    const lines: string[] = [
+      '{"type":"session","version":3,"id":"x"}',
+      '{"type":"model_change","id":"m","provider":"anthropic","modelId":"x"}',
+      '{"type":"thinking_level_change","id":"t","thinkingLevel":"off"}',
+      JSON.stringify({
+        type: 'message',
+        id: 'u1',
+        message: { role: 'user', content: [{ type: 'text', text: userText }] },
+      }),
+      ...Array.from({ length: 80 }, (_, i) =>
+        JSON.stringify({ type: 'padding', n: i, data: padding }),
+      ),
+    ];
+    const p = writeSession(dir, '2026-09-08T10-00-00-000Z_regression.jsonl', lines);
+    // Sanity: file is past 64 KB (otherwise the bug doesn't trigger
+    // and the test would pass for the wrong reason).
+    const fileBytes = statSync(p).size;
+    expect(fileBytes).toBeGreaterThan(FIRST_MESSAGE_BYTE_LIMIT);
+    const summary = readSessionSummary(p);
+    // THE钉子钉的 assertion — old impl returned null here.
+    expect(summary.firstMessage).toBe(userText);
+    // messageCount still sees the user message + every padding
+    // `type:"message"` line — but the padding lines have type
+    // "padding", so the count should be 1 (the user message).
+    expect(summary.messageCount).toBe(1);
+  });
+
+  it('7.2 user prompt straddles the 64 KB byte boundary (start ≤ limit, end > limit) → firstMessage extracted', () => {
+    // Layout goal:
+    //   line 1: session metadata
+    //   lines 2..K+1: fixed-size padding lines so the byte math
+    //                 is closed-form
+    //   line K+2: USER prompt whose start byte is in
+    //             [0, FIRST_MESSAGE_BYTE_LIMIT] but whose body
+    //             extends past the limit
+    //
+    // Approach: compute the actual padding-line size via
+    // `Buffer.byteLength` so the math is exact (UTF-8 ASCII, so
+    // byte length == char length). Then pick K so the user
+    // line's start byte lands in the last few hundred bytes of
+    // the window — close enough to the cut that a body of ~250
+    // chars straddles it.
+    const dir = makeTmp();
+    const userText = 'a'.repeat(250); // body length 250
+    // Use 2 padding lines of ~32 KB each so the user line lands
+    // at byte ~65416 (within 64 KB) but extends to ~65758
+    // (past 64 KB). Two padding lines also keeps `linesSeen`
+    // = 2 when the user line is processed — well below
+    // FIRST_MESSAGE_LINE_LIMIT (200), so the test isolates the
+    // BYTE-window behaviour from the LINE-window behaviour.
+    //
+    // Why 2 lines instead of 275 small ones: if we used many
+    // small padding lines (e.g. 275 × 238 bytes), `linesSeen`
+    // would already be past FIRST_MESSAGE_LINE_LIMIT by the
+    // time the user line is processed in the second chunk,
+    // and the LINE-window guard would close the window —
+    // masking the byte-window behaviour we're trying to test.
+    // With 2 padding lines we cleanly isolate the byte guard.
+    const padPayload = 'p'.repeat(32650);
+    const padSample = JSON.stringify({ type: 'padding', n: '00000', d: padPayload });
+    const padSize = Buffer.byteLength(padSample, 'utf8') + 1; // +1 for trailing '\n'
+
+    const metaLine = '{"type":"session","version":3,"id":"x"}';
+    const metaSize = Buffer.byteLength(metaLine, 'utf8') + 1;
+    const K = 2;
+
+    const padding = Array.from({ length: K }, () =>
+      JSON.stringify({ type: 'padding', n: '00000', d: padPayload }),
+    );
+    const userLine = JSON.stringify({
+      type: 'message',
+      id: 'u1',
+      message: { role: 'user', content: [{ type: 'text', text: userText }] },
+    });
+    const lines: string[] = [metaLine, ...padding, userLine];
+    const p = writeSession(dir, '2026-09-08T10-00-00-000Z_straddle.jsonl', lines);
+
+    // Pin the preconditions so this test cannot silently lose
+    // meaning if the fixture shape changes. Closed-form math
+    // (every padding line has identical size):
+    const startByte = metaSize + K * padSize;
+    const endByte = startByte + Buffer.byteLength(userLine, 'utf8');
+    // (1) Start byte is within the window.
+    expect(startByte).toBeLessThanOrEqual(FIRST_MESSAGE_BYTE_LIMIT);
+    // (2) End byte crosses the window — i.e. the body straddles.
+    expect(endByte).toBeGreaterThan(FIRST_MESSAGE_BYTE_LIMIT);
+    // (3) The window-guard semantic per `session-summary.ts`
+    //     JSDoc: "行起始游标 ≤ limit 即在窗口内" — strict `>`,
+    //     so a start byte of EXACTLY FIRST_MESSAGE_BYTE_LIMIT
+    //     would still be in the window. Our start is < limit
+    //     (we left 100 bytes of headroom), well inside.
+    expect(startByte).toBeLessThan(FIRST_MESSAGE_BYTE_LIMIT);
+    // (4) The file is past 64 KB — i.e. the buggy chunk-aligned
+    //     check WOULD have fired on this file in the old code.
+    //     We want to prove the new per-line cursor works on a
+    //     file where the bug would have triggered. Strict
+    //     `>` (not `>=`) so a file of exactly 64 KB doesn't
+    //     silently degrade into a chunk-aligned test.
+    expect(statSync(p).size).toBeGreaterThan(FIRST_MESSAGE_BYTE_LIMIT);
+
+    const summary = readSessionSummary(p);
+    // The user line's START byte is within the window, so the
+    // whole line is processed — the body crossing past the limit
+    // does NOT close the window mid-line. The full 250-char
+    // prompt is extracted (then truncated by FIRST_MESSAGE_TEXT_MAX_CHARS
+    // — 250 > 200, so we expect the truncated form, not the raw
+    // 250-char string). See extractFirstUserMessageText for
+    // truncation semantics.
+    expect(summary.firstMessage).not.toBeNull();
+    expect(summary.firstMessage!.length).toBe(FIRST_MESSAGE_TEXT_MAX_CHARS);
+    expect(summary.firstMessage).toBe('a'.repeat(FIRST_MESSAGE_TEXT_MAX_CHARS));
+  });
+
+  it('7.3 user prompt genuinely past the 64 KB byte limit (start > limit) → firstMessage null', () => {
+    // Sanity钉子 on the NEW per-line cursor: when the user
+    // prompt's start byte is genuinely past FIRST_MESSAGE_BYTE_LIMIT
+    // (not just its body, but its start), the window must close
+    // and firstMessage stays null. Mirrors existing 6.1 but
+    // makes the assertion explicit on the new `windowBytesSeen
+    // > limit` check rather than the chunk-aligned one.
+    const dir = makeTmp();
+    const padding = 'y'.repeat(1100);
+    const lines: string[] = [
+      '{"type":"session","version":3,"id":"x"}',
+      ...Array.from({ length: 80 }, (_, i) =>
+        JSON.stringify({ type: 'padding', n: i, data: padding }),
+      ),
+      JSON.stringify({
+        type: 'message',
+        id: 'u1',
+        message: { role: 'user', content: [{ type: 'text', text: 'past-window' }] },
+      }),
+    ];
+    const p = writeSession(dir, '2026-09-08T10-00-00-000Z_overflow.jsonl', lines);
+    const summary = readSessionSummary(p);
+    // Pin: user line's start byte is well past 64 KB →
+    // windowBytesSeen > FIRST_MESSAGE_BYTE_LIMIT on the first
+    // iteration that touches it → firstMessageWindowClosed
+    // flips to true before parse → user line is skipped for
+    // firstMessage scan. messageCount still sees it (count
+    // loop is not gated by the window).
+    expect(summary.firstMessage).toBeNull();
+    expect(summary.messageCount).toBe(1);
   });
 });
