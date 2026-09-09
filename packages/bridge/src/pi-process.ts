@@ -444,6 +444,49 @@ export interface PiProcessOptions {
 
   /** Optional stderr sink (logs by default; tests inject spies). */
   onStderr?: (chunk: string) => void;
+
+  /** Pin the spawned pi to a particular session jsonl file via
+   *  `--session <path>`. Three-state semantics (验收期第 3 缺口
+   *  修复, 2026-09-09) — bridges the gap between
+   *  `session-layer.ts spawnManager` (which already computed the
+   *  exact path for clicked-old-session routing, see branch 2)
+   *  and `spawnNow` (which previously always called
+   *  `sessionArgv(subdir)` = `--session <latest>`, making every
+   *  user click land on the newest session regardless of intent):
+   *
+   *  - **`undefined` (M3-compat)** — caller does not pin a
+   *    specific session; `spawnNow` falls back to
+   *    `sessionArgv(subdir)` which picks the latest file in
+   *    `<agentDir>/sessions/--<encodeCwd>--/` (or omits `--session`
+   *    entirely if the subdir is empty). This is the legacy M3
+   *    behaviour and the ADR-0007 "取最新" semantics for the
+   *    M3_LEGACY_KEY auto-spawn path. Sessions spawned this way
+   *    may be **replaced** by a newer file between spawns (each
+   *    restart picks the then-latest). Callers that need a stable
+   *    binding MUST use `string` instead.
+   *  - **`null` (explicit fresh)** — caller knows this is a brand
+   *    new session (session-layer branch 3 / pending key path:
+   *    `session:'new'` + `payload.work_dir`); `spawnNow` MUST
+   *    spawn WITHOUT `--session` so pi creates a fresh jsonl on
+   *    first write. The session-layer later derives the real stem
+   *    from the agent_dir scan (钉子 2: pending → real stem
+   *    migration on first `agent_start`). Passing `null` while
+   *    the subdir already contains files is correct and intended
+   *    — it deliberately avoids resuming an existing session even
+   *    though one is on disk.
+   *  - **`string` (explicit exact)** — caller has computed the
+   *    precise jsonl path (session-layer branch 2: clicked-old-
+   *    session routing); `spawnNow` spawns with
+   *    `--session <path>` verbatim. The path is used as-is — if
+   *    the file does not exist pi will fail its handshake (and the
+   *    bridge will surface the error via the standard spawn-time
+   *    failure path). Crash-restart reuses the same value because
+   *    the field is captured at construction and the same path
+   *    still points to the same session — recovery preserves the
+   *    binding across spawns, which is the desired semantics
+   *    (see ADR-0007 "取最新" *exception*: an explicitly-pinned
+   *    session survives restarts). */
+  sessionJsonlPath?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +549,14 @@ export class PiProcessManager {
   private readonly baseEnv: NodeJS.ProcessEnv;
   private readonly onOutbound: (env: Envelope) => void;
   private readonly onStderr: (chunk: string) => void;
+  /** Per-manager session pin (验收期第 3 缺口修复,
+   *  2026-09-09). Captured at construction so a crash-restart
+   *  preserves the same binding. Three-state — see
+   *  `PiProcessOptions.sessionJsonlPath` for semantics:
+   *  `undefined` ⇒ legacy M3 `sessionArgv(subdir)` (latest file or
+   *  nothing); `null` ⇒ explicit fresh (no `--session` even when
+   *  files exist); `string` ⇒ exact pin, restart-stable. */
+  private readonly sessionJsonlPath: string | null | undefined;
 
   // ---- runtime state ----
   /** Current lifecycle phase. Defaults to `exited` (no child has been
@@ -617,6 +668,9 @@ export class PiProcessManager {
     this.baseEnv = options.baseEnv ?? process.env;
     this.onOutbound = options.onOutboundEnvelope ?? (() => undefined);
     this.onStderr = options.onStderr ?? ((chunk) => logger.warn(`pi stderr: ${chunk.trimEnd()}`));
+    // Pin-or-not decision is fixed at construction so a crash-restart
+    // uses the SAME binding (see JSDoc on `sessionJsonlPath` field).
+    this.sessionJsonlPath = options.sessionJsonlPath;
     this.extensionUIRouter = this.buildExtensionUIRouter(options);
   }
 
@@ -829,7 +883,38 @@ export class PiProcessManager {
     if (this.stopped) return;
     this.spawnCount++;
     const subdir = sessionSubdir(this.agentDir, this.workDir);
-    const sessionFlags = sessionArgv(subdir); // ['--session', path] or []
+    // Three-state session pinning (验收期第 3 缺口修复,
+    // 2026-09-09 — `spawnManager` had been dropping this field
+    // and `spawnNow` was unconditionally calling `sessionArgv(subdir)`
+    // = "always pick latest", making every user click land on the
+    // newest session regardless of intent). The decision is locked
+    // at construction; this branch is the only place `spawnNow`
+    // materialises it into actual argv. See
+    // `PiProcessOptions.sessionJsonlPath` JSDoc for the full
+    // three-state semantics.
+    //
+    //   undefined → legacy M3 `sessionArgv(subdir)` = latest
+    //               file in the subdir, or no --session if empty.
+    //               Preserves ADR-0007 "取最新" semantics for the
+    //               M3_LEGACY_KEY auto-spawn path.
+    //   null      → explicitly fresh — NO --session, even when
+    //               files exist on disk. The session-layer branch 3
+    //               (pending key / `session:'new'`) uses this so
+    //               pi creates a fresh jsonl on first write; the
+    //               layer later derives the real stem from the
+    //               agent_dir scan (钉子 2).
+    //   string    → exact pin --session <path>. Clicked-old-
+    //               session routing (session-layer branch 2);
+    //               restart-stable because the field is captured
+    //               at construction.
+    let sessionFlags: string[];
+    if (this.sessionJsonlPath === undefined) {
+      sessionFlags = sessionArgv(subdir); // M3-compat: latest or none
+    } else if (this.sessionJsonlPath === null) {
+      sessionFlags = []; // explicit fresh — never resume
+    } else {
+      sessionFlags = ['--session', this.sessionJsonlPath];
+    }
     const args = ['--mode', 'rpc', ...sessionFlags];
     const env: Record<string, string | undefined> = { ...this.baseEnv };
     logger.info(

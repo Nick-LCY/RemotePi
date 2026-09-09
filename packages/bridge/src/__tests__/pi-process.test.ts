@@ -1432,6 +1432,204 @@ describe('Spawn argv: --session flag (PRD §2.5)', () => {
     expect(spawnArgs).toHaveLength(1);
     expect(spawnArgs[0]?.args).toEqual(['--mode', 'rpc']);
   });
+
+  it('7.3 sessionJsonlPath: string → spawn uses `--session <exact path>` (restart-stable explicit pin)', () => {
+    // 验收期第 3 缺口修复 (2026-09-09) 新增钉槌: sessionJsonlPath
+    // 传 string 时 spawn 必须使用传入的精确 path —— 不能被
+    // sessionArgv(subdir) 改写为最新文件。这是 session-layer
+    // branch 2 (点击老会话路由) 的下层钉槌; 旧实现字段在
+    // spawnManager 被丢掉, spawnNow 无条件取最新 —— 本测试
+    // 预写 latest 文件, 传一个旧的 explicit pin, 断言 spawn argv
+    // 使用传入的旧 path (而不是 latest)。
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-'));
+    trackTmpDir(agentDir);
+    const cwd = '/home/test/proj';
+    const sessionDir = path.join(agentDir, 'sessions', '--home-test-proj--');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    // latest = 新时间戳的 (sessionArgv 会返回这个)
+    const latestFile = path.join(sessionDir, '2027-01-01T00-00-00_uuid-latest.jsonl');
+    fs.writeFileSync(latestFile, '');
+    // caller 选择 pin 到一个旧点路径 (模拟 session-layer branch 2
+    // 扫描出的精确 stem 路径)
+    const pinnedFile = path.join(sessionDir, '2020-01-01T00-00-00_uuid-pinned.jsonl');
+    // pinnedFile 不必存在 —— bridge 只传字符串; spawn argv 使用传入值
+
+    const spawnArgs: Array<{ cmd: string; args: readonly string[] }> = [];
+    const spawn = (cmd: string, args: readonly string[]): PiChild => {
+      spawnArgs.push({ cmd, args });
+      return new FakeChild();
+    };
+    const manager = new PiProcessManager({
+      agentDir,
+      workDir: cwd,
+      spawn,
+      onOutboundEnvelope: () => undefined,
+      sessionJsonlPath: pinnedFile,
+    });
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      payload: { content: 'resume' },
+    });
+    expect(spawnArgs).toHaveLength(1);
+    // 关键钉槌: argv 必须是 ['--mode','rpc','--session', pinnedFile]
+    // —— pinnedFile (旧) 不能变成 latestFile (新)。
+    expect(spawnArgs[0]?.args).toEqual(['--mode', 'rpc', '--session', pinnedFile]);
+    expect(spawnArgs[0]?.args).not.toContain(latestFile);
+  });
+
+  it('7.4 sessionJsonlPath: null → spawn 无 --session (即使 subdir 已有文件; 全新语义)', () => {
+    // 验收期第 3 缺口修复 (2026-09-09) 新增钉槌: sessionJsonlPath
+    // 传 null 表示 "显式全新" —— spawn 必须不含 --session, 即使
+    // subdir 已经有会话文件 (这是 session-layer branch 3 pending
+    // key 路径; 用户点 "新建会话" 必须创建新 jsonl, 不能粘旧)。
+    // 旧实现走 sessionArgv(subdir) 会拿到 latest —— 本测试必红。
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-'));
+    trackTmpDir(agentDir);
+    const cwd = '/home/test/proj';
+    const sessionDir = path.join(agentDir, 'sessions', '--home-test-proj--');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const existing = path.join(sessionDir, '2026-01-01T00-00-00_existing.jsonl');
+    fs.writeFileSync(existing, '');
+
+    const spawnArgs: Array<{ cmd: string; args: readonly string[] }> = [];
+    const spawn = (cmd: string, args: readonly string[]): PiChild => {
+      spawnArgs.push({ cmd, args });
+      return new FakeChild();
+    };
+    const manager = new PiProcessManager({
+      agentDir,
+      workDir: cwd,
+      spawn,
+      onOutboundEnvelope: () => undefined,
+      sessionJsonlPath: null,
+    });
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p-new',
+      payload: { content: 'fresh' },
+    });
+    expect(spawnArgs).toHaveLength(1);
+    // 关键钉槌: argv 是 ['--mode','rpc'], 不含 --session。
+    expect(spawnArgs[0]?.args).toEqual(['--mode', 'rpc']);
+    expect(spawnArgs[0]?.args).not.toContain('--session');
+  });
+
+  it('7.5 sessionJsonlPath: undefined → spawn 走 sessionArgv (既有 7.x 行为不回退)', () => {
+    // 验收期第 3 缺口修复 (2026-09-09) 新增钉槌: sessionJsonlPath
+    // 缺省 / undefined 走原有 sessionArgv(subdir) 路径, 保持
+    // M3-compat "取最新" 语义。覆盖与 7.1/7.2 同场景但
+    // options.sessionJsonlPath 显式 undefined (保证 调用代码走
+    // 同一个三分支 不因默认值意外跳错分支)。
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-'));
+    trackTmpDir(agentDir);
+    const cwd = '/home/test/proj';
+    const sessionDir = path.join(agentDir, 'sessions', '--home-test-proj--');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const sessionFile = path.join(sessionDir, '2026-01-01T00-00-00_uuid.jsonl');
+    fs.writeFileSync(sessionFile, '');
+
+    const spawnArgs: Array<{ cmd: string; args: readonly string[] }> = [];
+    const spawn = (cmd: string, args: readonly string[]): PiChild => {
+      spawnArgs.push({ cmd, args });
+      return new FakeChild();
+    };
+    const manager = new PiProcessManager({
+      agentDir,
+      workDir: cwd,
+      spawn,
+      onOutboundEnvelope: () => undefined,
+      // sessionJsonlPath: undefined explicit —— 验证三态分支默认路径
+      sessionJsonlPath: undefined,
+    });
+    manager.start();
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      payload: { content: 'go' },
+    });
+    expect(spawnArgs).toHaveLength(1);
+    expect(spawnArgs[0]?.args).toEqual(['--mode', 'rpc', '--session', sessionFile]);
+  });
+
+  it('7.6 crash-restart preserves sessionJsonlPath: string (binding survives 钉子 4 watchdog + 崩溃重启)', () => {
+    // 验收期第 3 缺口修复 (2026-09-09) 守护钉槌: session-layer branch 2
+    // 点击老会话路由绑定了精确 jsonl 路径 —— crash-restart 必须复用
+    // 同一 binding, 不能悄悄跳回 sessionArgv(subdir) 取最新。本测试
+    // 构造一个会崩溃的 manager (代码=1 退出, selfKillFlag 未设),
+    // 验证重启的 spawn argv 仍然使用同一 pinned path。
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-pi-session-'));
+    trackTmpDir(agentDir);
+    const cwd = '/home/test/proj';
+    const sessionDir = path.join(agentDir, 'sessions', '--home-test-proj--');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    // latest 文件存在; 证明 sessionArgv 会返回它 (如果 manager 走
+    // undefined 分支)。但我们走 string 分支, 必须返回 pinned。
+    const latestFile = path.join(sessionDir, '2027-01-01T00-00-00_latest.jsonl');
+    fs.writeFileSync(latestFile, '');
+    const pinnedFile = path.join(sessionDir, '2020-01-01T00-00-00_pinned.jsonl');
+
+    const spawnArgs: Array<{ cmd: string; args: readonly string[] }> = [];
+    const children: FakeChild[] = [];
+    const spawn = (cmd: string, args: readonly string[]): PiChild => {
+      spawnArgs.push({ cmd, args });
+      const c = new FakeChild();
+      children.push(c);
+      return c;
+    };
+    const manager = new PiProcessManager({
+      agentDir,
+      workDir: cwd,
+      spawn,
+      onOutboundEnvelope: () => undefined,
+      sessionJsonlPath: pinnedFile,
+    });
+    manager.start();
+    // 首次 spawn (initial): 使用 pinned
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      payload: { content: 'go' },
+    });
+    expect(spawnArgs).toHaveLength(1);
+    expect(spawnArgs[0]?.args).toEqual(['--mode', 'rpc', '--session', pinnedFile]);
+    // 模拟 handshake 完成 (老旧 刚 spawn 未做 handshake, 需要先回 get_state)
+    children[0]?.stdout.write(
+      JSON.stringify({ type: 'response', command: 'get_state', success: true }) + '\n',
+    );
+    // 模拟 crash-restart (code=1, 无 self-kill flag)
+    children[0]?.simulateExit(1, null);
+    // 触发新 spawn  (send another command → 重新 spawn)
+    manager.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p2',
+      payload: { content: 'restart' },
+    });
+    expect(spawnArgs).toHaveLength(2);
+    // 关键钉槌: 重启后 argv 仍是 pinnedFile, 不是 latestFile。
+    expect(spawnArgs[1]?.args).toEqual(['--mode', 'rpc', '--session', pinnedFile]);
+    expect(spawnArgs[1]?.args).not.toContain(latestFile);
+  });
 });
 
 // ---------------------------------------------------------------------------

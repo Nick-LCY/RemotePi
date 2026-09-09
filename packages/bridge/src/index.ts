@@ -366,7 +366,11 @@ export function start(options: StartOptions = {}): {
     });
     sessionLayer.start();
     type LayerInternals = {
-      spawnManager: (opts: { mapKey: string; workDir: string; sessionJsonlPath: string | null }) => unknown;
+      spawnManager: (opts: {
+        mapKey: string;
+        workDir: string;
+        sessionJsonlPath: string | null | undefined;
+      }) => unknown;
     };
     const internals = sessionLayer as unknown as LayerInternals;
     // M4: `config.work_dir` is optional. The back-compat single-
@@ -381,10 +385,17 @@ export function start(options: StartOptions = {}): {
     // this manager will fail at `manager.start()` (no real pi
     // path), which is the same surface the test would see in M3
     // with an empty `work_dir: ''`.
+    //
+    // 验收期第 3 缺口修复 (2026-09-09): sessionJsonlPath 改传
+    // `undefined` 而非 `null` —— 这里是 M3-compat auto-spawn
+    // (M3_LEGACY_KEY / branch 5+6) 的调用点, 应走 ADR-0007 的
+    // "取最新" 语义 (spawnNow 落到 sessionArgv(subdir)), 不是
+    // 全新 (`null` = no --session). 旧实现传 `null` 是顺手错误
+    // 默认, 借本轮纠正; 详见 `spawnManager` JSDoc 的三态裁定段。
     internals.spawnManager({
       mapKey: 'm3-legacy',
       workDir: config.work_dir ?? '<unset>',
-      sessionJsonlPath: null,
+      sessionJsonlPath: undefined,
     });
   } else {
     // Default path: construct a fresh session layer. The

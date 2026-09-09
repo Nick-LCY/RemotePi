@@ -366,6 +366,13 @@ function makeOutboundWrapper(
       layer.broadcast(withSession);
       return;
     }
+    // W4 (M4 任务 06 review): non-session_state envelopes
+    // (pi events, command_results, snapshots) are passed through
+    // WITHOUT session injection. The web routes them by
+    // `currentSessionKey` (single-active-session model). Any future
+    // change to inject session here MUST be coordinated with the
+    // web's bucket-routing semantics (see makeOutboundWrapper JSDoc
+    // in the original M4 task 06 implementation for the trade-off).
     layer.broadcast(env);
   };
 }
@@ -823,10 +830,16 @@ export class BridgeSessionLayer {
         // manager handles all subsequent session-less commands.
         // See `M3_LEGACY_KEY` JSDoc for the transition plan and
         // known order-dependent routing limitation.
+        //
+        // 验收期第 3 缺口修复 (2026-09-09): sessionJsonlPath 显式
+        // 传 `undefined` (不是 `null`) —— M3_LEGACY 走的是 ADR-0007
+        // "取最新" 语义 (spawnNow → sessionArgv(subdir)), 不是
+        // "全新无 --session"。`null` 是钉子 2 pending key 专用的。
+        // 借本轮纠正原顺手错误默认; 详见 `spawnManager` JSDoc。
         const m = this.spawnManager({
           mapKey: M3_LEGACY_KEY,
           workDir: this.defaultWorkDir,
-          sessionJsonlPath: null,
+          sessionJsonlPath: undefined,
         });
         return { ok: true, manager: m };
       }
@@ -852,7 +865,38 @@ export class BridgeSessionLayer {
   private spawnManager(opts: {
     mapKey: string;
     workDir: string;
-    sessionJsonlPath: string | null;
+    /** Per-manager session pin. Three-state — forwarded verbatim
+     *  to `PiProcessManager` (see `PiProcessOptions.sessionJsonlPath`
+     *  JSDoc). Callers pick the state based on routing intent:
+     *
+     *  - **string** — clicked-old-session (branch 2): the exact
+     *    jsonl path was scanned + joined by the caller; spawn
+     *    resumes THIS file across restarts. This is the path that
+     *    was being **silently dropped** pre-fix — `spawnManager`
+     *    used to destructure `sessionJsonlPath` out of `opts` and
+     *    never put it into `piOpts`, so every spawn fell back to
+     *    `sessionArgv(subdir)` = "latest" inside `spawnNow`. Result:
+     *    clicking any old session in the UI would still land on the
+     *    newest file. (验收期第 3 缺口根因, 2026-09-09.)
+     *
+     *  - **null** — pending key (branch 3, `session:'new'` +
+     *    `payload.work_dir`): no `--session` flag, pi creates a
+     *    fresh jsonl on first write; the layer later derives the
+     *    real stem via the agent_dir scan (钉子 2: pending → stem
+     *    migration on `agent_start`).
+     *
+     *  - **undefined** — M3-compat auto-spawn (branch 5+6,
+     *    `M3_LEGACY_KEY`): the legacy "取最新" semantics per
+     *    ADR-0007 — every spawn picks the then-latest file in
+     *    the subdir (or nothing, if empty). Preserves the M3 token-
+     *    only URL hash behaviour the e2e harness relies on. We
+     *    intentionally keep this `undefined` (NOT `null`) so the
+     *    `spawnNow` branch keeps falling through to
+     *    `sessionArgv(subdir)` instead of spawning fresh — that
+     *    is the documented M3 behaviour and changing it would be a
+     *    silent semantic shift hidden inside a session-pinning fix.
+     */
+    sessionJsonlPath: string | null | undefined;
   }): PiProcessManager {
     const holder: SessionKeyHolder = { current: opts.mapKey };
     const wrapper = makeOutboundWrapper(holder, this);
@@ -864,6 +908,14 @@ export class BridgeSessionLayer {
     const piOpts: PiProcessOptions = {
       agentDir: this.agentDir,
       workDir: opts.workDir,
+      // FORWARD the per-manager session pin — this is the fix for
+      // 验收期第 3 缺口 (2026-09-09): previously destructured out
+      // of `opts` and dropped on the floor, so every spawn inside
+      // `spawnNow` silently fell back to `sessionArgv(subdir)`
+      // = "always latest". Three-state value passes through verbatim;
+      // see `PiProcessOptions.sessionJsonlPath` JSDoc for the
+      // branching semantics in `spawnNow`.
+      sessionJsonlPath: opts.sessionJsonlPath,
       baseEnv,
       onOutboundEnvelope: (env) => {
         // 钉子 2 + 钉子 4 + 裁定 C cleanup: react on EVERY outbound
@@ -1121,10 +1173,15 @@ export class BridgeSessionLayer {
     }
     if (this.managers.size === 0 && this.defaultWorkDir !== undefined) {
       // See M3_LEGACY_KEY JSDoc — same transitional seam.
+      //
+      // 验收期第 3 缺口修复 (2026-09-09): sessionJsonlPath 显式
+      // 传 `undefined` (不是 `null`) —— 同 getOrCreateManagerForSession
+      // branch 5+6: M3_LEGACY 走 ADR-0007 "取最新" 语义,
+      // 详见 `spawnManager` JSDoc 的三态裁定段。
       return this.spawnManager({
         mapKey: M3_LEGACY_KEY,
         workDir: this.defaultWorkDir,
-        sessionJsonlPath: null,
+        sessionJsonlPath: undefined,
       });
     }
     return undefined;

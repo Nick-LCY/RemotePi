@@ -97,12 +97,18 @@ function makeLayer(opts: {
 } = {}): {
   layer: BridgeSessionLayer;
   spawned: FakeChild[];
+  /** 验收期第 3 缺口修复 (2026-09-09) 新增 seam: 捕获每个
+   *  spawn 调用的 (cmd, args), 让 5.2/5.2b/5.2c 等测试断言
+   *  `--session <path>` argv 三态语义。旧 `_args` 字段名已废,
+   *  保留以免误读; 新字段 `spawnedArgs` 是单测唯一真相源。 */
+  spawnedArgs: Array<{ cmd: string; args: readonly string[] }>;
   outbound: MockInstance<(env: EnvelopeT) => void>;
   stderr: MockInstance<(chunk: string) => void>;
   agentDir: string;
   workDirStore: WorkDirStore;
 } {
   const spawned: FakeChild[] = [];
+  const spawnedArgs: Array<{ cmd: string; args: readonly string[] }> = [];
   const outbound = vi.fn<(env: EnvelopeT) => void>();
   const stderr = vi.fn<(chunk: string) => void>();
   const agentDir = opts.agentDir ?? mkdtempSync(path.join(os.tmpdir(), 'remotepi-sl-'));
@@ -118,7 +124,8 @@ function makeLayer(opts: {
     makeManager: (po) => {
       const m = new PiProcessManager({
         ...po,
-        spawn: ((_cmd, _args, _opts) => {
+        spawn: ((cmd, args, _opts) => {
+          spawnedArgs.push({ cmd, args });
           const c = new FakeChild();
           spawned.push(c);
           return c;
@@ -129,7 +136,15 @@ function makeLayer(opts: {
   };
   const layer = new BridgeSessionLayer(layerOpts);
   layer.start();
-  return { layer, spawned, outbound, stderr, agentDir, workDirStore };
+  return {
+    layer,
+    spawned,
+    spawnedArgs,
+    outbound,
+    stderr,
+    agentDir,
+    workDirStore,
+  };
 }
 
 const createdDirs: string[] = [];
@@ -926,6 +941,147 @@ describe('BridgeSessionLayer routing rules (PRD §2.7)', () => {
     // The manager was constructed with the correct work_dir.
     const m = layer.getManagerForKey(stem)!;
     expect(m.getWorkDir()).toBe(workDir);
+  });
+
+  it('5.2 强化 — session:<stem> spawn argv 必须含 `--session <old>.jsonl` (不是同目录更新的 newer)', () => {
+    // 验收期第 3 缺口修复 (2026-09-09) 盲区钉槌：原 5.2 只断言
+    // "spawn 成功 + work_dir 正确"，未钉 argv —— 正是 spawnManager
+    // 丢字段 + spawnNow 无条件取最新 两条 bug 长期绿的原因。本
+    // 测试预写两个 jsonl (old + newer)，请求 old stem，断言 spawn
+    // argv 必须含 `--session <old>.jsonl` (而不是 newer，刷新
+    // 现场下 spawnArgv(subdir) 会返回 newer。旧实现必红)。
+    const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-rt2q-'));
+    trackTmp(workDir);
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-rt2q-ad-'));
+    trackTmp(agentDir);
+    const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
+    mkdirSync(subdir, { recursive: true });
+    // old: 2026-01 timestamp  (请求的 stem)
+    // newer: 2027-01 timestamp  (同子目录下 spawnArgv 会返回这个)
+    const oldStem = '2026-01-01T00-00-00_oldaaaa-stem-old';
+    const newerStem = '2027-01-01T00-00-00_newbbbb-stem-new';
+    const oldFile = path.join(subdir, `${oldStem}.jsonl`);
+    const newerFile = path.join(subdir, `${newerStem}.jsonl`);
+    writeFileSync(oldFile, '{"x":"old"}\n', 'utf8');
+    // 让 newer 的 mtime 明显比 old 新（双保险：即使 timestamp
+    // 解析顺序有变，mtime tiebreak 也保证 newest = newer）。
+    writeFileSync(newerFile, '{"x":"newer"}\n', 'utf8');
+    const { layer, spawned, spawnedArgs } = makeLayer({ agentDir, workDirs: [workDir] });
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p1',
+      session: oldStem,
+      payload: { content: 'resume-old' },
+    });
+    expect(spawned).toHaveLength(1);
+    expect(layer.getManagerForKey(oldStem)).toBeDefined();
+    // 关键断言：spawn argv 是 `--session <old>.jsonl` —— 精确钉槌，
+    // 旧实现会拿到 newer。
+    expect(spawnedArgs).toHaveLength(1);
+    expect(spawnedArgs[0]?.cmd).toBe('pi');
+    expect(spawnedArgs[0]?.args).toEqual(['--mode', 'rpc', '--session', oldFile]);
+    // 防御性反面断言：newer 不应出现在 argv 里。
+    expect(spawnedArgs[0]?.args).not.toContain(newerFile);
+  });
+
+  it('5.2b — session:"new" + subdir 已有会话 → spawn argv 不含 --session (全新)', () => {
+    // 验收期第 3 缺口修复 (2026-09-09) 新增钉槌：branch 3 (pending
+    // key) 是显式全新 (sessionJsonlPath: null)。旧实现 spawnNow
+    // 无条件走 sessionArgv(subdir) = --session <latest>，会让
+    // "新建会话" 误进入同 work_dir 现有最新会话 —— 本测试预写
+    // 已有 jsonl，断言 spawn argv 不含 --session (旧实现必红)。
+    //
+    // 注：本测试是 spawn-argv 钉槌，不断言 map 键 (因为 pending
+    // → real-stem 迁移会发生在 spawn 后的首次 outbound，键会被
+    // 原子换成 real stem; 这里仅证 spawnNow 的 argv 不粘旧文件)。
+    const workDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-rt2b-'));
+    trackTmp(workDir);
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-rt2b-ad-'));
+    trackTmp(agentDir);
+    const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(workDir)}--`);
+    mkdirSync(subdir, { recursive: true });
+    const existing = '2026-01-01T00-00-00_existing-bb-stem';
+    writeFileSync(path.join(subdir, `${existing}.jsonl`), '{"x":"old"}\n', 'utf8');
+    const { layer, spawned, spawnedArgs } = makeLayer({ agentDir, workDirs: [workDir] });
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'prompt',
+      id: 'p-new',
+      session: 'new',
+      payload: { content: 'fresh', work_dir: workDir },
+    });
+    expect(spawned).toHaveLength(1);
+    // 关键断言：spawn argv 是 `['--mode', 'rpc']`，不含 --session。
+    // (子目录里那个 existing jsonl 被故意忽略 —— 用户点的是 "新建"。)
+    expect(spawnedArgs).toHaveLength(1);
+    expect(spawnedArgs[0]?.cmd).toBe('pi');
+    expect(spawnedArgs[0]?.args).toEqual(['--mode', 'rpc']);
+    expect(spawnedArgs[0]?.args).not.toContain('--session');
+  });
+
+  it('5.2c — M3_LEGACY auto-spawn + subdir 已有会话 → spawn argv 含 `--session <latest>` (取最新保持)', () => {
+    // 验收期第 3 缺口修复 (2026-09-09) 新增钉槌：branch 5+6
+    // (M3_LEGACY_KEY) 故意保留 ADR-0007 "取最新" 语义 —— 传
+    // `undefined` (不是 `null`)，让 spawnNow 落到
+    // sessionArgv(subdir)。本测试预写最新 jsonl，发 session-less
+    // pi 命令触发 branch 5+6 auto-spawn + spawn-trigger (PRD §2.7
+    // spawn 触发集 = prompt/steer/follow_up/get_messages)，断言
+    // spawn argv 含 `--session <latest>.jsonl` (不是空 `[]` ——
+    // 旧实现顺手传 `null` 必红)。
+    const defaultWd = mkdtempSync(path.join(os.tmpdir(), 'remotepi-rt2c-'));
+    trackTmp(defaultWd);
+    const agentDir = mkdtempSync(path.join(os.tmpdir(), 'remotepi-rt2c-ad-'));
+    trackTmp(agentDir);
+    const subdir = path.join(agentDir, 'sessions', `--${encodeCwdForPi(defaultWd)}--`);
+    mkdirSync(subdir, { recursive: true });
+    const latestStem = '2027-01-01T00-00-00_latest-cc-stem';
+    const latestFile = path.join(subdir, `${latestStem}.jsonl`);
+    writeFileSync(latestFile, '{"x":"latest"}\n', 'utf8');
+    const outbound = vi.fn<(env: EnvelopeT) => void>();
+    const stderr = vi.fn<(chunk: string) => void>();
+    const workDirStore = new WorkDirStore([], path.join(agentDir, 'state.json'));
+    const spawned: FakeChild[] = [];
+    const spawnedArgs: Array<{ cmd: string; args: readonly string[] }> = [];
+    const layer = new BridgeSessionLayer({
+      agentDir,
+      workDirStore,
+      onOutbound: outbound,
+      onStderr: stderr,
+      defaultWorkDir: defaultWd,
+      makeManager: (po) => {
+        return new PiProcessManager({
+          ...po,
+          spawn: (cmd, args) => {
+            spawnedArgs.push({ cmd, args });
+            const c = new FakeChild();
+            spawned.push(c);
+            return c;
+          },
+        });
+      },
+    });
+    layer.start();
+    // 发送一个 session-less 的 pi/get_messages —— 触发 branch 5+6
+    // auto-spawn (managers 为空 + 有 defaultWorkDir)，且
+    // get_messages 是 §2.7 spawn 触发集, 会使 manager 真正 spawn。
+    layer.handleEnvelope({
+      v: PROTOCOL_VERSION,
+      kind: 'pi',
+      type: 'get_messages',
+      id: 'gm-m3',
+      payload: {},
+    });
+    expect(spawned).toHaveLength(1);
+    expect(layer.getManagerForKey('m3-legacy')).toBeDefined();
+    // 关键断言：spawn argv 含 `--session <latest>.jsonl` —— M3
+    // "取最新" 语义保持。如果错误改为 `null`，argv 会变成
+    // `['--mode', 'rpc']`，本断言红。
+    expect(spawnedArgs).toHaveLength(1);
+    expect(spawnedArgs[0]?.cmd).toBe('pi');
+    expect(spawnedArgs[0]?.args).toEqual(['--mode', 'rpc', '--session', latestFile]);
   });
 
   it('5.3 session: <stem> + map miss + file NOT in any work_dir → invalid_envelope', () => {
