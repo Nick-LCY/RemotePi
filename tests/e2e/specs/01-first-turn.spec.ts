@@ -75,35 +75,10 @@ function buildMultiDeltaScript(): Array<{ event: string; data: unknown }> {
   return events;
 }
 
-async function waitForChatViewOrRecovery(page: Page): Promise<'chat-view' | 'recovery-error'> {
-  // Same retry-tolerant block as task 12 (5s recovery timeout vs
-  // cold pi-startup race, ADR-0009 §开放点 1). One retry on
-  // `recovery-error`, no second retry — we want a loud failure
-  // when the underlying挂账 truly blocks.
-  const either = await Promise.race([
-    page
-      .locator('[data-testid="chat-view"]')
-      .waitFor({ state: 'visible', timeout: 30_000 })
-      .then(() => 'chat-view' as const)
-      .catch(() => null),
-    page
-      .locator('[data-testid="recovery-error"]')
-      .waitFor({ state: 'visible', timeout: 30_000 })
-      .then(() => 'recovery-error' as const)
-      .catch(() => null),
-  ]);
-  if (either === 'recovery-error') {
-    await page.locator('[data-testid="recovery-retry"]').click();
-    await page
-      .locator('[data-testid="chat-view"]')
-      .waitFor({ state: 'visible', timeout: 30_000 });
-    return 'chat-view';
-  }
-  if (either !== 'chat-view') {
-    throw new Error('Neither chat-view nor recovery-error appeared within 30s');
-  }
-  return 'chat-view';
+async function waitForChatView(page: Page): Promise<void> {
+  await page.locator('[data-testid="chat-view"]').waitFor({ state: 'visible', timeout: 30_000 });
 }
+
 
 test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
   test('user sends a prompt through the M4 ChoicePage flow; assistant streams multi-delta; stem refilled; input regains focus', async ({ page }) => {
@@ -166,7 +141,7 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
     // Step 4: click 「新建会话」 → hash gets `&session=new` →
     // App re-dispatches to recovery → ChatView pending.
     await page.locator('[data-testid="session-new"]').click();
-    await waitForChatViewOrRecovery(page);
+    await waitForChatView(page);
 
     // R6 review 修复轮——wait for WebSocket to be online before
     // sending prompts. ChatView for session='new' mounts

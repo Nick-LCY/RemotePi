@@ -89,30 +89,9 @@ function buildSingleDeltaScript(text: string): Array<{ event: string; data: unkn
   ];
 }
 
-/** Same retry-tolerant block as scenario (a) — the 5s recovery
- *  timeout挂账 can still fire on a cold pi restart. We tolerate
- *  one retry; a second failure means the挂账 is a real blocker. */
-async function waitForChatViewOrRecovery(page: Page): Promise<void> {
-  const either = await Promise.race([
-    page
-      .locator('[data-testid="chat-view"]')
-      .waitFor({ state: 'visible', timeout: 30_000 })
-      .then(() => 'chat-view' as const)
-      .catch(() => null),
-    page
-      .locator('[data-testid="recovery-error"]')
-      .waitFor({ state: 'visible', timeout: 30_000 })
-      .then(() => 'recovery-error' as const)
-      .catch(() => null),
-  ]);
-  if (either === 'recovery-error') {
-    await page.locator('[data-testid="recovery-retry"]').click();
-    await page
-      .locator('[data-testid="chat-view"]')
-      .waitFor({ state: 'visible', timeout: 30_000 });
-  } else if (either !== 'chat-view') {
-    throw new Error('Neither chat-view nor recovery-error appeared within 30s');
-  }
+/** The repaired recovery ceremony has a single expected terminal UI: ChatView. */
+async function waitForChatView(page: Page): Promise<void> {
+  await page.locator('[data-testid="chat-view"]').waitFor({ state: 'visible', timeout: 30_000 });
 }
 
 /** Send a prompt, wait for agent_settled (input-field back to
@@ -189,7 +168,7 @@ test.describe('scenario (b) — F5 reload recovery (M4 flow)', () => {
 
     // Step 3: click 新建会话 → pending ChatView.
     await page.locator('[data-testid="session-new"]').click();
-    await waitForChatViewOrRecovery(page);
+    await waitForChatView(page);
 
     // R6 review 修复轮——wait for WebSocket to be online before
     // sending prompts. ChatView for session='new' mounts
@@ -265,7 +244,7 @@ test.describe('scenario (b) — F5 reload recovery (M4 flow)', () => {
     // ceremony may briefly surface `recovery-in-flight` (we don't
     // assert on it; it's allowed to be missed if the machine is
     // fast). The retry-tolerant helper covers the 5s timeout挂账.
-    await waitForChatViewOrRecovery(page);
+    await waitForChatView(page);
 
     // Step 4: history consistency assertions — filter to this
     // scenario's messages (same rationale as above: SQLite is

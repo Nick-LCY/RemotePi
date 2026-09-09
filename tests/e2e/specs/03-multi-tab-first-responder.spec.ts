@@ -117,29 +117,8 @@ async function openChatOnContext(
   await page
     .locator('[data-testid="bridge-status"] [data-state="online"]')
     .waitFor({ state: 'visible', timeout: 30_000 });
-  // Retry-tolerant recovery wait (5s timeout挂账 can fire on cold
-  // pi restart, ADR-0009 §开放点 1). Same one-retry block as
-  // scenarios (a) + (b).
-  const either = await Promise.race([
-    page
-      .locator('[data-testid="chat-view"]')
-      .waitFor({ state: 'visible', timeout: 30_000 })
-      .then(() => 'chat-view' as const)
-      .catch(() => null),
-    page
-      .locator('[data-testid="recovery-error"]')
-      .waitFor({ state: 'visible', timeout: 30_000 })
-      .then(() => 'recovery-error' as const)
-      .catch(() => null),
-  ]);
-  if (either === 'recovery-error') {
-    await page.locator('[data-testid="recovery-retry"]').click();
-    await page
-      .locator('[data-testid="chat-view"]')
-      .waitFor({ state: 'visible', timeout: 30_000 });
-  } else if (either !== 'chat-view') {
-    throw new Error('Neither chat-view nor recovery-error appeared within 30s on context');
-  }
+  // Recovery timeout is repaired; wait only for the terminal ChatView.
+  await page.locator('[data-testid="chat-view"]').waitFor({ state: 'visible', timeout: 30_000 });
   return { context, page };
 }
 
@@ -165,26 +144,7 @@ async function openChatOnExistingContext(
   // pi/get_messages + control/get_state with session=<stem>
   // (R3 仪式带 session 出站) and recovers the same manager.
   await page.goto(fullHash);
-  const either = await Promise.race([
-    page
-      .locator('[data-testid="chat-view"]')
-      .waitFor({ state: 'visible', timeout: 30_000 })
-      .then(() => 'chat-view' as const)
-      .catch(() => null),
-    page
-      .locator('[data-testid="recovery-error"]')
-      .waitFor({ state: 'visible', timeout: 30_000 })
-      .then(() => 'recovery-error' as const)
-      .catch(() => null),
-  ]);
-  if (either === 'recovery-error') {
-    await page.locator('[data-testid="recovery-retry"]').click();
-    await page
-      .locator('[data-testid="chat-view"]')
-      .waitFor({ state: 'visible', timeout: 30_000 });
-  } else if (either !== 'chat-view') {
-    throw new Error('Neither chat-view nor recovery-error appeared within 30s on existing session context');
-  }
+  await page.locator('[data-testid="chat-view"]').waitFor({ state: 'visible', timeout: 30_000 });
   return { context, page };
 }
 
