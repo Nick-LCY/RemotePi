@@ -14,8 +14,7 @@ import {
   BACKOFF_CAP_MS,
   BridgeClient,
   computeBackoff,
-  PONG_TIMEOUT_MS,
-  PONG_TIMEOUTS_BEFORE_DEAD,
+  IDLE_TIMEOUT_MS,
   type WebSocketLike,
 } from '../client.js';
 import { logger } from '../logger.js';
@@ -137,9 +136,10 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
     const create = socketFactory();
     const client = new BridgeClient('wss://example.test/bridge', 'TOKEN-XYZ', {
       createSocket: create,
-      // Push ping interval far into the future so the test doesn't have
-      // to drive the open + first ping cycle to satisfy the heartbeat.
-      pingIntervalMs: 60_000,
+      // Push the read-side idle detector far into the future so the
+      // test doesn't have to drive traffic just to keep the
+      // connection "alive" while it inspects the socket config.
+      idleTimeoutMs: 60_000,
     });
     client.start();
 
@@ -153,10 +153,21 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
   });
 
   it('5. responds to a ping with a pong carrying the same nonce', () => {
+    // Regression for the read-side overhaul: even though the bridge
+    // no longer initiates pings, it MUST still reply to inbound
+    // `control/ping` frames (control.md §3). The worker DO pings
+    // every 20s as its liveness signal; not replying would let the
+    // DO declare us dead and tear the bridge down from the other
+    // side. The reply is the bridge's contribution to its side of
+    // the heartbeat contract; the read-side idle detector is the
+    // bridge's independent liveness check on the worker.
     const create = socketFactory();
     const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
       createSocket: create,
-      pingIntervalMs: 60_000, // suppress our own pings for clarity
+      // Far-future idle window so the read-side detector doesn't
+      // fire during this test — we're only asserting the ping/pong
+      // frame exchange, not liveness.
+      idleTimeoutMs: 60_000,
     });
     client.start();
     const sock = MockSocket.instances[0]!;
@@ -192,6 +203,208 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
     const pong2 = parseFrame(sock.sentFrames[1]!);
     expect(pong2.type).toBe('pong');
     expect((pong2.payload as { nonce: string }).nonce).toBe('roundtrip-2026');
+
+    client.stop();
+  });
+
+  it('5b. inbound envelope refreshes the read-side idle deadline', () => {
+    // The idle detector is a type-agnostic "anything inbound counts"
+    // rule: a `bridge_status` push, a forwarded prompt, an error
+    // frame — all of them reset the 30s window. This is what
+    // prevents a quiet room (no prompts for >IDLE_TIMEOUT_MS) from
+    // looking dead. Drive the lifecycle end-to-end with fake
+    // timers: open → wait 20s → push an envelope → wait another
+    // 20s (40s cumulative, would have fired at 30s without the
+    // refresh) → confirm the socket is still open → then advance
+    // the full remaining window with no traffic → confirm the
+    // close(1000, 'idle timeout') call finally fires.
+    vi.useFakeTimers();
+    installLoggerSpies();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      idleTimeoutMs: 30_000,
+    });
+    client.start();
+    const sock = MockSocket.instances[0]!;
+    sock.simulateOpen();
+
+    // Clear handshake + any close noise so the assertion at the end
+    // only sees the final idle-timeout close.
+    sock.sentFrames.length = 0;
+    sock.closeCalls.length = 0;
+
+    // Advance 20s — well within the 30s window. No close.
+    vi.advanceTimersByTime(20_000);
+    expect(sock.closeCalls).toEqual([]);
+
+    // Receive a `bridge_status` frame — the envelope refreshes the
+    // deadline, so the 20s already-advanced time does NOT count
+    // against the new window. `bridge_status` is a natural choice
+    // because it's server-originated metadata and would land on
+    // every real connect. The payload includes the `changed_at`
+    // ISO-8601 timestamp the schema requires; without it safeParse
+    // would drop the frame and the test would degenerate into a
+    // straightforward idle-timeout fire at the 30s mark.
+    sock.simulateMessage({
+      v: 1,
+      kind: 'control',
+      type: 'bridge_status',
+      id: 'srv-bs-1',
+      payload: {
+        online: true,
+        changed_at: '2026-01-01T00:00:00Z',
+        reason: 'connected',
+      },
+    });
+
+    // Another 20s. Cumulative advanced time is 40s, but the deadline
+    // was re-armed by the bridge_status message, so 20s into the
+    // new window — still no close.
+    vi.advanceTimersByTime(20_000);
+    expect(sock.closeCalls).toEqual([]);
+
+    // Now advance the FULL remaining 30s window with zero inbound
+    // traffic. 30_001 ticks past 30s exactly to dodge any off-by-one
+    // in the fake-timer scheduler. The deadline fires → close.
+    vi.advanceTimersByTime(30_001);
+    expect(sock.closeCalls).toEqual([{ code: 1000, reason: 'idle timeout' }]);
+
+    client.stop();
+    vi.useRealTimers();
+  });
+
+  it('5c. stop() clears the idle deadline so a pending timer can never fire after shutdown', () => {
+    // The read-side detector arms a setTimeout on open. If we just
+    // left it armed, an operator-driven `stop()` followed by 30s of
+    // wall-clock silence would trigger a phantom `no inbound frame`
+    // close on a socket we no longer care about — which would
+    // invoke handleClose() and (because `stopped=true`) no-op the
+    // reconnect, but the warning log would still fire and pollute
+    // shutdown traces. The fix is to clear the deadline inside
+    // `cleanupTimers()`, which `stop()` calls. This test guards the
+    // invariant by advancing well past the original window and
+    // asserting nothing was closed.
+    vi.useFakeTimers();
+    installLoggerSpies();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      idleTimeoutMs: 5_000,
+    });
+    client.start();
+    const sock = MockSocket.instances[0]!;
+    sock.simulateOpen();
+
+    sock.closeCalls.length = 0;
+
+    // 3s in — still well inside the 5s window. No close yet.
+    vi.advanceTimersByTime(3_000);
+    expect(sock.closeCalls).toEqual([]);
+
+    // stop() runs cleanupTimers() which must clear the deadline.
+    client.stop();
+    sock.closeCalls.length = 0; // ignore stop()'s own ws.close() call
+    expect(sock.closeCalls).toEqual([]);
+
+    // Now advance 10s (double the original window). If the deadline
+    // had not been cleared we'd see a phantom `idle timeout` close
+    // call land here.
+    vi.advanceTimersByTime(10_000);
+    expect(sock.closeCalls).toEqual([]);
+
+    // The "no inbound frame" warn also must not have been emitted —
+    // if it had, it would mean the timer fired before clear ran.
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('no inbound frame'),
+    );
+
+    vi.useRealTimers();
+  });
+
+  it('5d. inbound pong is silently dropped (no outbound frame, no nonce-related warn)', () => {
+    // 方案 A' leaves the bridge with no pending nonce of its own
+    // (it doesn't initiate pings). Inbound pongs can therefore
+    // arrive only because someone else is echoing — e.g. the DO
+    // forwarding a peer's pong, or a pong the server sent in
+    // reply to a ping we never issued. Either way the right
+    // thing is to silently drop them. This test pins down both
+    // halves of that contract:
+    //   - no outbound frame is produced (we don't reply-to-pong
+    //     because there's no protocol reason to);
+    //   - no warn-level log is emitted mentioning `nonce` or
+    //     `dropping non-matching` (the old match-check used to
+    //     warn on non-matching nonces; that's gone).
+    // A `bridge_status` envelope is delivered AFTER the pong to
+    // prove the pong did not throw, did not desync the parser,
+    // and did not leave the client in a broken state.
+    installLoggerSpies();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      idleTimeoutMs: 60_000,
+    });
+    client.start();
+    const sock = MockSocket.instances[0]!;
+    sock.simulateOpen();
+    sock.sentFrames.length = 0;
+
+    sock.simulateMessage({
+      v: 1,
+      kind: 'control',
+      type: 'pong',
+      id: 'srv-pong-1',
+      payload: { nonce: 'not-our-nonce' },
+    });
+
+    // No outbound frame.
+    expect(sock.sentFrames).toEqual([]);
+
+    // No nonce-related warn (the old `dropping non-matching pong
+    // nonce=...` line is gone; nothing else should mention nonce).
+    // The non-null assertion is safe: `installLoggerSpies()` ran in
+    // the lines above and assigned `warnSpy` to a `vi.spyOn(...)`
+    // handle. The `let` declaration typing can't be tightened
+    // without rewriting the install helper, which the existing
+    // tests in this file don't depend on. The runtime
+    // `typeof first === 'string'` guard exists because vitest's
+    // `mock.calls[i]` is typed as `Parameters<typeof logger.warn>`
+    // — a heterogeneous tuple where the first element is sometimes
+    // a string and sometimes an Error object. We only care about
+    // the string branch here; the `String(...)` lint rule prefers
+    // an explicit guard over `String(...)` because the latter
+    // would silently fall back to `[object Object]` for non-string
+    // arguments and could mask a future regression.
+    const nonceWarns = warnSpy!.mock.calls
+      .map((c) => {
+        const first = c[0];
+        return typeof first === 'string' ? first : '';
+      })
+      .filter((line) => line.toLowerCase().includes('nonce'));
+    expect(nonceWarns).toEqual([]);
+
+    // The bridge_status envelope after the pong proves the parser
+    // / dispatcher is still healthy: it lands in the logger.info
+    // branch as expected. (Includes `changed_at` to satisfy the
+    // schema; without it safeParse would drop the frame as
+    // invalid and the assertion below would never resolve. The
+    // `reason` must be one of the schema's enum values
+    // ['connected', 'closed', 'stale'] — `stale` is the closest
+    // match for "this bridge is still around after a stray pong".)
+    sock.simulateMessage({
+      v: 1,
+      kind: 'control',
+      type: 'bridge_status',
+      id: 'srv-bs-2',
+      payload: {
+        online: true,
+        changed_at: '2026-01-01T00:00:00Z',
+        reason: 'stale',
+      },
+    });
+    expect(infoSpy).toHaveBeenCalledWith(
+      'bridge_status: online=true reason=stale',
+    );
 
     client.stop();
   });
@@ -236,18 +449,30 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
     }
   });
 
-  it('7. 3 consecutive pong timeouts close the socket and trigger a reconnect', () => {
+  it('7. read-side idle timeout closes the socket and triggers a reconnect (no outbound ping required)', () => {
+    // The previous incarnation of this test drove "3 consecutive
+    // pong timeouts": the bridge sent a ping, waited 30s, counted a
+    // miss, re-armed, waited 30s, counted another miss, … and only
+    // after 3 misses declared the connection dead. That model is
+    // gone (方案 A'): the bridge never initiates pings, and the
+    // only signal it owns is "no inbound frame arrived for the
+    // idle window". This test now exercises that single signal:
+    // simulateOpen (which arms the deadline) → advance exactly
+    // IDLE_TIMEOUT_MS with no inbound traffic → handleIdleTimeout
+    // fires → ws.close(1000, 'idle timeout') → onclose → handleClose
+    // → backoff → second socket is constructed.
     vi.useFakeTimers();
     const create = socketFactory();
     const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
       createSocket: create,
-      // Keep numbers in their normal units (20s / 30s) — fake timers
-      // let us advance through them without waiting.
-      pingIntervalMs: 20_000,
-      pongTimeoutMs: 30_000,
-      // Pin the jitter to its minimum (factor = 0.8 → delay = 800ms for
-      // attempt 1) so we can advance a deterministic amount and observe
-      // the reconnect fire. Real jitter would need us to advance
+      // Use the production default (90s) — fake timers let us jump
+      // through it instantly. This is the key behavioural change
+      // vs the old test: there is NO 20s pingInterval to coordinate
+      // and NO 30s pong deadline to chain.
+      idleTimeoutMs: IDLE_TIMEOUT_MS,
+      // Pin jitter to the bottom of the band (factor = 0.8 → delay
+      // = 800ms for attempt 1 with rng=()=>0) so the reconnect
+      // advance is deterministic. Real jitter would need
       // `BACKOFF_BASE_MS * 1.2` (1200ms) to be safe every run.
       rng: () => 0,
     });
@@ -258,25 +483,30 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
     const first = MockSocket.instances[0]!;
     first.simulateOpen();
 
-    // Handshake + first ping have been sent; clear them so the close
-    // assertion at the end only sees the close(1008) call.
+    // Handshake has been sent; clear it and any other outbound
+    // frames so the close-assertion below sees ONLY the
+    // close(1000, 'idle timeout') call.
     first.sentFrames.length = 0;
     first.closeCalls.length = 0;
 
-    // 3 consecutive 30s windows without a pong:
-    //   deadline armed by first ping → 30s
-    //   deadline fires → count=1, re-arm
-    //   deadline fires → count=2, re-arm
-    //   deadline fires → count=3, declareDead → close(1000, "pong timeout")
-    // Code 1000 (normal closure) matches what the worker DO uses for its
-    // own heartbeat-driven stale trips — 1008 is reserved for protocol
-    // fatal conditions (auth_failed / duplicate_bridge / unsupported_version).
-    vi.advanceTimersByTime(PONG_TIMEOUT_MS * PONG_TIMEOUTS_BEFORE_DEAD);
+    // Advance exactly IDLE_TIMEOUT_MS with zero inbound traffic.
+    // The deadline armed by handleOpen() fires → handleIdleTimeout
+    // → ws.close(1000, 'idle timeout'). The mock's close() invokes
+    // onclose synchronously, which drives handleClose() and
+    // schedules the reconnect.
+    //
+    // Code 1000 (normal closure) is what the worker DO uses for its
+    // own heartbeat-driven stale trips — 1008 is reserved for
+    // protocol-fatal conditions (auth_failed / duplicate_bridge /
+    // unsupported_version) per envelope.md §锁版承诺; a silent
+    // socket is not one of them.
+    vi.advanceTimersByTime(IDLE_TIMEOUT_MS);
 
-    expect(first.closeCalls).toEqual([{ code: 1000, reason: 'pong timeout' }]);
+    expect(first.closeCalls).toEqual([{ code: 1000, reason: 'idle timeout' }]);
 
-    // The close event also schedules the reconnect — advance just past
-    // the smallest possible backoff (base * 0.8 = 800ms with rng=()=>0).
+    // The close event also schedules the reconnect — advance just
+    // past the smallest possible backoff (base * 0.8 = 800ms with
+    // rng=()=>0). A second MockSocket should be constructed.
     const beforeReconnect = MockSocket.instances.length;
     expect(beforeReconnect).toBe(1);
     vi.advanceTimersByTime(BACKOFF_BASE_MS);
@@ -297,9 +527,9 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
     const create = socketFactory();
     const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
       createSocket: create,
-      // Push the heartbeat far away so the test only exercises the
-      // close path, not the pong-timeout cycle.
-      pingIntervalMs: 60_000,
+      // Push the read-side idle detector far away so the test only
+      // exercises the close path, not the idle-timeout cycle.
+      idleTimeoutMs: 60_000,
       // Pin jitter to the bottom of the band so the logged delay is
       // deterministic (800ms for attempt 1 with rng=()=>0).
       rng: () => 0,
@@ -332,7 +562,7 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
     const create = socketFactory();
     const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
       createSocket: create,
-      pingIntervalMs: 60_000,
+      idleTimeoutMs: 60_000,
     });
     client.start();
     const sock = MockSocket.instances[0]!;
@@ -424,7 +654,7 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
     const onEnvelope = vi.fn<(env: unknown) => void>();
     const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
       createSocket: create,
-      pingIntervalMs: 60_000, // suppress our own pings for clarity
+      idleTimeoutMs: 60_000, // far-future so the read-side idle detector never fires in this test
     });
     client.setEnvelopeSink(onEnvelope);
     client.start();

@@ -9,10 +9,15 @@
 //      任何 ack"). Failures surface via `error` frames or socket close,
 //      both of which drive the reconnect loop.
 //   3. On every `control/ping` from the server, reply with `control/pong`
-//      carrying the same nonce (control.md §3).
-//   4. Send `control/ping` every 20s. If 3 consecutive 30s windows pass
-//      without a pong, declare the connection dead and close it (which
-//      drives the reconnect loop).
+//      carrying the same nonce (control.md §3). The bridge does NOT
+//      initiate pings itself — the worker DO sends pings to the bridge
+//      on its own 20s heartbeat cadence (`worker/src/heartbeat.ts`),
+//      so a missing inbound stream is the natural dead signal.
+//   4. Track the timestamp of the most recent inbound envelope (any
+//      type). If no frame arrives within `IDLE_TIMEOUT_MS` (default
+//      90s ≈ DO's 20s heartbeat ×3 + slack), declare the connection
+//      dead and close with code 1000 reason 'idle timeout' — which
+//      drives the reconnect loop via `handleClose`.
 //   5. Reconnect with exponential backoff: base=1s, cap=30s, ±20% jitter.
 //      Reset the attempt counter on a successful open.
 //
@@ -23,10 +28,17 @@ import { Envelope, PROTOCOL_VERSION, type Envelope as EnvelopeT } from '@remotep
 import { logger } from './logger.js';
 
 /** Protocol constants — see control.md §2 / §3 and PRD §2. Centralised so
- *  tests can override via the options bag without editing these. */
-export const PING_INTERVAL_MS = 20_000;
-export const PONG_TIMEOUT_MS = 30_000;
-export const PONG_TIMEOUTS_BEFORE_DEAD = 3;
+ *  tests can override via the options bag without editing these.
+ *
+ *  IDLE_TIMEOUT_MS is the read-side "dead" detector: if no inbound
+ *  envelope arrives within this window the connection is considered
+ *  gone. 90s ≈ DO's 20s heartbeat ×3 + slack — generous enough to ride
+ *  out a single missed heartbeat without false positives, tight
+ *  enough that a fully-dead socket is reaped in well under the worst
+ *  reconnect budget. The bridge does NOT send its own pings anymore
+ *  (see JSDoc item 4 at the top of this file); the DO drives the
+ *  inbound stream on its own cadence. */
+export const IDLE_TIMEOUT_MS = 90_000;
 export const BACKOFF_BASE_MS = 1_000;
 export const BACKOFF_CAP_MS = 30_000;
 
@@ -68,9 +80,7 @@ export interface BridgeClientOptions {
   /** Override the jitter RNG (test seam). Defaults to `Math.random`. */
   rng?: () => number;
   /** Override timing — defaults to the protocol constants above. */
-  pingIntervalMs?: number;
-  pongTimeoutMs?: number;
-  pongTimeoutsBeforeDead?: number;
+  idleTimeoutMs?: number;
   backoffBaseMs?: number;
   backoffCapMs?: number;
   /** Optional inbound-envelope sink. Fires for every envelope the
@@ -88,9 +98,7 @@ export interface BridgeClientOptions {
 /** Internal record of resolved options so the hot paths don't have to
  *  coalesce defaults on every tick. */
 interface ResolvedOptions {
-  pingIntervalMs: number;
-  pongTimeoutMs: number;
-  pongTimeoutsBeforeDead: number;
+  idleTimeoutMs: number;
   backoffBaseMs: number;
   backoffCapMs: number;
   createSocket: (url: string, protocols: string[]) => WebSocketLike;
@@ -102,15 +110,13 @@ export class BridgeClient {
   private ws: WebSocketLike | null = null;
   private stopped = false;
   private attempt = 0;
-  private pingInterval: ReturnType<typeof setInterval> | null = null;
-  private pongDeadline: ReturnType<typeof setTimeout> | null = null;
+  /** Read-side idle detector: fires `handleIdleTimeout()` if no
+   *  inbound envelope arrives within `opts.idleTimeoutMs`. Refreshed
+   *  on every message we successfully parse. `null` when no deadline
+   *  is armed (off-state: between connections, after a timeout fires,
+   *  or after `stop()`/`cleanupTimers()`). */
+  private idleDeadline: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private pongTimeouts = 0;
-  /** Nonce of the in-flight ping awaiting a matching pong. Set when we
-   *  arm the deadline; cleared when a matching pong arrives (or the
-   *  deadline fires). Used to distinguish "real answer" from forwarded
-   *  pongs that happen to land in our message stream. */
-  private pendingNonce: string | null = null;
   private readonly opts: ResolvedOptions;
 
   constructor(
@@ -119,9 +125,7 @@ export class BridgeClient {
     options: BridgeClientOptions = {},
   ) {
     this.opts = {
-      pingIntervalMs: options.pingIntervalMs ?? PING_INTERVAL_MS,
-      pongTimeoutMs: options.pongTimeoutMs ?? PONG_TIMEOUT_MS,
-      pongTimeoutsBeforeDead: options.pongTimeoutsBeforeDead ?? PONG_TIMEOUTS_BEFORE_DEAD,
+      idleTimeoutMs: options.idleTimeoutMs ?? IDLE_TIMEOUT_MS,
       backoffBaseMs: options.backoffBaseMs ?? BACKOFF_BASE_MS,
       backoffCapMs: options.backoffCapMs ?? BACKOFF_CAP_MS,
       createSocket: options.createSocket ?? defaultCreateSocket,
@@ -133,7 +137,7 @@ export class BridgeClient {
   /** Begin the connect → handshake → heartbeat → reconnect loop.
    *  Idempotent: subsequent calls after `start()` are no-ops. */
   start(): void {
-    if (this.pingInterval !== null || this.reconnectTimer !== null || this.ws !== null) {
+    if (this.idleDeadline !== null || this.reconnectTimer !== null || this.ws !== null) {
       return;
     }
     this.stopped = false;
@@ -211,9 +215,8 @@ export class BridgeClient {
   private handleOpen(): void {
     logger.info(`connected to ${this.url}`);
     this.attempt = 0;
-    this.pongTimeouts = 0;
     this.sendHandshake();
-    this.startHeartbeat();
+    this.armIdleDeadline();
   }
 
   private sendHandshake(): void {
@@ -226,111 +229,46 @@ export class BridgeClient {
     });
   }
 
-  private startHeartbeat(): void {
-    this.stopHeartbeat();
-    // Send the first ping immediately so the server can confirm liveness
-    // ASAP; subsequent ones are paced by `setInterval`.
-    this.sendPing();
-    this.pingInterval = setInterval(() => this.sendPing(), this.opts.pingIntervalMs);
+  /** (Re)arm the read-side idle detector. Called from `handleOpen()` on
+   *  every successful open, and from `handleMessage()` after every
+   *  successfully-parsed inbound envelope (so any byte of traffic
+   *  refreshes the window). If a deadline is already armed we tear it
+   *  down first — the new window starts from "now", not from the
+   *  original arm time. This is intentionally the opposite of the old
+   *  pong-deadline's "don't reset an armed timer" rule: a deadline
+   *  that never resets would defeat the purpose of an idle detector. */
+  private armIdleDeadline(): void {
+    this.clearIdleDeadline();
+    this.idleDeadline = setTimeout(() => this.handleIdleTimeout(), this.opts.idleTimeoutMs);
   }
 
-  private stopHeartbeat(): void {
-    if (this.pingInterval !== null) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
+  private clearIdleDeadline(): void {
+    if (this.idleDeadline !== null) {
+      clearTimeout(this.idleDeadline);
+      this.idleDeadline = null;
     }
   }
 
-  private sendPing(): void {
-    // Full UUID for the nonce — matches what the worker DO emits for its
-    // own heartbeats (heartbeat.ts uses crypto.randomUUID()). 8-char
-    // truncation was nice for human inspection but birthday-collides
-    // across multiple tabs / bridges within the 30s window (2^32 / 2
-    // ≈ 65k draws ≈ 50% collision). Protocol only requires `nonce` to
-    // be a string (control.md §2), so length is unconstrained.
-    const nonce = crypto.randomUUID();
-    this.sendEnvelope({
-      v: PROTOCOL_VERSION,
-      kind: 'control',
-      type: 'ping',
-      id: crypto.randomUUID(),
-      payload: { nonce },
-    });
-    if (this.pongDeadline === null) {
-      // First ping in this 30s window — arm the deadline and tag it
-      // with this nonce so the pong handler can match exactly.
-      this.armPongDeadline(nonce);
-    } else if (this.pendingNonce === null) {
-      // Post-re-arm state: deadline is already armed but `pendingNonce`
-      // was cleared by the timeout. Adopt the latest nonce so subsequent
-      // pongs (which the server sends in response to this latest ping)
-      // can match against it.
-      this.pendingNonce = nonce;
-    }
-    // else: a deadline is armed AND a nonce is already awaited — this
-    // ping is "extra" and the existing deadline still covers it. The
-    // no-reset invariant from before the nonce-tracking fix is preserved.
-  }
-
-  private armPongDeadline(nonce: string): void {
-    // Crucial: do NOT reset an already-armed deadline. Each ping's 30s
-    // window must elapse independently so 3 CONSECUTIVE windows without
-    // a pong can accumulate (control.md §3). Subsequent `sendPing()`s
-    // called via `setInterval` would otherwise refresh the deadline and
-    // make the connection look healthy forever.
-    if (this.pongDeadline !== null) return;
-    this.pendingNonce = nonce;
-    this.pongDeadline = setTimeout(() => this.handlePongTimeout(), this.opts.pongTimeoutMs);
-  }
-
-  private clearPongDeadline(): void {
-    if (this.pongDeadline !== null) {
-      clearTimeout(this.pongDeadline);
-      this.pongDeadline = null;
-    }
-    // Always clear pendingNonce alongside the deadline — without a live
-    // timer the nonce has no meaning, and leaving it set would let a
-    // stale entry leak into the next window's match check.
-    this.pendingNonce = null;
-  }
-
-  private handlePongTimeout(): void {
-    this.pongDeadline = null;
-    this.pendingNonce = null;
-    this.pongTimeouts++;
-    logger.warn(`pong timeout ${this.pongTimeouts}/${this.opts.pongTimeoutsBeforeDead}`);
-    if (this.pongTimeouts >= this.opts.pongTimeoutsBeforeDead) {
-      this.declareDead();
-    } else {
-      // Re-arm a fresh 30s timer for the next window. `pendingNonce`
-      // intentionally stays null — the next sendPing (within the next
-      // 20s) will adopt a fresh nonce via its `else if` branch above,
-      // and strict matching means a pong carrying the previous (now
-      // stale) nonce will not reset the miss counter.
-      this.pongDeadline = setTimeout(() => this.handlePongTimeout(), this.opts.pongTimeoutMs);
-    }
-  }
-
-  private declareDead(): void {
-    logger.warn(`no pong for ${this.opts.pongTimeoutsBeforeDead} cycles, closing`);
-    this.pongTimeouts = 0;
-    this.stopHeartbeat();
-    this.clearPongDeadline();
+  /** Fires when `IDLE_TIMEOUT_MS` has elapsed without any inbound
+   *  envelope. We close the socket with code 1000 / reason 'idle
+   *  timeout' — `onclose` will route through `handleClose()` and the
+   *  existing backoff loop will reconnect. The bridge no longer
+   *  declares death via accumulated ping counters; the absence of an
+   *  inbound stream IS the death signal (see JSDoc item 4 at the top
+   *  of this file). */
+  private handleIdleTimeout(): void {
+    this.idleDeadline = null;
+    logger.warn(`no inbound frame for ${this.opts.idleTimeoutMs}ms, closing`);
     const ws = this.ws;
     this.ws = null;
     if (ws !== null) {
-      // Close code 1000 (normal closure) — the worker DO uses the same
-      // code for its own heartbeat-driven stale trips (control.md §3:
-      // "3 次认定对端已死，断开"). Code 1008 is reserved for protocol-fatal
-      // conditions (auth_failed / duplicate_bridge / unsupported_version)
-      // per envelope.md §锁版承诺; a missed-heartbeat is not one of them.
       try {
-        ws.close(1000, 'pong timeout');
+        ws.close(1000, 'idle timeout');
       } catch {
-        // already closed
+        // already closed / errored — nothing to do; onclose will still
+        // run (if it hasn't) and the reconnect path will still execute.
       }
     }
-    // `onclose` will run and schedule the reconnect via handleClose().
   }
 
   private handleMessage(ev: MessageEvent): void {
@@ -355,27 +293,35 @@ export class BridgeClient {
       return;
     }
     const env = result.data;
+    // Any successfully-parsed inbound envelope refreshes the read-side
+    // idle detector. We refresh here (after parse, before switch) so
+    // the deadline is reset by `ping` (which we then reply to), by
+    // `pong` (which we drop), by `bridge_status`, by `error`, AND by
+    // every envelope forwarded to the sink — i.e. the user's data path
+    // also keeps the connection alive. Without this, a quiet room
+    // where nobody's prompting for >IDLE_TIMEOUT_MS would look dead
+    // even though the server is healthy. With it, the only thing that
+    // fails to refresh the window is a fully-silent socket.
+    this.armIdleDeadline();
     switch (env.type) {
       case 'ping':
+        // MUST reply — the worker DO pings every 20s as its liveness
+        // signal (worker/src/heartbeat.ts); not replying would let the
+        // DO declare US dead and tear the bridge down from the other
+        // side. We don't drive any state of our own from this — the
+        // refresh above already handled the idle timer.
         this.replyToPing(env.payload.nonce ?? '');
         break;
-      case 'pong': {
-        // The worker DO may also issue its own pings (control.md §2 备注).
-        // A pong from the server means our pending deadline can be cleared
-        // and the consecutive-miss counter reset — BUT only when the nonce
-        // matches the one we sent. A non-matching pong (e.g. the DO
-        // forwarding a peer's pong back at us, or a stale reply) must NOT
-        // clear the deadline: doing so would mask an actual missing pong
-        // and prevent the bridge from ever declaring the connection dead.
-        const replyNonce = env.payload.nonce;
-        if (this.pendingNonce === null || this.pendingNonce === replyNonce) {
-          this.clearPongDeadline();
-          this.pongTimeouts = 0;
-        } else {
-          logger.warn(`dropping non-matching pong nonce=${replyNonce}`);
-        }
+      case 'pong':
+        // Bridge no longer initiates pings, so there is no pending
+        // nonce to match against. Inbound pongs are either (a) the
+        // server replying to a ping we never sent (no-op noise) or
+        // (b) a forwarded peer's pong (likewise irrelevant to us).
+        // Either way the right thing is to silently drop them. Note
+        // that the inbound `pong` frame STILL refreshed the idle
+        // detector above — the refresh is type-agnostic on purpose,
+        // so even unsolicited traffic counts as "not dead".
         break;
-      }
       case 'bridge_status':
         // bridge_status is server-originated metadata; we just log it.
         logger.info(`bridge_status: online=${env.payload.online} reason=${env.payload.reason}`);
@@ -476,8 +422,7 @@ export class BridgeClient {
   }
 
   private cleanupTimers(): void {
-    this.stopHeartbeat();
-    this.clearPongDeadline();
+    this.clearIdleDeadline();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
