@@ -5,6 +5,8 @@ status: done
 # 任务：bridge 客户端（token / WSS / handshake / 心跳 / 重连）
 
 > **2026-09-05 修订（部署形态改定，task 06 处理）**：网页合并进主域，bridge `shareUrl()` 默认 base 从 `https://web.remote-pi.sankabox.com` 改为 `https://remote-pi.sankabox.com`（对应单测断言同步）。本任务交付的代码（WSS / handshake / 心跳 / 重连 / token 生成）不变，base 常量与测试在 task 06 调整。
+>
+> **2026-09-10 修订（M4 验收期后，bridge 主动 ping 移除 / 接收侧 read-idle 判死）**：本任务交付的"心跳"实现在验收期后修订——bridge 不再主动发 `control/ping`，原 `20s 心跳 + 30s×3 无 pong 判死` 改为 `bridge client 接收侧 read-idle 滑动窗口判死（IDLE_TIMEOUT_MS = 90_000）`。决策依据 [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md|ADR-0011]]，机制细节见 [[architecture/protocol/control.md#9-bridge-接收侧-read-idle-判死|control.md §9]]。**任务书原文"心跳 / 收 ping 回 pong / 30s×3 判死 close"作历史保留**（M2 实施期真实落地的设计），wire 协议不变，web 端 + worker `heartbeat.ts` 的心跳 / 判死规则未受影响。本任务产物（handshake / WSS / token / 重连退避）不变，仅 client.ts 中关于"主动发 ping + 30s×3 判死"的小段替换为 §9 接收侧 read-idle（commit 由验收期后修补落地，工作区未提交）。
 
 ## 目标
 按 [[prds/m2-tunnel.md|M2 PRD §2 bridge]] 实现 `packages/bridge` 守护进程：启动生成 token → stdout 打印分享 URL → 连 WSS → handshake → 心跳 → 收 ping 回 pong → 退避重连。包结构 `index.ts` / `token.ts` / `client.ts` / `logger.ts`；写 8 条 vitest 单测。

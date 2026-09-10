@@ -1,6 +1,8 @@
 # M2 通路（web ↔ worker ↔ bridge）
 
 > 状态：定稿（2026-09-05）。协议基线：[[architecture/protocol/README.md|隧道协议 v1]]（已定稿，PRD 与其零冲突）。
+>
+> **修订注记（2026-09-10，M4 验收期后 bridge 主动 ping 移除）**：§2「心跳：20s 主动发 ping（nonce 用 nanoid(8)），30s × 3 无 pong → close → 重连」描述的是 M2 实施期 bridge 客户端的心跳机制；该机制已在 M4 验收期后修订——bridge 不再主动发 `control/ping`，原"30s × 3 无 pong 判死"改为 `bridge client 接收侧 read-idle 滑动窗口判死（IDLE_TIMEOUT_MS = 90_000）`。决策依据 [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md|ADR-0011]]，机制细节见 [[architecture/protocol/control.md#9-bridge-接收侧-read-idle-判死|control.md §9]]。**正文不回改**（依项目惯例），原 M2 设计作历史保留；wire 协议不变（`PING_INTERVAL_MS` / `PONG_TIMEOUT_MS` 在 web 端 + worker `heartbeat.ts` 仍生效，DO 心跳 20s / 30s×3 判死规则不变），仅 bridge 端改读侧判死。本修订是 bridge 单端行为变更 + 文档注记，不影响协议锁版承诺清单（control.md §配套常量 + envelope.md 锁版承诺）。用户行动：本地跑旧版 bridge 的实例需择机重启才生效。
 
 ## 背景
 

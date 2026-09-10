@@ -28,3 +28,4 @@
 | [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md\|0008]] | 假 LLM server + 隔离 pi 集成测试（bridge wire 层回归套件） | 已接受 | 2026-09-08 |
 | [[architecture/decisions/0009-headless-browser-e2e.md\|0009]] | 无头浏览器 E2E（Playwright 全栈本地链路 UI 回归套件） | 已接受·待实施 | 2026-09-08 |
 | [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md\|0010]] | 协议 v3 多会话解锁：control 9 → 13 type + envelope (a) 多字段 + envelope `session` 字段启用规则 + pending 键控 + SPAWN_TIMEOUT_MS | 已接受 | 2026-09-08 |
+| [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md\|0011]] | bridge 接收侧 read-idle 判死：移除 bridge 主动 ping，改读侧滑动窗口（验收期修补） | 已接受 | 2026-09-10 |

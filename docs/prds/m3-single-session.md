@@ -26,6 +26,8 @@ M3 把 [[roadmap.md#5-里程碑|roadmap §5 M3 行]]、[[architecture/decisions/
 > **修订注记（2026-09-05，去隔离改造）**：§2.3 "spawn 命令 `PI_CODING_AGENT_DIR=<bridge专属隔离目录>`"、§2.5 "会话发现走目录扫描（PI_CODING_AGENT_DIR 隔离目录下扫固定 work_dir 对应子目录…）" 与「用户操作清单」中"在 `<config-dir>/pi-agent/` 下跑 `pi login` 生成 `auth.json`、复制本机 `auth.json` 到 `<configDir>/pi-agent/`"——上述隔离目录与 `auth.json` 复制表述**已被 [[architecture/decisions/0007-host-shared-pi-agent-dir.md|ADR-0007]] 取代**：bridge 完整复用宿主机 pi 环境、`resolvePiAgentDir()` 与 pi `getAgentDir()` 语义一致、sessions 共享池扫描、auth 缺失仅 stderr warn 提示 TUI `/login` 或 `*_API_KEY` env；正文作为历史设计保留，不回改。当前行为以 ADR-0007 / [[tasks/m3/09-host-shared-agent-dir.md|tasks/09]] / [[getting-started.md#3.5 配置文件 JSON 字段说明|getting-started §3.5]] 为准。
 >
 > **修订注记（2026-09-07，cwd 编码实现勘误）**：§2.5 中 cwd 编码的"**推荐实现先 `encodeURIComponent(cwd).replace(/%/g,'')`，再用真实 pi 启动一次 + 落盘路径回归比对，不通过则不收尾**"——该占位路线**已被实测否决**（commit `cc00a3f`）。根因：该实现与 pi `session-manager.js` 的 `getDefaultSessionDirPath` 真实算法不一致——后者先 `path.resolve` → 去一个开头分隔符 → 将 `/` `\` `:` 映射为 `-`，落盘形如 `--home-sankabox--`（磁盘实存 7 个会话文件），而 bridge 编码出 `--2Fhome2Fsankabox--`（磁盘不存在）；扫描落空 → spawn 不带 `--session` → 每次都是新会话（用户实测：idle 5min kill 后再对话接不回同一 session）。修复：3 行精确转写 pi 真实算法 + 测试翻转（旧断言钉的是错误形状）+ 地面真值回归（断言编码命中磁盘真实目录，宿主无该目录则跳过）；bridge 测试 269 → 281 全绿。**正文不回改**（依项目惯例），原"推荐实现"作历史保留；现行为以 commit `cc00a3f` / [[tasks/m3/04-bridge-pi-process.md|tasks/04 末尾勘误注记]] / [[current-state.md#最近变更|current-state 2026-09-07]] 条目为准。同时回收了任务 08 的"cwd 编码真实 pi 比对回归"挂账（详见 [[tasks/m3/04-bridge-pi-process.md#勘误注记2026-09-07|tasks/04]]）。
+>
+> **修订注记（2026-09-10，bridge 主动 ping 移除 / 接收侧 read-idle 判死）**：§2.1 line 181「心跳 / 重连时序常量维持代码常量（`PING_INTERVAL_MS` / `PONG_TIMEOUT_MS` 等）」与 §2.1 上下文「心跳 / 重连」段落——bridge 客户端实现已在 M4 验收期后修订为**接收侧 read-idle 滑动窗口判死**（bridge 不再主动发 `control/ping`）。决策依据 [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md|ADR-0011]]，机制细节与 `IDLE_TIMEOUT_MS = 90_000` 落地见 [[architecture/protocol/control.md#9-bridge-接收侧-read-idle-判死|control.md §9]]。wire 协议不变（`PING_INTERVAL_MS` / `PONG_TIMEOUT_MS` 在 web 端 + worker `heartbeat.ts` 仍生效，DO 心跳 20s / 30s×3 判死规则不变）；仅 bridge 端改读侧判死。**正文不回改**（依项目惯例），原 M2/M3 心跳 / 重连段落作历史保留；现役常量与机制以 ADR-0011 / control.md §9 / [[current-state.md#最近变更|2026-09-10 条目]]为准。用户行动：本地跑旧版 bridge 的实例需择机重启（`systemctl restart remotepi-bridge` 或手动重启）才生效。
 
 ## 目标
 
@@ -178,7 +180,7 @@ bridge 端翻译为 pi 原生三态（参考 §2.4）：
 - JSON 解析失败 / 缺 `worker_url` / `web_base_url` / `work_dir` 三个必填 → 退出码 1 + stderr 友好错误（不静默）。
 - `work_dir` 启动时严格校验：存在 + 是目录 + 当前用户可读，否则退出码 1；**不**自动 mkdir（已敲定决策 4）。
 - `token` 字段：存在且非空 → 用；否则 `crypto.randomBytes(24).toString('base64url')` 生成（沿用 `packages/bridge/src/token.ts:generateToken`），**不**回写到配置文件。
-- 心跳 / 重连时序常量维持代码常量（`packages/bridge/src/client.ts` 现有的 `PING_INTERVAL_MS` / `PONG_TIMEOUT_MS` 等），**不**进配置。
+- 心跳 / 重连时序常量维持代码常量，**不**进配置。bridge 客户端现役常量（**2026-09-10 验收期后修补，见 [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md|ADR-0011]]**）：`IDLE_TIMEOUT_MS = 90_000`（bridge client 接收侧 read-idle 阈值，`packages/bridge/src/client.ts`；与 §2.3 `PiProcessManager.IDLE_TIMEOUT_MS = 5 * 60_000` 同名但作用域不同——前者判死 WSS 连接，后者判死 pi 子进程，详见 ADR-0011 §影响段「与 ADR-0003 辨析」）；退避参数 `BACKOFF_BASE_MS = 1_000` / `BACKOFF_CAP_MS = 30_000`。M2 时代的 `PING_INTERVAL_MS`（20s bridge 主动发 ping）已随 A' 方案移除；`PONG_TIMEOUT_MS`（30s bridge 收 pong 超时）已随 A' 方案改名为 IDLE_TIMEOUT_MS；wire 协议 20s/30s/3 心跳由 web 端 `WsClient` + worker `heartbeat.ts` 维护（这两端未变）。
 - 未知 CLI flag 静默忽略（不破坏 systemd wrapper 传参），不做严格报错（编排裁定，2026-09-05）。
 
 #### §2.2 CLI / env 移除清单

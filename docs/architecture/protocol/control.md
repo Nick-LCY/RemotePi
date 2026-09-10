@@ -3,6 +3,8 @@
 > 状态：定稿（2026-09-05），协议版本 v1。字段与语义变更须走 [[architecture/protocol/envelope.md]] 的版本化流程。
 >
 > **M4 修订注记（2026-09-08）**：control 家族从 9 增至 13 type（新增 `list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove`，破锁依据见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]]，沿用 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]] 范式）；`session_list.payload` / `session_state.payload` / `session_list` 回执字段同步修订。
+>
+> **bridge 接收侧 read-idle 判死修订注记（2026-09-10）**：bridge 不再主动发 `control/ping`；原 §2「web / bridge 双方互发」语义修订为「web 侧仍主动 / bridge 侧仅应答」；bridge 改走滑动窗口 read-idle 判死（机制见新增 §9）。wire 协议不变（ping/pong 帧结构、DO 心跳 20s/30s/3 全不变）；DO 对旧版 bridge 仍完全兼容。决策依据见 [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md|ADR-0011]]。
 
 ## 家族定位
 
@@ -52,11 +54,13 @@
 { "v": 1, "kind": "control", "type": "ping", "id": "…", "payload": { "nonce": "a1b2" } }
 ```
 
-- **方向**：web / bridge 双方互发；中间层原样转发到对端。
+- **方向**：**web 侧主动发**；bridge 侧不再主动发 `ping`，仅对收到的 `ping` 回 `pong`（见 §3 + §9）；中间层原样转发到对端。
 - **payload**：`nonce`：string，可选但建议携带，用于配对 pong。
-- **规则**：每 **20 秒** 发一次（见 [配套常量](#配套常量)）。
+- **规则**：web 端每 **20 秒** 发一次（见 [配套常量](#配套常量)）；DO 每 **20 秒** 对各连接直发自己的 `ping`（与 web 互发的 ping 共用同一帧结构，但 nonce 由 DO 独立生成——见 [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md|ADR-0011]] §双向引用 / worker `heartbeat.ts`）。
 
 > 备注：中间层亦可主动向连接发送 ping 用于自身判死（如 bridge 心跳超时判定 stale）；这不改变 ping/pong 的转发语义，也不新增 wire 字段。（v1 兼容补充，2026-09-05）
+>
+> **2026-09-10 修订（ADR-0011）**：原「web / bridge 双方互发」语义修订为「web 侧主动 + bridge 侧仅应答」——bridge 已不再以 20s 节奏主动发 `control/ping` 给 DO；bridge 改走 §9 接收侧 read-idle 滑动窗口判死。wire 协议（payload 形状 / nonce 配对 / 中间层转发）零变化；DO 20s 心跳直发行为不变；DO 对旧版 bridge（仍主动发 ping）完全兼容——握手成功后旧 bridge 仍按 20s 节奏发 ping，DO 正常转发，web 端正常应答，业务零影响。
 
 ---
 
@@ -68,7 +72,8 @@
 
 - **方向**：web / bridge 收到 ping 后回发；中间层原样转发到对端。
 - **payload**：`nonce`：原样带回对端 ping 的 `nonce`（nonce 即配对凭据，**不用** `reply_to`）。
-- **规则**：**30 秒**未收到 pong 记一次超时；连续 **3 次** 认定对端已死，断开并广播 `bridge_status(reason=stale)`。
+- **规则**：**web 端**仍按 30 秒未收到 pong 记一次超时 / 连续 3 次认定对端已死的旧规则（见 [配套常量](#配套常量)）——web 侧互喊 30s×3 规则不变。**bridge 端不再以 30s×3 规则执行**（bridge 已不再主动发 ping，无所谓对端是否回 pong）；bridge 改走 §9 接收侧 read-idle 滑动窗口判死。
+- **bridge 收 pong 静默丢弃**：bridge 收到 `control/pong` 不消费（无 pending nonce 配对，无应用状态迁移）——直接走 envelope 解析成功路径，作为「收到任意 inbound envelope」刷新 §9 IDLE_TIMEOUT_MS 滑动窗口计时器，不向 pi / 日志 / 业务侧派发任何事件。
 - **设计理由**：长连接可能被中间网络设备静默掐断且本端无感知，应用层互喊是唯一可靠的存在性探测。
 
 ---
@@ -380,16 +385,53 @@ control 请求的通用回执。
 
 ## 配套常量
 
-| 常量 | 数值 | 出处 |
-|------|------|------|
-| handshake 等待窗口 | 5 秒 | §1 |
-| ping 间隔 | 20 秒 | §2 |
-| pong 超时 | 30 秒 | §3 |
-| 判死次数（连续 pong 超时） | 3 次 | §3 |
-| fatal 关闭码（WebSocket） | `1008` | §8 / [[architecture/protocol/envelope.md#锁版承诺v1-存续期内不可变]] |
-| 空闲杀进程倒计时 | 5 分钟 | §5 |
+| 常量 | 数值 | 出处 | 作用域 |
+|------|------|------|--------|
+| handshake 等待窗口 | 5 秒 | §1 | DO 侧（worker `heartbeat.ts` `HANDSHAKE_TIMEOUT_MS`） |
+| ping 间隔 | 20 秒 | §2 | web 端 + DO 主动发 ping（worker `heartbeat.ts` `PING_INTERVAL_MS`）；**bridge 端不再发 ping** |
+| pong 超时 | 30 秒 | §3 | web 端 + DO 收 pong 超时（worker `heartbeat.ts` `PONG_TIMEOUT_MS`）；**bridge 端不再走此规则** |
+| 判死次数（连续 pong 超时） | 3 次 | §3 | web 端 + DO；**bridge 端不再走此规则** |
+| fatal 关闭码（WebSocket） | `1008` | §8 / [[architecture/protocol/envelope.md#锁版承诺v1-存续期内不可变]] | DO 协议 fatal 关闭（1008 仍保留） |
+| 空闲杀进程倒计时 | 5 分钟 | §5 | `PiProcessManager` `IDLE_TIMEOUT_MS`（**与 §9 bridge client 的 90s 是两个不同的常量**，不要 grep 同名混淆——前者是进程级 idle 杀 pi，后者是 WSS 接收侧 read-idle 判死） |
+| **bridge 接收侧 read-idle 阈值**（**新增 2026-09-10**） | **90_000 ms（≈ DO 20s 心跳 ×3 + 余量）** | **§9** | **bridge client 侧 `IDLE_TIMEOUT_MS`**（**`packages/bridge/src/client.ts`，read-idle 滑动窗口；与上面 5min `PiProcessManager.IDLE_TIMEOUT_MS` 同名但用途不同——前者判死 WSS 连接，后者判死 pi 子进程；详见 §9 与 ADR-0011 §决策）** |
 
 > 数值为初始经验值，实现时可调，调整属 [[conventions/README.md|实现约定]] 范畴。
+>
+> **同名 `IDLE_TIMEOUT_MS` 辨析**（2026-09-10 落地注记，reviewer 指出 docs grep 会撞名）：文档库当前存在两处 `IDLE_TIMEOUT_MS`——(a) `PiProcessManager` 5 分钟空闲杀 pi 进程常量（[[architecture/decisions/0003-session-lifecycle-and-history-source.md|ADR-0003]] §3，作用域 = 每个 pi 子进程 manager，逐会话复制）；(b) `BridgeClient` 90 秒接收侧 read-idle 判死常量（本节 §9 新增，[[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md|ADR-0011]] §决策，作用域 = bridge WSS 连接本身）。**两者层级不同**：(a) 在 bridge 进程内管理子进程；(b) 在 bridge 进程内管理 WSS 长连接。实现时各自模块内常量化（如 `packages/bridge/src/pi-process.ts` 与 `packages/bridge/src/client.ts` 分别导出），不共享。本节配套常量表的「作用域」列即用于避免混淆。
+
+## 9. bridge 接收侧 read-idle 判死（**新增 2026-09-10**）
+
+> **本节为新增节**，承载 bridge 端「不主动发 ping / 滑动窗口 read-idle 判死」机制的契约层定义。代码层落地于 `packages/bridge/src/client.ts` 的 `IDLE_TIMEOUT_MS = 90_000`（与 §5 / §配套常量 同名 `IDLE_TIMEOUT_MS` 辨析已注明）；决策依据见 [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md|ADR-0011]]。
+
+### 9.1 应用模型
+
+bridge 是**常驻后台工人**（长连 worker DO，多 session 多 pi 子进程由它监管）；web 是**随上随下的遥控器**（用户开浏览器就连，关浏览器就走）。bridge 不应把 web 的死活当作自己的健康信号——web 离线与 bridge 存活是正交事件。
+
+### 9.2 机制（四条）
+
+1. **bridge 不再主动发 `control/ping`**——§2 原「web / bridge 双方互发」语义修订为「web 侧主动 + bridge 侧仅应答」；bridge 收到 `ping` 仍按 §3 回 `pong`，但不再以 20s 节奏主动 outbound `ping`。`pongTimeoutMs` 选项改名 `idleTimeoutMs`，`pingIntervalMs` / `pongTimeoutsBeforeDead` 选项删除（见 [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md|ADR-0011]] §决策）。
+2. **DO 心跳直发 bridge，不经 web**——worker `heartbeat.ts` 每 20s 对各连接直发自己的 `control/ping`（nonce 由 DO 独立生成），bridge 收到后回 `pong`（无 pending nonce 配对，仅作 inbound 帧计入 §9.2.3 滑动窗口）。web 侧互喊与 DO 主动 ping 走同一帧结构，但 bridge 不区分两路 ping 的 nonce 来源——bridge 不需要区分，详见 §3 「bridge 收 pong 静默丢弃」。
+3. **滑动窗口 read-idle 判死**——bridge 在每收到**任何解析成功的 inbound envelope** 时刷新 `IDLE_TIMEOUT_MS = 90_000`（≈ DO 20s 心跳 ×3 + 余量）计时器。覆盖范围包括但不限于：`control/ping`（DO 直发或 web 转发）/ `control/pong` / `control/handshake` / `control/bridge_status` / `control/result` / `control/error` / `control/session_state` / `control/session_list` / `control/get_state` 回执 / 全部 pi 家族 envelope。**故意排除**：解析失败的入站帧（不刷新窗口）——「服务器狂发坏帧本身即病态信号」，继续刷新会让真正死掉的连接借坏帧延命，是有意选择（reviewer S5 注记，详见 ADR-0011 §决策.3）。
+4. **超时 → close(1000, 'idle timeout') → handleClose 退避重连**——`IDLE_TIMEOUT_MS` 计时器触发：bridge 打 `warn "no inbound frame for 90000ms, closing"` → `ws.close(1000, 'idle timeout')` → 现有 `handleClose` 路径生效（close code 1000 走正常重连路径；1008 仍保留协议 fatal 关闭，语义不变）。指数退避沿用既有 `BACKOFF_BASE_MS = 1_000` / `BACKOFF_CAP_MS = 30_000` / ±20% jitter。
+
+### 9.3 wire 不变
+
+- `control/ping` / `control/pong` 帧结构零变化（nonce 可选 / 必填规则不变）。
+- DO 心跳 20s / pong 超时 30s / 判死 3 次 全部不变（worker `heartbeat.ts` 零改动）。
+- 中间层（原样转发）零改动——bridge 不再主动 outbound ping 后，中间层不再收到 bridge→DO 的 ping 帧，但中间层 `routeOpenMessage` 的 default 分支对剩余所有控制类帧的转发语义不变。
+- §2 「中间层亦可主动向连接发送 ping 用于自身判死」备注仍成立——中间层（DO）仍按 20s 节奏直发 ping 给 bridge，与本节机制协同而非冲突。
+
+### 9.4 web 端不变
+
+- web 端 WsClient 仍按 20s 主动发 `control/ping` / 30s×3 无 pong 判死的旧规则——本节机制仅替代 bridge 端旧行为，web 侧互喊不变。
+- web 端对老版本 bridge（仍主动发 ping）完全兼容——web 不关心 bridge 是否主动 ping，只关心 ping/pong 帧是否正常流动。
+
+### 9.5 向后兼容
+
+- **DO 对旧版 bridge 完全兼容**——旧 bridge 仍按 20s 节奏发 `control/ping`，DO 照常转发并按 30s×3 规则对待；DO 零改动。
+- **新 bridge 对老版本 web 完全兼容**——web 主动 ping 仍能被新 bridge 收到并回 pong（bridge 对 ping 应答路径未变）；web 不感知 bridge 是否主动 ping。
+- **bridge 切换无需 worker 配合部署**——纯客户端行为变更 + 文档注记；worker / DO / web 三端无需同步切换。
+- **用户行动**：本地跑旧版 bridge 的实例需要择机重启才生效（重启时加载新版 `packages/bridge`，行为自动切到 §9.2 接收侧 read-idle）；旧版 bridge 在 5min 内连续触发旧 30s×3 判死 → 无限退避重连循环的缺陷（详见 ADR-0011 §背景）随重启一并消失。
 
 ## 中间层处理规则
 
@@ -402,3 +444,5 @@ control 请求的通用回执。
 其余消息一律原样转发：`ping` / `pong` / `session_list` / `get_state` / `result` / `session_state` / **`list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove`（M4 新增）** 以及整个 [[architecture/protocol/pi.md|pi 家族]]。
 
 其中 `get_state` 由 web 发到 bridge，bridge 用本地内存作答（phase / blocked_on 的当前值），中间层不参与；`result` 是其回执。M4 的 `list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove` 同形态——web 发到 bridge，bridge 处理后回 `result`，中间层不参与处理内容；worker DO `routeOpenMessage` 的 `default` 兜底分支自动转发（与 `get_state` 同路径，零业务代码改动；M3 教训 `1c86aca` 同类补漏落地，详见 worker/src/room.ts §`routeOpenMessage` 注释）。
+
+**2026-09-10 修订注记**：bridge 不再主动 outbound `control/ping`，故中间层不再收到 bridge→DO 的 ping 帧；DO 仍直发自己的 ping 给 bridge（worker `heartbeat.ts`），bridge 回 pong 仍按转发规则原样处理。本节规则不变——ping/pong 仍是中间层原样转发的 9 类 frame 之一。
