@@ -125,3 +125,11 @@ status: done
 - **本地 commit 不 push**（沿用 M2 / M3 / M4）：本任务 2 笔 commit `8558e6d` + `b8d5e4d` + 任务 01–09 共 21 笔 commit 在任务 10 验收后由用户手动 `git push origin main` 触发 Actions CD（沿用 M2 deploy.yml）。
 - **M4 里程碑收官标记**：本任务 done 后 M4 全部 10 个任务 done，**M4 ✅ 完成**（详见 [[current-state.md#活跃需求|活跃需求]] M4 行收官条）——待用户 §10 手测验收 + 手动 push 触发 CD。
 - **挂账后续处理**：挂账 1（#6 文案位置议题）+ 挂账 2（stem-refilled watcher 跨 context 触发）已登记至 [[current-state.md#todo--阻塞|TODO / 阻塞]] 区，M+ / M5 候选。
+
+## 验收收单注记（2026-09-10）
+
+用户裁定（2026-09-10）按完成处理本任务，M4 正式收官——§10 手测验收清单 12 条未逐条勾选（沿用 [[tasks/m3/08-docs-and-validation.md#关单注记2026-09-08|M3 任务 08 关单先例]]，保持事实原貌）。
+
+验收期手测实际暴露并修复闭环的 4 个 gap 一句带过（commit `1d934de`+`bae1e2f` / `8d8e5e5`+`fe897c8`+`3514919` / `cb8a724`）——详情见文件内既有勘误/完成情况锚点 + 本文件已引用的 [[tasks/m4/06-bridge-session-layer.md|任务 06 勘误注记]]（首轮 + 2nd + 3rd gap 三段）与 [[tasks/m4/08-web-multi-session-store.md|任务 08 完成情况 §`264cefc` 实施末段「验收期 4th gap」]] 相关注记。
+
+唯一遗留：#6 文案位置微调候选（RecoveryInFlight vs RecoveryErrorCard），保留 [[current-state.md#todo--阻塞|current-state TODO / 阻塞]] 区挂账，M+ / M5 候选。

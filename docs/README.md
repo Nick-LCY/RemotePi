@@ -14,6 +14,7 @@
 | 词汇表 | 统一文档库术语含义 | [[glossary.md]] |
 | 需求 (PRD) | 了解某个需求的设计 | [[prds/README.md]] |
 | 任务 | 领取 / 查看开发任务 | [[tasks/README.md]] |
+| 历史归档 | 查 2026-09-09 之前的变更流水 | [[archive/recent-changes-2026-09.md]] |
 
 ## 生命周期
 
