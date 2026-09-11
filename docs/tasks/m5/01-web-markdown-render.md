@@ -84,3 +84,24 @@ status: done
 
 - **D1 体积预算口径解释**（PRD §1 字面按 build 总产出，本轮按**首屏 entry** 口径达标）——详见 [[prds/m5-uiux.md#修订注记2026-09-11-第一块收官|PRD §修订注记（2026-09-11）]]。
 - **新自定义组件 `inputBarKeydown.ts`**（`packages/web/src/components/inputBarKeydown.ts`）——任务 02 实施期抽离的纯函数 `decideKeyDownAction` 落点（PRD §4 字面未细化文件名；与 01 零冲突）；任务 02 完成情况含详情。
+
+## 验收期 gap 注记 2026-09-11 toolResult 归并修复
+
+> 状态 done（沿用本任务正文 done 状态）。本节为任务入档后**线上手测暴露的 1 个验收期 gap** 的修复落档——不另立任务文件，沿用 M4 验收期 4 gap 修复模式（参见 [[tasks/m4/08-web-multi-session-store.md#264cefc-实施sessionbucket-分桶--路由--per-session-视图全量|任务 08 验收期 4th gap 注记]] + [[tasks/m4/06-bridge-session-layer.md#勘误注记2026-09-09验收期-3rd-gapsessionjsonlpath-丢失--派生绑错-race3-commit-链|任务 06 验收期 3rd gap 注记]]），归档于本任务尾。
+
+**根因一句**：pi 真实数据中 tool result 是**独立消息** `{role:'toolResult', toolCallId, toolName, content:[{type:'text',text}], isError}`（匹配键 `toolCallId ↔ toolCall.id`），而 `AssistantMessageBody` 读的是 toolCall 块内嵌 `result` 字段（真实数据恒 undefined → 恒显 `pending…`）；用户线上手测发现 tool result 未与 toolCall 匹配、被渲染成独立未折叠纯文本行（实测单条 ~29k 字符）。
+
+**修法一句**：渲染层归并，**不动 WsClient / store / 协议 / bridge / worker / shared**（延续 D3 渲染层哲学）——新建纯函数 `mergeToolResults`（按 `toolCallId` 归并 toolResult 进 assistant toolCall 块，浅拷贝不可变；orphan 无匹配时保留独立项以折叠 `<details>` 渲染）+ pill 展开区显示 `result.text`（**不截断**，呼应 D4）+ `isError: true` 红色样式（复用 `--state-offline` vars，与 `.dialog-error` / `.dialog-host-toast` 同色族统一操作员「红色 = 失败」信号）+ 统一提取源 `extractMergedResult`（orphan 与 merge 字符级一致）+ orphan summary 一律 `(orphan)` 后缀（muted 颜色 + inline orphan-id span）+ 跨 assistant 同 id last-wins 钉桩 + 非法 result 形态回落 pending 钉桩（S7）。
+
+**两 commit**（领先 origin/main `173a5db`）：
+
+- **`1fa3b82`** fix(web): M5 验收期 gap —— toolResult 渲染层归并进 toolCall pill（isError 样式 + orphan 折叠）—— 新建 `mergeToolResults` + 22 条新单测（匹配 / 不可变 / orphan / isError / 乱序 / 部分匹配等）+ `AssistantMessageBody` 集成归并路径 + `ChatView` 加挂归并 seam + 红色 `.message-tool-result-error` 样式 + orphan `.message-tool-result-orphan` 样式。
+- **`d9c4409`** fix(web): toolResult 归并 review 收尾 —— 文本提取统一为单一真相源 `extractMergedResult`（orphan 与 merge 字符级一致）+ orphan summary 一律 `(orphan)` 后缀 + 跨 assistant 同 id last-wins 钉桩 + 非法 result 形态回落 pending 钉桩；+3 单测。**review 裁决记录**：Round1「整体可合入」+ 3 项收尾（多 text 块 join 语义不一致 / orphan 文案歧义 / last-wins 缺桩）全部在本 commit 落地。
+
+**测试数字**：单测 765 → **790**（+25：toolResultMerge 23 全新建 + assistant-message-body 30 = 原 28 + 2 集成归并新增 `3.2b` isError 样式 + `3.5` 非法 result 形态回落 pending）/ 集成 32/32 零回归 / e2e **8/8 零回归** / typecheck 4 包绿 / lint 0 error（5 pre-existing warnings）/ `pnpm -r build` 绿；web build **首屏 entry 253.44 KB raw / 74.10 KB gzip**（较本任务首次收官 250.76 KB +2.68 KB，仍 D1 ≤ 350 KB 按首屏口径达标）。
+
+**限制说明（守护范围）**：e2e **不覆盖**归并路径——fake LLM 不发 toolCall，故归并路径由 25 条单测（含匹配 / 不可变 / orphan / isError / 乱序 / 部分匹配 / last-wins / 非法形态回落 / `extractMergedResult` 字符级一致等）守护；e2e 8/8 仅验证基础路径无回归（markdown 渲染 / 流式分段 / thinking 折叠 / textarea 四行为 / 恢复仪式等）。
+
+**附带语义收益**：`pending…` 现在是精确瞬态（assistant 落地 → toolResult 到达之间），toolResult 到达后 pill **原位更新**，不再出现独立行；符合用户对 toolCall / result 一体化呈现的预期。
+
+**协议 / 协议层零改动 / 共享层零改动 / 雷区代码零改动**：纯渲染层修复（`AssistantMessageBody.tsx` + 新建 `components/toolResultMerge.ts` + `ChatView` 加挂归并 seam + `styles.css` 新增 `.message-tool-result-error` / `.message-tool-result-orphan` 两类样式）；WsClient / store / 协议 / bridge / worker 零改动；testid 锚点零增删；`migratePendingBucket` 五字段判据未动。详见 [[current-state.md#最近变更|最近变更 2026-09-11 同条目]]。

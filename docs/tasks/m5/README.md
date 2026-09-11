@@ -4,7 +4,7 @@
 
 ## 任务列表
 
-- [[tasks/m5/01-web-markdown-render.md|01 — web 渲染层结构化 + markdown 渲染 + thinking/tool 可折叠（含流式分段存储）]] ✅ done（2026-09-11，commits `926ae9c` + `1d08230` + `b1041e8`）
+- [[tasks/m5/01-web-markdown-render.md|01 — web 渲染层结构化 + markdown 渲染 + thinking/tool 可折叠（含流式分段存储）]] ✅ done（2026-09-11，commits `926ae9c` + `1d08230` + `b1041e8`；**验收期 gap 修复 +2 commit `1fa3b82` + `d9c4409`**——toolResult 归并进 toolCall pill（isError 样式 + orphan 折叠），详见任务 01 [[tasks/m5/01-web-markdown-render.md#验收期-gap-注记-2026-09-11-toolresult-归并修复|§验收期 gap 注记]]）
 - [[tasks/m5/02-web-input-textarea.md|02 — InputBar textarea 升级（换行 + 自动增高 + IME 守卫）]] ✅ done（2026-09-11，commits `f28295f` + `0594767`）
 - [[tasks/m5/03-e2e-and-validation.md|03 — E2E × 2 + 全量验证 + 文档收尾]] ✅ done（2026-09-11，无新 commit，验证 + 文档收尾即本体）
 
