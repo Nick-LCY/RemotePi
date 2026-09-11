@@ -30,3 +30,4 @@
 | [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md\|0010]] | 协议 v3 多会话解锁：control 9 → 13 type + envelope (a) 多字段 + envelope `session` 字段启用规则 + pending 键控 + SPAWN_TIMEOUT_MS | 已接受 | 2026-09-08 |
 | [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md\|0011]] | bridge 接收侧 read-idle 判死：移除 bridge 主动 ping，改读侧滑动窗口（验收期修补） | 已接受 | 2026-09-10 |
 | [[architecture/decisions/0012-challenge-based-duplicate-bridge-takeover.md\|0012]] | duplicate-bridge 挑战式接管：DO 侧活性探测闭环 bridge 1006 僵尸占槽永久拒新 bug | 已接受 | 2026-09-10 |
+| [[architecture/decisions/0013-bridge-reconnect-undici-close-missing-defense.md\|0013]] | bridge 重连状态机对 undici close 缺发的防御：身份守卫 + CONNECTING error 驱动 + idle 合成 handleClose | 已接受 | 2026-09-11 |
