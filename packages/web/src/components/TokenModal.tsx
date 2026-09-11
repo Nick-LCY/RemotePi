@@ -64,10 +64,11 @@
 // ## Migration note (D9)
 //
 // M3/M4 的 `TokenPrompt.tsx` 把 token 写到 `location.hash`；本
-// 组件是它的继承者——写到 `localStorage` + App 层 reload。组件文
-// 件本身保留 TokenPrompt.tsx 不删除（任务 06 sidebar 设置按钮要
-// 复用 closable 模式，但 TokenPrompt 的 hash-write 语义与本任务
-// 不兼容，留作 deprecated 不引用即可——任务 06 接入时再处理）。
+// 组件是它的继承者——写到 `localStorage` + App 层 reload。
+// `TokenPrompt.tsx` 已在 M5 任务 05 中删除（彻底删除，不留 deprecated
+// 副本——D9 明确不允许向后兼容迁移；旧书签 `#<token>&work_dir=...`
+// 形态会被 App 的 `auth.token === null` 路由到本组件的 required
+// 模式，提示用户重新粘贴新 token）。本组件是当前唯一入口。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 

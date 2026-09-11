@@ -89,6 +89,19 @@ import { BridgeStatusBar } from './BridgeStatusBar.js';
  *  truth). */
 type SidebarTab = 'sessions' | 'work-dirs';
 
+/** Default active tab for a given App view. `choiceLevel1` →
+ *  `'work-dirs'` (the user's next step is picking a directory);
+ *  every other view → `'sessions'`. Pure function — extracted
+ *  from the Sidebar render path so the W3 view-sync logic can
+ *  be unit-tested without spinning up a DOM / React reconciler
+ *  (the codebase intentionally avoids jsdom per ADR-0009 §决策 4
+ *  rationale; the unit surface here is the logic, not the mount). */
+export function defaultTabForView(
+  view: 'choiceLevel1' | 'choiceLevel2' | 'recovery',
+): SidebarTab {
+  return view === 'choiceLevel1' ? 'work-dirs' : 'sessions';
+}
+
 /** Props the App layer wires up. App owns the gateMapRef /
  *  handleRefill / sessionKey so the sidebar can stay pure
  *  (no App-level refs leak through). */
@@ -130,9 +143,29 @@ export function Sidebar(props: SidebarProps): JSX.Element {
   const { currentSession, currentWorkDir, view, onSettingsClick, onBrowseWorkDirsClick } = props;
   // active tab — internal useState (per task brief). Default
   // 由 view 决定：choiceLevel1 → WorkDirs (next step); 其余 → Sessions.
-  const [activeTab, setActiveTab] = useState<SidebarTab>(
-    view === 'choiceLevel1' ? 'work-dirs' : 'sessions',
+  // The same mapping is re-used by the W3 view-sync effect below
+  // (extracted as the exported `defaultTabForView` pure function
+  // so the unit test surface can pin it without a DOM).
+  const [activeTab, setActiveTab] = useState<SidebarTab>(() =>
+    defaultTabForView(view),
   );
+
+  // M5 task 06 review W3 — sync activeTab to view transitions.
+  // Without this, a user who lands on choiceLevel1 (default tab
+  // = WorkDirs) and then picks a work_dir → view flips to
+  // choiceLevel2 → activeTab STAYS at 'work-dirs' → the user
+  // sees the WorkDirsTab content while the right rail shows the
+  // level=2 panel + sessions header — a real UX bug, not just a
+  // cosmetic mismatch. The fix resets activeTab to view's
+  // default on every view change, while leaving same-view tab
+  // clicks fully free (the user can still flip tabs inside
+  // choiceLevel2 to glance at the WorkDirsTab without leaving
+  // the view). Effect deps: `[view]` is sufficient — the
+  // factory is a stable module-level export so its identity is
+  // stable across renders.
+  useEffect(() => {
+    setActiveTab(defaultTabForView(view));
+  }, [view]);
 
   return (
     <aside
@@ -380,13 +413,20 @@ function WorkDirsTab({ currentWorkDir, onOpenBrowser }: WorkDirsTabProps): React
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [removingPath, setRemovingPath] = useState<string | null>(null);
 
-  // Mount-time fetch — mirrors ChoiceLevel1Panel mount effect.
-  // Also re-fires on `currentWorkDir` change (hash navigation
-  // between work_dirs triggers a fresh fetch — the persistent
-  // sidebar doesn't unmount on view branches, so the dep list
-  // explicitly includes currentWorkDir to cover "user picks a
-  // new work_dir → list of all work_dirs may have grown via
-  // a DirectoryBrowser add → re-fetch to mirror the new state").
+  // M5 task 06 review W6 — `currentWorkDir` removed from deps.
+  // The work_dirs list is GLOBAL (one list of saved directories,
+  // not scoped to the current work_dir) — refetching on every
+  // level=2 work_dir navigation was redundant. Refetch paths now:
+  //   - mount (initial fetch),
+  //   - connState transition (retry after reconnect),
+  //   - post-add (fired explicitly in App.tsx onAdded → the
+  //     one place in the codebase that knows an add just landed),
+  //   - post-remove (inline in handleRemove below; mirror of
+  //     the post-add pattern).
+  // Spec 04 (work_dir_add → level=2 → back to level=1 → list
+  // contains new entry) is covered by the post-add explicit
+  // refetch; the test stays green without the old
+  // currentWorkDir dep.
   useEffect(() => {
     setRemoveError(null);
     if (connState !== 'online') return;
@@ -403,7 +443,7 @@ function WorkDirsTab({ currentWorkDir, onOpenBrowser }: WorkDirsTabProps): React
       clearTimeout(watchdog);
       unsub?.();
     };
-  }, [client, connState, currentWorkDir]);
+  }, [client, connState]);
 
   const handleSelect = (path: string): void => {
     window.location.hash = selectWorkDirHash(path);

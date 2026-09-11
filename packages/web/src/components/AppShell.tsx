@@ -29,29 +29,32 @@
 // the drawer — `sidebarOpen`/`onToggle` are reserved props for
 // task 07 to wire without re-architecting this layout).
 //
-// ## Why AppShell does NOT own gateMapRef / handleRefill
+// ## Why AppShell is purely a layout container
 //
 // M4 task 08 / 验收期 4th gap 修复 (commit `264cefc`) lifts the
 // gate map + the stem-refilled `handleRefill` callback into App
 // level — the watcher requires App-level closure stability so
 // `useCallback` deps don't churn and the watcher doesn't re-attach
 // mid-flight (which would drop the session_state event between
-// unsubscribe and resubscribe, losing the stem refill). Moving
-// those refs into AppShell would move the watcher into AppShell
-// too, which would break the M4 4th-gap fix's invariant. **AppShell
-// is purely a layout container** — all state stays in App.
+// unsubscribe and resubscribe, losing the stem refill). AppShell
+// has NO `client` / `gateMapRef` props — the gate map and the
+// WsClient both live in App, and `<RecoveryShell>` is rendered
+// by App directly inside `mainContent`. AppShell's job ends at
+// "lay out [sidebar | mainContent] in a grid".
 //
-// ## props
+// ## Props
 //
-//   - `gateMapRef` / `client` — pass-through to `RecoveryShell` so
-//     the gate map stays owned by App.
-//   - `sidebarOpen` / `onToggle` — reserved for task 07 (mobile
-//     drawer). `sidebarOpen` is currently a no-op render prop
-//     (defaults `true` for desktop); `onToggle` defaults to a
-//     no-op stub. Task 07 reads `matchMedia('(max-width:
-//     767px)')` to flip the prop and adds the drawer backdrop.
 //   - `mainContent` — the right-rail content (ChoicePage /
-//     ChatView / RecoveryView / etc.).
+//     ChatView / RecoveryView / etc.). Already wired by App:
+//     App composes `<SessionStatusBar>` + `<RecoveryShell>` /
+//     `<ChoiceLevel{1,2}Panel>` and passes the fragment as
+//     `mainContent`. AppShell doesn't need (or want) access to
+//     the WsClient or the gate map to do its layout job.
+//   - Sidebar session-state props — current session (or null) +
+//     work_dir (or null) + current view (drives default tab).
+//   - `onSettingsClick` / `onBrowseWorkDirsClick` — Sidebar
+//     dispatches these up to App (which owns the TokenModal
+//     closable state + the DirectoryBrowser modal slot).
 //
 // ## Tailwind only
 //
@@ -62,9 +65,6 @@
 
 import type { ReactNode } from 'react';
 
-import type { WsClient } from '../ws/WsClient.js';
-import type { RecoveryGate } from '../ws/recovery.js';
-
 import { Sidebar } from './Sidebar.js';
 
 // ---------------------------------------------------------------------------
@@ -72,15 +72,12 @@ import { Sidebar } from './Sidebar.js';
 // ---------------------------------------------------------------------------
 
 export interface AppShellProps {
-  /** WebSocket client. Created once in App (useMemo) and passed
-   *  through. */
-  client: WsClient;
-  /** Per-session RecoveryGate map (M4 task 08 / 4th gap fix).
-   *  Owned by App level — AppShell only forwards it to
-   *  `RecoveryShell`. */
-  gateMapRef: { current: Map<string, RecoveryGate> | null };
-  /** Right-rail content — the App layer passes `<RecoveryShell>`,
-   *  `<ChoicePage level={1} />`, etc. */
+  /** Right-rail content — the App layer composes a fragment of
+   *  `<SessionStatusBar>` + `<RecoveryShell>` / `<ChoiceLevel{1,
+   *  2}Panel>` and passes it here. AppShell does NOT touch the
+   *  WsClient or the gate map — those live in App, and the
+   *  right-rail components that need them are wired by App
+   *  directly. */
   mainContent: ReactNode;
   /** Sidebar session-state props — current session (or null) +
    *  work_dir (or null) + current view (drives default tab). */

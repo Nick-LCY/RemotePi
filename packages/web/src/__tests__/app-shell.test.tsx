@@ -26,10 +26,10 @@
 //   4. view=recovery → sidebar Sessions tab + main slot
 //   5. settings-button 渲染
 //   6. work-dir-browse 渲染（DirectoryBrowser modal 化接线锚点）
-//   7. M5 task 05 review W2 — closable 接线状态同步（App.tsx 静态扫描 +
+//   7. M5 task 06 review W2 — closable 接线状态同步（App.tsx 静态扫描 +
 //      tokenStorage round-trip 验证）
-//   8. M5 task 05 review W1 — write 失败不 reload（token-storage.test.ts
-//      §18/§19 钉桩）
+//   8. M5 task 06 review W1 — AppShell 接 grid + 不再需要 client / gateMapRef
+//      props（W1：layout 容器；gateMapRef 与 client 留在 App 层）
 
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement, type ReactElement } from 'react';
@@ -38,7 +38,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../components/AppShell.js';
 import { WsClient } from '../ws/WsClient.js';
 import { WsClientProvider } from '../ws/WsClientContext.js';
-import type { RecoveryGate } from '../ws/recovery.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers — stub the WsClient.
@@ -74,9 +73,8 @@ function makeFakeWsClient(): WsClient {
   return client;
 }
 
-function makeGateMapRef(): { current: Map<string, RecoveryGate> | null } {
-  return { current: new Map() };
-}
+// M5 task 06 review W1 — `makeGateMapRef` removed: AppShell no
+// longer accepts a `gateMapRef` prop (gate map lives in App).
 
 // ---------------------------------------------------------------------------
 // Per-test fixtures
@@ -108,17 +106,19 @@ interface RenderAppShellOpts {
 
 function renderShell(opts: RenderAppShellOpts = {}): string {
   const client = makeFakeWsClient();
-  const gateMapRef = makeGateMapRef();
   const mainContent = opts.mainContent ?? createElement('div', { 'data-testid': 'main-slot' });
   const onSettingsClick = opts.onSettingsClick ?? (() => undefined);
   const onBrowseWorkDirsClick = opts.onBrowseWorkDirsClick ?? (() => undefined);
+  // M5 task 06 review W1 — `client` / `gateMapRef` removed from
+  // AppShellProps. AppShell is purely a layout container; the
+  // WsClient + gate map live in App and are wired into
+  // `mainContent` directly (RecoveryShell is composed by App, not
+  // forwarded through AppShell).
   const element: ReactElement = createElement(
     WsClientProvider,
     {
       client,
       children: createElement(AppShell, {
-        client,
-        gateMapRef,
         currentSession: opts.currentSession ?? null,
         currentWorkDir: opts.currentWorkDir ?? null,
         view: opts.view ?? 'choiceLevel1',

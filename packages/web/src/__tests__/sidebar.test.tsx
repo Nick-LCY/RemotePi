@@ -20,7 +20,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Sidebar } from '../components/Sidebar.js';
+import { Sidebar, defaultTabForView } from '../components/Sidebar.js';
 import { WsClient } from '../ws/WsClient.js';
 import { WsClientProvider } from '../ws/WsClientContext.js';
 
@@ -292,5 +292,56 @@ describe('Sidebar — brand slot (D8 品牌位移入 sidebar)', () => {
     const html = renderSidebar({ view: 'recovery' });
     expect(html).toContain('data-testid="brand"');
     expect(html).toMatch(/<h1[^>]*data-testid="brand"[^>]*>RemotePi<\/h1>/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. M5 task 06 review W3 — activeTab syncs to view transitions
+// ---------------------------------------------------------------------------
+
+// The fix lives inside the Sidebar component (useEffect that resets
+// activeTab when `view` changes). useEffect doesn't run during
+// `renderToStaticMarkup` (SSR), so the test surface here is the
+// pure helper `defaultTabForView` that the effect consults + the
+// initial-mount render path that consults the same helper (cases
+// 1a/1b/1c above already exercise the helper via render output).
+//
+// The actual transition behaviour (view=choiceLevel1 → view
+// changes to choiceLevel2 → activeTab syncs from 'work-dirs' to
+// 'sessions') is exercised end-to-end in the e2e suite (specs
+// 01/02/03/04/05/06/07/08 all transition between views and rely
+// on the sidebar surfacing the correct list at each step).
+// Here we pin the helper logic + structural anchors so a future
+// regression in the W3 fix surfaces in unit-land.
+
+describe('Sidebar — M5 task 06 review W3 activeTab syncs to view', () => {
+  it('7a. defaultTabForView(choiceLevel1) → work-dirs', () => {
+    expect(defaultTabForView('choiceLevel1')).toBe('work-dirs');
+  });
+
+  it('7b. defaultTabForView(choiceLevel2) → sessions', () => {
+    expect(defaultTabForView('choiceLevel2')).toBe('sessions');
+  });
+
+  it('7c. defaultTabForView(recovery) → sessions', () => {
+    expect(defaultTabForView('recovery')).toBe('sessions');
+  });
+
+  it('7d. Sidebar mount with view=choiceLevel1 → data-active-tab="work-dirs"（initial state 由 helper 决定）', () => {
+    // Re-pins the W3 helper at the mount boundary; the same helper
+    // is also consulted by the view-sync effect on subsequent
+    // re-renders. Together they guarantee that the rendered
+    // data-active-tab always matches view's default.
+    const html = renderSidebar({ view: 'choiceLevel1' });
+    const sidebarMatch = html.match(/<aside[^>]*data-testid="sidebar"[^>]*>/);
+    expect(sidebarMatch).not.toBeNull();
+    expect(sidebarMatch![0]).toMatch(/data-active-tab="work-dirs"/);
+  });
+
+  it('7e. Sidebar mount with view=choiceLevel2 → data-active-tab="sessions"（initial state 由 helper 决定）', () => {
+    const html = renderSidebar({ view: 'choiceLevel2', currentWorkDir: '/home/me' });
+    const sidebarMatch = html.match(/<aside[^>]*data-testid="sidebar"[^>]*>/);
+    expect(sidebarMatch).not.toBeNull();
+    expect(sidebarMatch![0]).toMatch(/data-active-tab="sessions"/);
   });
 });

@@ -48,10 +48,10 @@
 
 interface ChoiceLevel1PanelProps {
   /** Optional error from a recent `work_dir_remove` that
-   *  happened in the Sidebar's WorkDirsTab. The sidebar dispatches
-   *  the error up here so the user sees the message in the
-   *  right rail (the panel area) rather than cramped in the
-   *  sidebar footer. Optional — when null, no banner renders. */
+   *  happened in the Sidebar's WorkDirsTab. Reserved for future
+   *  surfacing — current Sidebar shows the remove error inline
+   *  in its own WorkDirsTab (data-testid="choice-page-remove-error"
+   *  owned by Sidebar). Optional — when null, no banner renders. */
   removeError?: string | null;
 }
 
@@ -71,18 +71,21 @@ export function ChoiceLevel1Panel(props: ChoiceLevel1PanelProps): JSX.Element {
           className="m-0 rounded border border-state-offline px-3 py-2 text-sm text-state-offline"
           style={{ backgroundColor: 'rgba(192, 57, 43, 0.08)' }}
           role="alert"
-          data-testid="choice-page-remove-error"
         >
           {removeError}
         </p>
       ) : null}
 
-      {/* Empty-state CTA — the user has no work_dirs yet. The
-          sidebar's WorkDirsTab renders the actual list (or its
-          own empty-state) AND the 「浏览添加」 button. We removed
-          the duplicate button from this panel — see the component
-          header JSDoc for the testid 零增零删 rationale. */}
-      <p className="m-0 text-sm text-muted" data-testid="work-dir-empty">
+      {/* Empty-state hint — points the user to the Sidebar's
+          WorkDirsTab which owns the actual list (data-testid=
+          "work-dir-list") + empty-state ("work-dir-empty") +
+          「浏览添加」 button. This panel is a soft visual reminder
+          only; the canonical work-dir surface lives in the
+          Sidebar (persistent, single source of truth — Playwright
+          strict-mode friendly). No data-testid on this hint so
+          spec selectors can rely on the Sidebar's anchor without
+          colliding with this duplicate. */}
+      <p className="m-0 text-sm text-muted">
         暂无保存的工作目录。请通过左侧 WorkDirs 标签的「浏览添加」按钮选择一个目录。
       </p>
     </section>

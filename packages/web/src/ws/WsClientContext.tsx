@@ -77,13 +77,16 @@ export function useWsClient(): WsClient {
  * no-op updates from re-rendering.
  *
  * M5 task 06 — added `getServerSnapshot` arg (returns the same as
- * `getSnapshot`) so unit tests can render via `renderToStaticMarkup`
- * without crashing on React 18's "Missing getServerSnapshot" SSR
- * check. The server snapshot is identical to the client snapshot
- * because the WsClient state is process-local (no separate server
- * store). Without this, ANY component that uses useWsState would
- * fail SSR; the M5 task 06 AppShell test suite needs SSR for
- * testid assertions.
+ * `getSnapshot`) to enable SSR-rendering tests via
+ * `renderToStaticMarkup` without crashing on React 18's
+ * "Missing getServerSnapshot" SSR check. The server snapshot
+ * is identical to the client snapshot because the WsClient
+ * state is process-local (no separate server-side store — the
+ * same in-memory WsClient instance is the single source of
+ * truth on both server and client during a SSR-to-string
+ * render). This argument is purely a SSR-render seam for unit
+ * testing; it has no behavioural effect on production renders,
+ * where `getSnapshot` is always consulted.
  */
 export function useWsState<T>(selector: (client: WsClient) => T): T {
   const client = useWsClient();

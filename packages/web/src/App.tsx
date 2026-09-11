@@ -15,7 +15,7 @@
 //      4 类错误文案（新增 `bridge_offline`） + auto-start 补
 //      bridgeStatus offline 守门。bridge / worker 零改动。
 //   6. M4 task 07 — ChoicePage 三态分派（钉子 6 决策表）：no token
-//      → TokenPrompt; token + no work_dir → ChoicePage level=1;
+//      → <TokenModal required>; token + no work_dir → ChoicePage level=1;
 //      token + work_dir + no session → ChoicePage level=2;
 //      token + work_dir + session → RecoveryView/ChatView.
 //   7. M4 task 08 — per-session ChatView + per-session
@@ -28,13 +28,37 @@
 //      fired so ChoicePage level=2's mirror catches up
 //      (钉子 5 — stem 回填后重查).
 //   8. M5 task 06 — AppShell 双栏装配（任务书 §a/§g）：
-//      AppShell 接 sidebar + main 两栏；gateMapRef / handleRefill
-//      仍在 App 层创建（不下移——M4 验收期 4th gap 修复路径要求
-//      App 级闭包稳定），props 透传到 RecoveryShell。
-//      Sidebar 持 Sessions/WorkDirs tabs + 列表区 + 设置按钮
-//      → TokenModal closable；SessionStatusBar 接管对话区顶部
-//      status bar（本 session 状态）。DirectoryBrowser modal 化
-//      （`open` prop；App 持 `browserOpen` state）。
+//      AppShell 是布局容器，只接 sidebar + main 两栏；client /
+//      gateMapRef / handleRefill 全部留在 App 层（不下移——
+//      M4 验收期 4th gap 修复路径要求 App 级闭包稳定），RecoveryShell
+//      由 App 直接 mount 到 mainContent 里。AppShell 接 Sidebar 的
+//      列表 / tabs / 设置按钮 → TokenModal closable；
+//      SessionStatusBar 接管对话区顶部 status bar（本 session 状态）。
+//      DirectoryBrowser modal 化（`open` prop；App 持 `browserOpen`
+//      state）。
+//
+// ## M5 task 06 review W1 — AppShell dead props removed
+//
+// `client` and `gateMapRef` were declared on AppShellProps but never
+// read by the AppShell component body (RecoveryShell is now
+// composed by App into `mainContent`, so AppShell has no need
+// to forward them). Removed from the type + the call site;
+// AppShell is purely a layout container.
+//
+// ## M5 task 06 review W2 — closable submit no longer double-connects
+//
+// The old `closable` submit did `client.connect(value)` immediately
+// after `tokenStorage.write()`, then `setAuth(readAuth())`. The
+// `setAuth` triggered the `useEffect([client, auth.token])` effect
+// which called `client.connect(auth.token)` a SECOND time. The
+// second connect tore down the first socket mid-handshake (WsClient
+// `connect()` teardown is unconditional — it calls `disconnect()`
+// on any existing socket first), causing the freshly-opened
+// subprotocol handshake to abort. The fix is to drop the manual
+// `client.connect(value)` call entirely; the useEffect is the
+// sole, deterministic connect path. `setAuth(readAuth())` is still
+// required (hash is unchanged so `hashchange` doesn't fire) so
+// React state catches up to the new localStorage source of truth.
 //
 // ## M5 task 05 review W1 — write-failure handling
 //
@@ -42,25 +66,57 @@
 // submit handlers check the return and:
 //   - required mode → if (ok) window.location.reload(); else
 //     setStorageError(true) (inline error banner in TokenModal).
-//   - closable mode → if (ok) client.connect(value) +
-//     setAuth(readAuth()); else setStorageError(true).
+//   - closable mode → if (ok) setAuth(readAuth()) only (W2 —
+//     no manual connect); else setStorageError(true).
 // Failure surfaces inline ("浏览器禁用了本地存储，无法保存 token")
 // — no silent no-op / no infinite-reload loop.
 //
-// ## M5 task 05 review W2 — closable auth state sync
+// ## M5 task 05 review W2 — closable auth state sync (superseded by W2)
 //
-// Settings → TokenModal closable → submit success → MUST call
-// `setAuth(readAuth())` after `client.connect(newToken)` to keep
-// `auth.token` state in sync with localStorage. Without this, the
-// app's `auth.token` snapshot would lag the localStorage source of
-// truth (any subsequent `useEffect` dep on `auth.token` would
-// read the stale value until the next `hashchange`).
+// Settings → TokenModal closable → submit success → call
+// `setAuth(readAuth())` to keep `auth.token` state in sync with
+// localStorage. The original review also asked for a manual
+// `client.connect(value)`; W2 (above) drops that call because
+// the `useEffect([client, auth.token])` already drives the
+// connect deterministically.
 //
-// The URL hash is the single source of truth. The TokenModal /
-// ChoicePage / DirectoryBrowser all write `window.location.hash` and
-// the `hashchange` listener re-derives the auth model via
-// `readAuth()` (token from localStorage + work_dir/session from
-// hash). `decideView()` then picks the render branch.
+// The URL hash is the single source of truth for navigation.
+// The TokenModal / ChoicePage / DirectoryBrowser all write
+// `window.location.hash` and the `hashchange` listener re-derives
+// the auth model via `readAuth()` (token from localStorage +
+// work_dir/session from hash). `decideView()` then picks the
+// render branch.
+//
+// ## M5 task 06 review W6 — Sidebar WorkDirsTab refresh semantics
+//
+// Sidebar's WorkDirsTab effect no longer depends on `currentWorkDir`.
+// Rationale: the work_dirs list is GLOBAL (one list of saved
+// directories, not scoped to the current work_dir). Refetching
+// whenever the user navigates between work_dirs (level=2 → 更换目录
+// → click another row) was redundant — the list contents haven't
+// changed just because the user picked a different work_dir.
+//
+// Refetch still fires on:
+//   - mount (initial fetch),
+//   - connState transition (retry after reconnect),
+//   - post-add (fired explicitly in `onAdded` below — see the
+//     DirectoryBrowser render block),
+//   - post-remove (already inline in Sidebar's handleRemove).
+//
+// The four-path coverage keeps spec 04 (work_dir_add → level=2 →
+// back to level=1 → list contains new entry) stable while
+// eliminating the redundant refetches on level=2 work_dir
+// navigation.
+//
+// ## M5 task 06 review W3 — Sidebar activeTab syncs to view
+//
+// view transitions (e.g. choiceLevel1 → choiceLevel2 after a
+// work_dir is picked) used to leave `activeTab` stuck at
+// 'work-dirs', hiding the Sessions tab on the very surface
+// where the user wanted to see the session list. Fixed via a
+// useEffect in Sidebar that resets activeTab to view's default
+// when `view` changes; same-view tab clicks remain free
+// (controlled by local state).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncExternalStore } from 'react';
@@ -119,6 +175,50 @@ function readAuth(): { token: string | null; workDir: string | null; session: st
  *  handlers set the same message via `setStorageError(true)`. */
 const STORAGE_ERROR_COPY = '浏览器禁用了本地存储，无法保存 token';
 
+/** Pure handler for the closable-mode TokenModal flow (M5 task 05
+ *  D10 + task 06 review W2). Extracted out of `<App />` so the
+ *  W2 single-connect invariant can be unit-tested without
+ *  spinning up a DOM / React reconciler.
+ *
+ *  Contract:
+ *   1. `tokenStorage.write(value)` returns false → set
+ *      storageError, return (no connect, no setAuth).
+ *   2. write succeeds → `setAuth(readAuth())` ONLY. The
+ *      `useEffect([client, auth.token])` in App is the sole
+ *      connect path — calling `client.connect(value)` here
+ *      would race with the effect's cleanup-then-reconnect and
+ *      tear down the freshly-opened handshake.
+ *
+ *  The handler does NOT call `client.connect()` directly — that's
+ *  the load-bearing invariant of W2. The test in
+ *  `app-token-submit.test.ts` pins this with a spy on
+ *  `client.connect`.
+ */
+export function handleClosableTokenSubmit(args: {
+  value: string;
+  client: Pick<WsClient, 'connect'>;
+  setAuth: (auth: { token: string | null; workDir: string | null; session: string | null }) => void;
+  setStorageError: (msg: string | null) => void;
+  readAuth: () => { token: string | null; workDir: string | null; session: string | null };
+}): void {
+  const { value, client, setAuth, setStorageError, readAuth } = args;
+  setStorageError(null);
+  const ok = tokenStorage.write(value);
+  if (!ok) {
+    setStorageError(STORAGE_ERROR_COPY);
+    return;
+  }
+  // M5 task 06 review W2 — single `setAuth` is enough.
+  // The `useEffect([client, auth.token])` cleanup disconnects
+  // the old socket, then opens the new one with the
+  // freshly-cached token. Manually calling `client.connect(value)`
+  // here would race with the effect-driven connect (both close
+  // the old socket independently → second handshake tears down
+  // the first's progress).
+  void client; // intentionally not called — see W2 above.
+  setAuth(readAuth());
+}
+
 export function App() {
   const [auth, setAuth] = useState(() => readAuth());
   // M5 task 05 review W1 — `storageError` 状态：当
@@ -140,7 +240,7 @@ export function App() {
   const client = useMemo(() => new WsClient(resolveWssUrl()), []);
 
   // Hash is the single source of truth — listen for both programmatic
-  // writes (TokenPrompt / ChoicePage / DirectoryBrowser) and
+  // writes (TokenModal / ChoicePage / DirectoryBrowser) and
   // back/forward navigation. The listener is stable and only depends
   // on `setAuth`, which is itself stable. We also mirror the parsed
   // `work_dir` + `session` into the WsClient store so outbound
@@ -338,8 +438,6 @@ export function App() {
     <>
       <WsClientProvider client={client}>
         <AppShell
-          client={client}
-          gateMapRef={gateMapRef}
           currentSession={sessionForSessionBar}
           currentWorkDir={auth.workDir}
           view={view}
@@ -361,7 +459,20 @@ export function App() {
           onCancel / onAdded, both reset the open state. App owns
           the `open` state so the sidebar's WorkDirsTab 「浏览添加」
           button + a future `WorkDirsTab → 直接 mount` (M+ candidate)
-          can share the same modal slot. */}
+          can share the same modal slot.
+
+          M5 task 06 review W6 — `onAdded` also fires
+          `client.sendWorkDirList()` to refresh the Sidebar's
+          `useWorkDirs()` mirror. The Sidebar's WorkDirsTab effect
+          no longer depends on `currentWorkDir` (the work_dirs
+          list is global — switching work_dirs at level=2
+          doesn't change its contents, so refetching on
+          workDir-change was redundant). The post-add refresh
+          is now driven from THIS callback, which is the single
+          point in the codebase that knows an add just landed.
+          Mirror mirroring the same pattern as
+          `handleRemove` in Sidebar.tsx (which also calls
+          `sendWorkDirList()` inline after a successful remove). */}
       {browserOpen ? (
         <WsClientProvider client={client}>
           <DirectoryBrowser
@@ -369,6 +480,10 @@ export function App() {
             onAdded={(path: string) => {
               setBrowserOpen(false);
               window.location.hash = `work_dir=${encodeURIComponent(path)}`;
+              // W6 — post-add refresh; the bridge updated
+              // state.json but does NOT push a new work_dir_list
+              // to the web, so the web has to ask.
+              client.sendWorkDirList();
             }}
             onCancel={handleCloseBrowser}
           />
@@ -378,23 +493,32 @@ export function App() {
       {/* TokenModal closable — settings button → open. Submit:
           M5 task 05 review W2 — 必须 setAuth(readAuth()) 同步
           auth state 与 localStorage（避免脱钩）。Failure → 内联
-          storageError banner（review W1）。 */}
+          storageError banner（review W1）。
+
+          M5 task 06 review W2 — removed the explicit
+          `client.connect(value)` call. The previous code did
+          `write → connect → setAuth(readAuth())` which double-
+          connected: the manual `connect()` opened a fresh socket
+          AND the `useEffect([client, auth.token])` effect below
+          saw `auth.token` change via `setAuth(readAuth())` and
+          fired ANOTHER `connect()`, tearing down the first
+          socket mid-handshake. Now we only `setAuth(readAuth())`
+          — the existing useEffect handles the (re)connect
+          deterministically exactly once per `auth.token` change,
+          with proper cleanup. `hashchange` doesn't fire (hash
+          is unchanged), so the explicit `setAuth` is required
+          to flush the new token into React state. */}
       {settingsOpen ? (
         <TokenModal
           required={false}
           onSubmit={(value: string) => {
-            setStorageError(null);
-            const ok = tokenStorage.write(value);
-            if (!ok) {
-              setStorageError(STORAGE_ERROR_COPY);
-              return;
-            }
-            // Review W2 — 三步走：write → connect → setAuth(readAuth())
-            // 保持 auth state 与 localStorage 同步。hash 没变 → 不触发
-            // hashchange listener → 主动调 setAuth 让 React state
-            // 立即刷新。
-            client.connect(value);
-            setAuth(readAuth());
+            handleClosableTokenSubmit({
+              value,
+              client,
+              setAuth,
+              setStorageError,
+              readAuth,
+            });
             setSettingsOpen(false);
           }}
           onClose={handleCloseSettings}

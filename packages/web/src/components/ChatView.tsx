@@ -1,17 +1,19 @@
 // ChatView — M3 main chat surface (PRD §4.3), made per-session in M4
 // task 08 (PRD §4.6).
 //
-// Composition:
-//   <PhaseIndicator />   — StatusBar-below row showing current phase.
-//                          `work_dir` source: not part of v1 wire
-//                          surface (only bridge config knows it);
-//                          we display only phase and note the gap in
-//                          the dev report (PRD §4.3 wording allows
-//                          this fallback).
+// Composition (M5 task 06 review W4 simplified):
 //   <MessageList />      — History + streaming draft (typing effect).
-//   <QueueIndicator />   — Steering + followUp queue lengths.
 //   <InputBar />         — Text input + send + abort.
 //   <DialogHost />       — Layered dialog renderer over the chat.
+//
+// The previous render tree also mounted a per-session <PhaseIndicator />
+// + <QueueIndicator /> pair. Both moved into the new
+// `<SessionStatusBar>` (M5 task 06 §a) which sits at the top of the
+// right rail — the user no longer sees phase badge + queue pills
+// twice (once inside ChatView, once on the new bar). The component
+// bodies are removed (dead code is worse than a clean removal;
+// SessionStatusBar inlines its own phase + queue rendering rather
+// than depending on these local helpers).
 //
 // M4 task 08 (PRD §4.6): ChatView now takes a `session` prop and
 // reads/writes exclusively from the per-session bucket via
@@ -42,7 +44,6 @@ import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
 import {
   useCommandErrorSubscription,
   useMessagesFor,
-  useQueueFor,
   useSessionPhaseFor,
   useStreamingDraftFor,
   useWsClient,
@@ -107,7 +108,15 @@ function prewarmMarkdownChunk(): void {
  *  doesn't carry the 170 KB chunk. The chunk only becomes
  *  load-bearing when a terminal assistant message renders —
  *  the streaming draft path renders plain text and never
- *  touches `<AssistantMessageBody>`. */
+ *  touches `<AssistantMessageBody>`.
+ *
+ *  M5 task 06 review W4 — removed `<PhaseIndicator />` +
+ *  `<QueueIndicator />` from the render tree. The new
+ *  `<SessionStatusBar>` (mounted by App above this subtree)
+ *  already shows the same phase + queue data; rendering both
+ *  was visible duplication (the user saw two phase badges + two
+ *  queue pills for one session). The component bodies are
+ *  removed (cleaner than leaving dead helpers). */
 export function ChatView({ session, workDir }: { session: string; workDir: string }) {
   useEffect(() => {
     // Fire-and-forget preload of the markdown chunk. Runs once
@@ -119,57 +128,11 @@ export function ChatView({ session, workDir }: { session: string; workDir: strin
   }, []);
   return (
     <div className="chat-view" data-testid="chat-view" data-session={session}>
-      <PhaseIndicator session={session} />
       <MessageList session={session} />
-      <QueueIndicator session={session} />
       <InputBar session={session} workDir={workDir} />
       <DialogHost />
     </div>
   );
-}
-
-// ---------------------------------------------------------------------------
-// PhaseIndicator
-// ---------------------------------------------------------------------------
-
-/** Small row below the StatusBar showing the current pi subprocess
- *  phase for the per-session bucket. The 5-value enum maps to 5
- *  distinct visual states so the user can spot the transition
- *  between "agent thinking" and "ready for input" at a glance.
- *
- *  `work_dir` is intentionally NOT shown: the v1 wire surface does
- *  not carry bridge-side configuration to the web client, and the
- *  task brief authorises the phase-only fallback ("若无来源则以
- *  phase 为准并在汇报中说明"). The dev report covers this gap. */
-function PhaseIndicator({ session }: { session: string }) {
-  const phase = useSessionPhaseFor(session);
-  const label = phase ?? 'unknown';
-  const hint = phaseHint(phase);
-  return (
-    <div className="phase-indicator" aria-live="polite" data-phase={phase ?? 'unknown'}>
-      <span className={`phase-badge phase-${phase ?? 'unknown'}`}>{label}</span>
-      {hint !== null ? <span className="phase-hint">{hint}</span> : null}
-    </div>
-  );
-}
-
-function phaseHint(phase: ReturnType<typeof useSessionPhaseFor>): string | null {
-  switch (phase) {
-    case 'spawning':
-      return 'spawning pi…';
-    case 'ready':
-      return 'ready';
-    case 'running':
-      return 'agent is working — input disabled';
-    case 'idle':
-      return 'agent settled — 5 min idle timer running';
-    case 'exited':
-      return 'exited — next message will respawn pi';
-    case null:
-      return 'awaiting first session_state…';
-    default:
-      return null;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -610,39 +573,6 @@ function extractJson(value: unknown): string {
   } catch {
     return '[unserializable message]';
   }
-}
-
-// ---------------------------------------------------------------------------
-// QueueIndicator
-// ---------------------------------------------------------------------------
-
-/** Tiny footer showing the steering + follow_up queue depths. Hidden
- *  when both queues are empty to keep the chat surface uncluttered
- *  (most of the time the queues are empty). */
-function QueueIndicator({ session }: { session: string }) {
-  const queue = useQueueFor(session);
-  const total = queue.steering.length + queue.followUp.length;
-  if (total === 0) return null;
-  return (
-    <div className="queue-indicator" role="status" aria-live="polite" data-testid="queue-indicator">
-      <span
-        className="queue-pill"
-        title="Messages currently steering the running turn (mid-run inserts)"
-        data-testid="queue-indicator-steering"
-        data-count={queue.steering.length}
-      >
-        steering: <strong>{queue.steering.length}</strong>
-      </span>
-      <span
-        className="queue-pill"
-        title="Messages queued for after the current turn settles"
-        data-testid="queue-indicator-follow-up"
-        data-count={queue.followUp.length}
-      >
-        follow-up: <strong>{queue.followUp.length}</strong>
-      </span>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
