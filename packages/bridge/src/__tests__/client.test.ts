@@ -31,6 +31,17 @@ class MockSocket implements WebSocketLike {
   /** `close()` calls — captured separately from `simulateClose()` (which
    *  fires the onclose handler) so tests can tell who initiated the close. */
   readonly closeCalls: Array<{ code?: number; reason?: string }> = [];
+  /** When `true`, `close()` still records the call and flips readyState
+   *  to CLOSED, but does NOT fire `onclose`. Simulates undici's
+   *  zombie-socket behaviour: the bridge calls `close(1000, 'idle
+   *  timeout')`, the OS hasn't fully torn down the TCP socket yet, and
+   *  the platform doesn't deliver a close event until
+   *  tcp_retries2=15 (~13-30 min). Tests that want the synthetic
+   *  reconnect path (handleIdleTimeout → handleClose without waiting
+   *  for an event) flip this on before advancing the idle timer.
+   *  Defaults to `false` so the synchronous-fire behaviour matches
+   *  every other test in this file. */
+  suppressOnclose = false;
 
   onopen: ((ev: Event) => void) | null = null;
   onclose: ((ev: CloseEvent) => void) | null = null;
@@ -55,6 +66,11 @@ class MockSocket implements WebSocketLike {
     // the reconnect without `await`.
     if (this.readyState === 3) return; // already CLOSED
     this.readyState = 3;
+    // Zombie mode: the OS hasn't fully torn down the TCP socket yet,
+    // so the platform can't deliver a close event. The bridge's
+    // reconnect path must NOT depend on this event firing — see
+    // handleIdleTimeout's synthetic handleClose for the contract.
+    if (this.suppressOnclose) return;
     // Bridge-initiated closes don't carry a real CloseEvent (the
     // default `node` env has no constructor for it), and the bridge
     // only needs `code` / `reason` from server-initiated drops. So
@@ -127,6 +143,34 @@ function installLoggerSpies(): void {
   infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
   warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
   vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+}
+
+/** Pull the `reconnecting in Nms` value out of the most recent
+ *  handleClose log line. The tests that need to advance the backoff
+ *  timer exactly read the delay from the log (5e established this
+ *  pattern) so they never over/under-advance and let a stale timer
+ *  leak into the next cycle. Returns the parsed integer ms.
+ *  Throws if the most recent infoSpy call doesn't look like a
+ *  `disconnected from …` line — guards against a refactor that
+ *  changes the log format, AND against an accidental substring
+ *  match against some other info line that happens to contain
+ *  `reconnecting in Nms` (e.g. an unrelated upstream retry log).
+ *  Better to fail loudly here than silently advance by the wrong
+ *  number and let a stale timer leak into the next cycle. */
+function readReconnectDelay(): number {
+  const last = infoSpy?.mock.calls.at(-1);
+  expect(last).toBeDefined();
+  const line = typeof last![0] === 'string' ? last![0] : '';
+  // Anchor on the `disconnected from ` prefix first. handleClose's
+  // log line is the only infoSpy call site in this file that emits
+  // `reconnecting in Nms` — but the loose regex below would also
+  // match any future info line that happens to contain that phrase,
+  // silently advancing the timer by the wrong number. Reject the
+  // line outright if it doesn't start with the handleClose prefix.
+  expect(line.startsWith('disconnected from ')).toBe(true);
+  const match = line.match(/reconnecting in (\d+)ms/);
+  expect(match).not.toBeNull();
+  return Number(match![1]);
 }
 
 // ----- Tests -----------------------------------------------------------------
@@ -611,6 +655,374 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
     vi.useRealTimers();
   });
 
+  it('5g. CONNECTING-phase error without follow-up close drives reconnect via handleError', () => {
+    // Undici on a refused TCP handshake emits `error` and never
+    // emits `close` (the canonical "wrong host / DNS failure" path).
+    // The previous behaviour left CONNECTING errors log-only, so the
+    // bridge sat idle until the process was restarted externally.
+    // The fix: handleError checks `readyState === 0` and routes the
+    // CONNECTING case through the same handleClose() the close path
+    // uses — attempt grows, backoff timer fires, fresh socket is
+    // constructed. This test pins down that path end-to-end:
+    //   - warn line carries the platform message ("connect
+    //     ECONNREFUSED 127.0.0.1:8787") so an operator can
+    //     immediately tell DNS / routing / port from auth.
+    //   - the bridge never called ws.close() itself — handleError
+    //     never invokes close(), only handleIdleTimeout does.
+    //   - the synthetic handleClose line carries code=undefined /
+    //     reason='' (no CloseEvent exists for an undici CONNECTING
+    //     failure), the canonical 800 ms floor delay with rng=()=>0,
+    //     and attempt=1.
+    //   - advancing exactly BACKOFF_BASE_MS constructs a fresh
+    //     MockSocket, proving the backoff timer armed correctly.
+    installLoggerSpies();
+    vi.useFakeTimers();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      // Far-future so the read-side idle detector can't fire
+      // mid-test and shadow the close path we're asserting on.
+      idleTimeoutMs: 60_000,
+      rng: () => 0,
+    });
+    client.start();
+    const sock = MockSocket.instances[0]!;
+    // sock is in CONNECTING (readyState=0) — undici on a refused TCP
+    // handshake never opens. This is the whole point: handleError
+    // must recognise the CONNECTING branch via readyState, not via
+    // simulateOpen.
+    sock.onerror?.({ message: 'connect ECONNREFUSED 127.0.0.1:8787' } as unknown as Event);
+
+    // The error message made it to the warn log.
+    expect(warnSpy).toHaveBeenCalledWith(
+      'socket error: connect ECONNREFUSED 127.0.0.1:8787',
+    );
+    // handleError never calls close() on the socket — only
+    // handleIdleTimeout does. If this array is non-empty, the
+    // fix regressed to "log + close" instead of "log + handleClose".
+    expect(sock.closeCalls).toEqual([]);
+    // The synthetic handleClose fired: code=undefined, reason='',
+    // attempt=1, delay=800 ms with rng=()=>0. This is the line
+    // operators will see for every "wrong host" failure mode.
+    expect(infoSpy).toHaveBeenCalledWith(
+      "disconnected from wss://example.test/bridge (code=undefined, reason='') — reconnecting in 800ms (attempt 1)",
+    );
+
+    // Advance past the floor delay (1000ms ≥ 800ms floor; rng=()=>0
+    // pins the floor): the reconnect timer fires and a fresh socket
+    // is constructed. Any advance ≥ the recorded floor is safe
+    // here because the timer is one-shot and the next test starts
+    // with vi.useFakeTimers()'s clock at the same origin; the exact
+    // advance is what keeps a stale timer from leaking into the
+    // next test's frame.
+    expect(MockSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(BACKOFF_BASE_MS);
+    expect(MockSocket.instances).toHaveLength(2);
+
+    client.stop();
+    vi.useRealTimers();
+  });
+
+  it('5h. late close after a CONNECTING-phase error is rejected by the identity guard (no double reconnect)', () => {
+    // Worst-case interleaving: undici emits the error first, the
+    // bridge drives a reconnect via handleError → handleClose, and
+    // THEN undici finally surfaces the close event for the original
+    // (already-replaced) socket. Without the identity guard this
+    // would re-enter handleClose on a connection the bridge no
+    // longer owns, schedule a duplicate reconnect, and corrupt the
+    // new socket's idle timer. The fix: every event handler
+    // captures `ws` via closure and delegates only when
+    // `ws === this.ws`. After the first handleClose nulled
+    // `this.ws`, the late close hits `sock !== null` and
+    // short-circuits without logging or scheduling.
+    installLoggerSpies();
+    vi.useFakeTimers();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      idleTimeoutMs: 60_000,
+      rng: () => 0,
+    });
+    client.start();
+    const sock = MockSocket.instances[0]!;
+
+    // Phase 1: CONNECTING error → handleError → handleClose.
+    sock.onerror?.({ message: 'connect ECONNREFUSED 127.0.0.1:8787' } as unknown as Event);
+
+    // Phase 2: undici eventually delivers a late close event for
+    // the stale socket. The identity guard must reject it.
+    sock.simulateRemoteClose({ code: 1006, reason: '' });
+
+    // Exactly ONE "disconnected" log line — not two. The first
+    // came from the error path (synthetic handleClose); the
+    // second would have come from the late close if the guard
+    // had failed to reject it. Counting lines (rather than
+    // asserting the specific message) keeps the test honest
+    // about what the failure mode looks like in production.
+    const disconnectLines = infoSpy!.mock.calls
+      .map((c) => (typeof c[0] === 'string' ? c[0] : ''))
+      .filter((line) => line.startsWith('disconnected from '));
+    expect(disconnectLines).toHaveLength(1);
+    expect(disconnectLines[0]).toBe(
+      "disconnected from wss://example.test/bridge (code=undefined, reason='') — reconnecting in 800ms (attempt 1)",
+    );
+
+    // Advancing exactly the floor delay constructs a single
+    // replacement socket. If the guard had failed, we'd see two
+    // backoff timers and two replacement sockets by this point
+    // (the second one arriving at 2*BACKOFF_BASE_MS — but the
+    // assertion is on count, not timing).
+    expect(MockSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(BACKOFF_BASE_MS);
+    expect(MockSocket.instances).toHaveLength(2);
+
+    client.stop();
+    vi.useRealTimers();
+  });
+
+  it('5i. idle timeout schedules reconnect immediately, not waiting for the close event (zombie socket)', () => {
+    // The TCP zombie case: undici's close event for a fully-dead
+    // socket can take tcp_retries2=15 (~13-30 min) to surface.
+    // If the bridge waited for the event, it would sit idle for
+    // that entire window with no timers armed — exactly the
+    // stop-state the fix is meant to prevent. The fix: handleIdleTimeout
+    // calls handleClose synthetically with `{code:1000, reason:'idle
+    // timeout'}` immediately after `ws.close()`, so the backoff timer
+    // fires on the schedule, not on the platform's event latency.
+    // The identity guard rejects the real close when it eventually
+    // arrives, so the synthetic invocation is the only one.
+    //
+    // We exercise this with suppressOnclose=true: the mock records
+    // the ws.close(1000, 'idle timeout') call but does NOT fire
+    // onclose, simulating the zombie scenario.
+    vi.useFakeTimers();
+    installLoggerSpies();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      // Production default — fake timers let us jump through it
+      // instantly. No idle-window manipulation needed because the
+      // assertion below is on the post-deadline state, not on the
+      // detector's accuracy.
+      idleTimeoutMs: IDLE_TIMEOUT_MS,
+      rng: () => 0,
+    });
+    client.start();
+    const sock = MockSocket.instances[0]!;
+    sock.simulateOpen();
+    // Force zombie mode: ws.close() will be called but the mock
+    // will NOT fire onclose, simulating undici's tcp_retries2=15
+    // delay. This is the whole reason the synthetic handleClose
+    // path exists.
+    sock.suppressOnclose = true;
+
+    // No traffic — advance exactly the idle window. The deadline
+    // armed by handleOpen() fires → handleIdleTimeout → ws.close()
+    // (recorded, no onclose) → synthetic handleClose → backoff
+    // timer scheduled.
+    vi.advanceTimersByTime(IDLE_TIMEOUT_MS);
+
+    // ws.close() was recorded with the correct code/reason.
+    expect(sock.closeCalls).toEqual([{ code: 1000, reason: 'idle timeout' }]);
+
+    // Operator-facing breadcrumb: handleIdleTimeout emits a warn
+    // line BEFORE the synthetic close fires, so an operator
+    // scanning the bridge log can tell "dead connection, not a
+    // protocol rejection" from "server-side 1008 / duplicate"
+    // at a glance. Pinning the exact format here locks the
+    // breadcrumb into the contract — a future refactor that
+    // drops or rewrites the line would surface as a failing
+    // test rather than a silent regression in triage UX.
+    expect(warnSpy).toHaveBeenCalledWith(
+      `no inbound frame for ${IDLE_TIMEOUT_MS}ms, closing`,
+    );
+
+    // Reconnect scheduled even though onclose never fired.
+    expect(MockSocket.instances).toHaveLength(1);
+    expect(infoSpy).toHaveBeenCalledWith(
+      "disconnected from wss://example.test/bridge (code=1000, reason='idle timeout') — reconnecting in 800ms (attempt 1)",
+    );
+    // Only ONE disconnect line — the synthetic close did its job,
+    // no late close arrived (suppressOnclose is still on).
+    const disconnectLines = infoSpy!.mock.calls
+      .map((c) => (typeof c[0] === 'string' ? c[0] : ''))
+      .filter((line) => line.startsWith('disconnected from '));
+    expect(disconnectLines).toHaveLength(1);
+
+    // Advancing exactly BACKOFF_BASE_MS constructs the replacement
+    // socket — proves the synthetic handleClose scheduled the
+    // backoff timer, not just logged.
+    vi.advanceTimersByTime(BACKOFF_BASE_MS);
+    expect(MockSocket.instances).toHaveLength(2);
+
+    client.stop();
+    vi.useRealTimers();
+  });
+
+  it('5j. late close from a stale socket is ignored once the replacement has opened (identity guard)', () => {
+    // The opposite timing from 5h: the original socket's close
+    // event arrives AFTER the replacement has already opened and
+    // is the live connection. Without the identity guard, the
+    // stale close would re-enter handleClose on the new socket's
+    // behalf, incrementing `attempt` (corrupting the counter for
+    // the next failure) and tearing down the live connection
+    // via cleanupTimers. The fix: every handler captures `ws`
+    // via closure and delegates only when `ws === this.ws` —
+    // the stale close compares the captured `ws` (sock0) against
+    // `this.ws` (now sock1) and short-circuits.
+    installLoggerSpies();
+    vi.useFakeTimers();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      idleTimeoutMs: 60_000,
+      rng: () => 0,
+    });
+    client.start();
+
+    // Full cycle on the first socket: open → remote close(1006)
+    // → backoff → second socket opens. This is the same shape as
+    // the existing "handleClose logs ..." test, minus the final
+    // assertions on the log message (we re-derive them below).
+    const sock0 = MockSocket.instances[0]!;
+    sock0.simulateOpen();
+    sock0.simulateRemoteClose({ code: 1006, reason: '' });
+    vi.advanceTimersByTime(BACKOFF_BASE_MS);
+    const sock1 = MockSocket.instances[1]!;
+    sock1.simulateOpen();
+
+    // Snapshot the disconnect line count BEFORE the stale close
+    // fires. The first cycle contributes one "disconnected" line
+    // (sock0's 1006 close). We do NOT use mockClear because the
+    // rest of the spies (warnSpy etc.) are needed by later
+    // assertions — instead we filter on the prefix we care about.
+    const linesBefore = infoSpy!.mock.calls
+      .map((c) => (typeof c[0] === 'string' ? c[0] : ''))
+      .filter((line) => line.startsWith('disconnected from ')).length;
+
+    // The stale socket finally delivers its close event. The
+    // identity guard must reject it. The onclose handler compares
+    // its closure-captured `ws` (sock0) against `this.ws` (sock1)
+    // and short-circuits before handleClose runs.
+    sock0.simulateRemoteClose({ code: 1006, reason: '' });
+
+    const linesAfter = infoSpy!.mock.calls
+      .map((c) => (typeof c[0] === 'string' ? c[0] : ''))
+      .filter((line) => line.startsWith('disconnected from ')).length;
+    expect(linesAfter).toBe(linesBefore);
+
+    // sock1 was never touched by the stale close — no spurious
+    // close call (the guard short-circuited before any state
+    // change), and its readyState is still OPEN because nothing
+    // else has happened to it.
+    expect(sock1.closeCalls).toEqual([]);
+    expect(sock1.readyState).toBe(1);
+
+    client.stop();
+    vi.useRealTimers();
+  });
+
+  it('5k. stop() suppresses further reconnect attempts even when an error arrives afterwards', () => {
+    // After stop() nulls `this.ws`, a stale `sock.onerror` — say
+    // a platform event that was already in flight when shutdown
+    // began — hits the identity guard in connect() and
+    // short-circuits without logging or driving handleError.
+    // This is the "5k" arm of the identity-guard rationale: the
+    // guard makes "this is my current socket" the only condition
+    // under which state changes are accepted, and a post-stop
+    // event has no current socket.
+    installLoggerSpies();
+    vi.useFakeTimers();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      idleTimeoutMs: 60_000,
+      rng: () => 0,
+    });
+    client.start();
+    const sock = MockSocket.instances[0]!;
+    // Shutdown. cleanupTimers() runs and `this.ws` becomes null.
+    client.stop();
+    // Reset the spies so we can isolate what the post-stop
+    // onerror actually did. Without this reset, prior calls
+    // (e.g. the constructor handshake frame) would dilute the
+    // assertion.
+    infoSpy!.mockClear();
+    warnSpy!.mockClear();
+
+    // Post-stop onerror — identity guard rejects because
+    // `sock !== null` (this.ws is null).
+    sock.onerror?.({ message: 'connect ETIMEDOUT' } as unknown as Event);
+
+    // No new socket was constructed.
+    expect(MockSocket.instances).toHaveLength(1);
+    // No "disconnected" line: handleClose was never called.
+    expect(infoSpy).not.toHaveBeenCalled();
+    // No warn line either: handleError was never called (the
+    // identity guard short-circuited at the onerror handler).
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  it('5l. OPEN-phase error is logged but does NOT drive a reconnect (close is the authoritative signal)', () => {
+    // The other half of the handleError contract: OPEN-state
+    // errors are advisory only. Undici reliably fires close after
+    // error in this state, so we don't want to race the close
+    // handler by also scheduling a reconnect from here. If the
+    // error didn't come with a follow-up close, the 90s read-idle
+    // detector covers the silent case. The handleError body
+    // checks `readyState === 0` and only routes CONNECTING
+    // errors through handleClose; OPEN errors return early after
+    // the warn log. We verify the contract end-to-end:
+    //   - warnSpy receives the platform message.
+    //   - no new socket, no close call, no "disconnected" log.
+    //   - a subsequent legitimate remote close DOES drive a
+    //     reconnect — proving the socket is still healthy enough
+    //     to terminate normally.
+    installLoggerSpies();
+    vi.useFakeTimers();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      idleTimeoutMs: 60_000,
+      rng: () => 0,
+    });
+    client.start();
+    const sock = MockSocket.instances[0]!;
+    sock.simulateOpen();
+    // Reset spies to isolate the OPEN-phase error path from the
+    // handshake send and open logs.
+    infoSpy!.mockClear();
+    warnSpy!.mockClear();
+
+    sock.onerror?.({ message: 'TLS handshake failed' } as unknown as Event);
+
+    // Warn line carries the platform message — operators can
+    // correlate this with the eventual close (or with no close
+    // at all if the socket is still alive despite the warning).
+    expect(warnSpy).toHaveBeenCalledWith('socket error: TLS handshake failed');
+    // No new socket (handleError did NOT call handleClose).
+    expect(MockSocket.instances).toHaveLength(1);
+    // No bridge-initiated close call.
+    expect(sock.closeCalls).toEqual([]);
+    // No "disconnected" log.
+    expect(infoSpy).not.toHaveBeenCalled();
+
+    // Subsequent legitimate remote close still drives a normal
+    // reconnect — the OPEN-error path didn't desync the parser,
+    // the timer machinery, or the identity guard.
+    sock.simulateRemoteClose({ code: 1006, reason: '' });
+    expect(infoSpy).toHaveBeenCalledWith(
+      "disconnected from wss://example.test/bridge (code=1006, reason='') — reconnecting in 800ms (attempt 1)",
+    );
+    vi.advanceTimersByTime(BACKOFF_BASE_MS);
+    expect(MockSocket.instances).toHaveLength(2);
+
+    client.stop();
+    vi.useRealTimers();
+  });
+
   it('6. computeBackoff produces the 1/2/4/8/16/30/30 sequence within ±20% jitter', () => {
     // Use a fixed midpoint of the jitter range (factor = 1.0) so we can
     // assert exact base values; then sweep with `Math.random` and assert
@@ -760,30 +1172,74 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
     // surface the message immediately so users can correlate "DNS
     // resolution failed" / "ECONNREFUSED" / etc. with the eventual
     // close. Close still drives the reconnect — onerror stays advisory.
+    //
+    // Each branch of `handleError`'s message-extraction logic must be
+    // driven on a FRESH CONNECTING socket: the identity guard in
+    // connect() (`ws !== this.ws` in the onerror closure) rejects any
+    // follow-up onerror on a stale socket — i.e. one whose
+    // handleError → handleClose has already nulled `this.ws`. So once
+    // a CONNECTING socket fires one error and triggers a reconnect,
+    // any further onerror events on that same socket are silently
+    // dropped by design (5k pins this). To exercise all three
+    // message-extraction branches in one test, we advance the backoff
+    // after each branch and grab the next fresh MockSocket.
     installLoggerSpies();
+    vi.useFakeTimers();
     const create = socketFactory();
     const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
       createSocket: create,
+      // Far-future so the read-side idle detector can't fire
+      // mid-test and shadow the onerror path we're asserting on.
       idleTimeoutMs: 60_000,
+      // Pin jitter to the bottom of the band (factor = 0.8 → delay
+      // = 800 ms for attempt 1 with rng=()=>0) so each reconnect
+      // advance is deterministic.
+      rng: () => 0,
     });
     client.start();
-    const sock = MockSocket.instances[0]!;
 
-    // Drive the ErrorEvent branch with a real `message` payload.
-    sock.onerror?.({ message: 'connect ECONNREFUSED 127.0.0.1:8787' } as unknown as Event);
+    // ----- Branch 1: ErrorEvent with a real `message` payload -----
+    const sock0 = MockSocket.instances[0]!;
+    sock0.onerror?.({ message: 'connect ECONNREFUSED 127.0.0.1:8787' } as unknown as Event);
+    expect(warnSpy).toHaveBeenCalledWith(
+      'socket error: connect ECONNREFUSED 127.0.0.1:8787',
+    );
+    // Reconnect armed on this fresh CONNECTING socket. The delay
+    // doubles each attempt (1000 → 2000 → 4000 ms base, × 0.8 jitter
+    // floor with rng=()=>0), so reading the delay from the disconnect
+    // log keeps each advance exact — same pattern as 5j — and dodges
+    // a stale-timer leak into the next cycle.
+    const delay1 = readReconnectDelay();
+    expect(MockSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(delay1);
+    expect(MockSocket.instances).toHaveLength(2);
 
-    expect(warnSpy).toHaveBeenCalledWith('socket error: connect ECONNREFUSED 127.0.0.1:8787');
-
-    // Second branch: no `message`, but a typed `Error` on `.error`.
-    sock.onerror?.({ error: new Error('getaddrinfo ENOTFOUND host') } as unknown as Event);
+    // ----- Branch 2: no `message`, but a typed `Error` on `.error` -----
+    const sock1 = MockSocket.instances[1]!;
+    sock1.onerror?.({ error: new Error('getaddrinfo ENOTFOUND host') } as unknown as Event);
     expect(warnSpy).toHaveBeenCalledWith('socket error: getaddrinfo ENOTFOUND host');
+    const delay2 = readReconnectDelay();
+    expect(MockSocket.instances).toHaveLength(2);
+    vi.advanceTimersByTime(delay2);
+    expect(MockSocket.instances).toHaveLength(3);
 
-    // Third branch: empty event — we still log something rather than
-    // going silent, but without a bogus string in the output.
-    sock.onerror?.({} as Event);
-    expect(warnSpy).toHaveBeenCalledWith('socket error (close will follow)');
+    // ----- Branch 3: empty event — log something rather than go silent -----
+    // sock2 has not been simulateOpen()ed, so it is still CONNECTING
+    // (readyState=0). The empty-event fallback log differentiates by
+    // readyState: CONNECTING → "no close will follow; reconnecting"
+    // (because undici on a refused TCP handshake will never deliver
+    // close; we're about to drive the backoff ourselves), every
+    // other state → "close will follow" (undici in OPEN reliably
+    // fires close, and the 90s read-idle detector covers the
+    // silent OPEN case). The split prevents the "wrong host"
+    // failure mode from logging the misleading "close will
+    // follow" line.
+    const sock2 = MockSocket.instances[2]!;
+    sock2.onerror?.({} as Event);
+    expect(warnSpy).toHaveBeenCalledWith('socket error (no close will follow; reconnecting)');
 
     client.stop();
+    vi.useRealTimers();
   });
 
   it('a synchronous throw from createSocket() logs an error and routes through the reconnect backoff', () => {

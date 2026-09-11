@@ -6,8 +6,12 @@
 //   2. On open, immediately send `control/handshake {role:'bridge', token}`.
 //      The bridge does NOT wait for an ack — sustained connection IS the
 //      success signal (PRD §2 注: "连接保持即视为握手成功——bridge 不等待
-//      任何 ack"). Failures surface via `error` frames or socket close,
-//      both of which drive the reconnect loop.
+//      任何 ack"). Failures surface via two channels: while the socket
+//      is still in CONNECTING (e.g. undici cannot complete the TCP/TLS
+//      handshake), the platform emits an `error` frame and — empirically —
+//      NOT a follow-up `close`. After OPEN, close frames are the
+//      authoritative signal: undici reliably fires close after error.
+//      Both paths drive the reconnect loop via `handleClose`.
 //   3. On every `control/ping` from the server, reply with `control/pong`
 //      carrying the same nonce (control.md §3). The bridge does NOT
 //      initiate pings itself — the worker DO sends pings to the bridge
@@ -16,8 +20,11 @@
 //   4. Track the timestamp of the most recent inbound envelope (any
 //      type). If no frame arrives within `IDLE_TIMEOUT_MS` (default
 //      90s ≈ DO's 20s heartbeat ×3 + slack), declare the connection
-//      dead and close with code 1000 reason 'idle timeout' — which
-//      drives the reconnect loop via `handleClose`.
+//      dead and close with code 1000 reason 'idle timeout'. The
+//      reconnect is scheduled IMMEDIATELY via a synthetic handleClose
+//      call rather than waiting for the close event to arrive — for
+//      zombie sockets the close can take tcp_retries2=15 (~13-30 min)
+//      to surface, leaving the bridge idle with no timers if we waited.
 //   5. Reconnect with exponential backoff: base=1s, cap=30s, ±20% jitter.
 //      Reset the attempt counter on the first successfully-parsed inbound
 //      envelope after a successful open — i.e. once the worker has
@@ -28,6 +35,15 @@
 //      rather than giving the broken host infinite free retries. The
 //      confirmation log line ("handshake confirmed by server") is the
 //      single source of truth for "this connection is healthy".
+//   6. Every event handler (`onopen` / `onmessage` / `onclose` /
+//      `onerror`) captures the socket instance via closure and
+//      delegates only when `ws === this.ws`. Without this guard, a
+//      late `close` event from a stale socket — undici can emit one
+//      minutes after the replacement socket has opened — re-enters
+//      handleClose on a connection we never owned, schedules a
+//      duplicate reconnect, and corrupts the new socket's idle
+//      timer. The guard makes "this is my current socket" the only
+//      condition under which state changes are accepted.
 //
 // We use the global `WebSocket` constructor (Node 22 ships one). It's
 // injectable via the `createSocket` option for unit tests; otherwise the
@@ -218,15 +234,54 @@ export class BridgeClient {
       return;
     }
     this.ws = ws;
-    ws.onopen = () => this.handleOpen();
-    ws.onmessage = (ev) => this.handleMessage(ev);
-    ws.onclose = (ev) => this.handleClose(ev);
-    // onerror is purely advisory in browsers/Node — the close event is
-    // the authoritative "connection is gone" signal, so we don't drive
-    // any state changes from it. We DO log it though: an unexplained
-    // 1006 with zero preceding output is the exact "why isn't this
-    // connecting?" symptom users hit when pointed at the wrong host.
-    ws.onerror = (ev) => this.handleError(ev);
+    // Identity guard: every handler captures `ws` via closure and
+    // delegates only when it still matches `this.ws`. Without this,
+    // a late `close` event from a stale socket — undici can emit one
+    // minutes after the replacement socket has opened — re-enters
+    // handleClose on a connection we never owned, schedules a
+    // duplicate reconnect, and corrupts the new socket's idle
+    // timer. See JSDoc item 6 at the top of this file for the full
+    // rationale.
+    ws.onopen = () => {
+      if (ws !== this.ws) return;
+      this.handleOpen();
+    };
+    ws.onmessage = (ev) => {
+      if (ws !== this.ws) return;
+      this.handleMessage(ev);
+    };
+    ws.onclose = (ev) => {
+      if (ws !== this.ws) return;
+      this.handleClose(ev);
+    };
+    // onerror is advisory for OPEN-state sockets: undici reliably
+    // fires close after error in that path (or the 90s read-idle
+    // detector covers the silent case), so we don't want to race
+    // the close handler by also scheduling a reconnect here.
+    // However, while the socket is still in CONNECTING (e.g.
+    // undici cannot complete the TCP/TLS handshake), undici emits
+    // `error` and — empirically — NOT a follow-up `close`. Leaving
+    // CONNECTING errors log-only would leave the bridge idle
+    // forever on the canonical "wrong host / DNS failure" path,
+    // because close never comes to drive the backoff. handleError
+    // checks `readyState === 0` and routes CONNECTING failures
+    // through the same handleClose path; OPEN-state errors stay
+    // log-only. We DO log in either case so an unexplained 1006
+    // with zero preceding output is the exact "why isn't this
+    // connecting?" symptom users hit when pointed at the wrong
+    // host.
+    //
+    // Identity guard matches the other three handlers: after
+    // `stop()` clears `this.ws`, a stale `sock.onerror` —
+    // typically a platform event arriving after the bridge has
+    // been told to wind down — short-circuits without logging or
+    // scheduling. The CONNECTING branch in handleError also has
+    // its own `this.ws === null` defensive guard; this is the
+    // outer one.
+    ws.onerror = (ev) => {
+      if (ws !== this.ws) return;
+      this.handleError(ev);
+    };
   }
 
   private handleOpen(): void {
@@ -274,13 +329,29 @@ export class BridgeClient {
   }
 
   /** Fires when `IDLE_TIMEOUT_MS` has elapsed without any inbound
-   *  envelope. We close the socket with code 1000 / reason 'idle
-   *  timeout' — `onclose` will route through `handleClose()` and the
-   *  existing backoff loop will reconnect. The bridge no longer
-   *  declares death via accumulated ping counters; the absence of an
-   *  inbound stream IS the death signal (see JSDoc item 4 at the top
-   *  of this file). */
+   *  envelope. The reconnect is scheduled IMMEDIATELY via a
+   *  synthetic `handleClose()` call rather than waiting for the
+   *  real close event — for zombie sockets undici can take
+   *  tcp_retries2=15 (~13-30 min) to surface the close, and
+   *  waiting would leave the bridge idle for that entire window
+   *  with no timers armed. The real close event (if/when it
+   *  arrives) is rejected by the identity guard in `connect()`,
+   *  so it cannot double-schedule the reconnect.
+   *
+   *  Two direct callers now drive the backoff via synthetic
+   *  handleClose: `handleError()` on a CONNECTING-state socket
+   *  (undici error without follow-up close) and this method
+   *  (idle timeout on an OPEN-state socket whose close may
+   *  take minutes to surface). The bridge no longer declares
+   *  death via accumulated ping counters; the absence of an
+   *  inbound stream IS the death signal (see JSDoc item 4 at
+   *  the top of this file). */
   private handleIdleTimeout(): void {
+    // Belt-and-braces: `stop()` already cleared the deadline and
+    // nulled `this.ws`, but if a residual timer fires (e.g. the
+    // deadline was armed in a previous `start()` cycle and never
+    // cleared), bail without driving any further state.
+    if (this.stopped) return;
     this.idleDeadline = null;
     logger.warn(`no inbound frame for ${this.opts.idleTimeoutMs}ms, closing`);
     const ws = this.ws;
@@ -289,10 +360,16 @@ export class BridgeClient {
       try {
         ws.close(1000, 'idle timeout');
       } catch {
-        // already closed / errored — nothing to do; onclose will still
-        // run (if it hasn't) and the reconnect path will still execute.
+        // already closed / errored — nothing to do; the synthetic
+        // handleClose below still runs and the reconnect path
+        // will still execute.
       }
     }
+    // Drive the reconnect via synthetic close. The identity
+    // guard in connect() rejects any eventual real close event
+    // from this (now stale) socket, so this is the single
+    // handleClose invocation for this death cycle.
+    this.handleClose(undefined, { code: 1000, reason: 'idle timeout' });
   }
 
   private handleMessage(ev: MessageEvent): void {
@@ -414,7 +491,25 @@ export class BridgeClient {
     }
   }
 
-  private handleClose(ev?: CloseEvent): void {
+  /** Tear down the current socket and (if not stopped) schedule a
+   *  reconnect. Two call paths land here:
+   *    - The platform's `onclose` handler with a real CloseEvent
+   *      (server-initiated drop, network reset, normal close from
+   *      the worker).
+   *    - Synthetic invocations from `handleError()` (CONNECTING-
+   *      state error with no follow-up close) and
+   *      `handleIdleTimeout()` (open socket whose close event may
+   *      take tcp_retries2=15 to surface on a zombie). The
+   *      `synthetic` parameter lets those callers stamp a
+   *      meaningful `{code, reason}` onto the log line so
+   *      operators can tell the two death modes apart.
+   *  Idempotent on the `stopped` flag — `stop()` already nulled
+   *  `this.ws`, so the second arm of the guard is just
+   *  defense-in-depth. */
+  private handleClose(
+    ev?: CloseEvent,
+    synthetic?: { code?: number; reason?: string },
+  ): void {
     this.cleanupTimers();
     this.ws = null;
     if (this.stopped) return;
@@ -422,11 +517,16 @@ export class BridgeClient {
     // provides one (browser, Node 22 global WebSocket). They're
     // `undefined` when the event is fabricated — e.g. unit tests pass
     // `undefined as unknown as CloseEvent` to drive the lifecycle
-    // without standing up a real socket. We surface whatever we got
-    // rather than masking it: an unexplained 1006 is exactly the
-    // symptom that the new format is meant to triage.
-    const code = ev?.code;
-    const reason = ev?.reason ?? '';
+    // without standing up a real socket. The `synthetic` parameter
+    // overrides both: callers that synthesise a close (currently
+    // `handleError` on a CONNECTING error and `handleIdleTimeout`)
+    // pass a `{code, reason}` object so the log line carries
+    // diagnostic value rather than the bare "code=undefined,
+    // reason=''" the unspecified path produces. We surface whatever
+    // we got rather than masking it: an unexplained 1006 is exactly
+    // the symptom that the new format is meant to triage.
+    const code = synthetic?.code ?? ev?.code;
+    const reason = synthetic?.reason ?? ev?.reason ?? '';
     this.attempt++;
     const delay = computeBackoff(
       this.attempt,
@@ -455,7 +555,40 @@ export class BridgeClient {
     } else if (maybeErrorEvent.error instanceof Error) {
       message = maybeErrorEvent.error.message;
     }
-    logger.warn(message ? `socket error: ${message}` : 'socket error (close will follow)');
+    // CONNECTING → drive reconnect. Undici emits `error` without a
+    // follow-up `close` when the socket can't complete the TCP/TLS
+    // handshake (DNS failure, ECONNREFUSED, SYN blackhole, ...).
+    // Leaving CONNECTING errors log-only would idle the bridge
+    // forever on the canonical "wrong host" path because close
+    // never arrives to drive the backoff. OPEN-state errors stay
+    // log-only: undici reliably fires close after error in that
+    // state (and the 90s read-idle detector covers the silent
+    // case), so we don't want to race the close handler by also
+    // scheduling a reconnect from here. The `this.ws === null`
+    // guard is defense-in-depth — the identity guard in connect()
+    // already rejects stale onerror handlers post-handleClose.
+    //
+    // Read `this.ws` BEFORE the log call: the empty-event fallback
+    // log distinguishes CONNECTING (no close will follow; we're
+    // about to drive the backoff) from every other state (close
+    // WILL follow — undici in OPEN reliably fires it, and the 90s
+    // read-idle detector covers the silent OPEN case). This is the
+    // operator-facing seam that prevents the old misleading line
+    // ("socket error (close will follow)") from printing on the
+    // canonical "wrong host" failure mode where close never arrives
+    // — the misread that fed the original incident's confusion.
+    const ws = this.ws;
+    if (message) {
+      logger.warn(`socket error: ${message}`);
+    } else if (ws !== null && ws.readyState === 0) {
+      logger.warn('socket error (no close will follow; reconnecting)');
+    } else {
+      logger.warn('socket error (close will follow)');
+    }
+    if (ws === null) return;
+    if (ws.readyState === 0) {
+      this.handleClose(undefined);
+    }
   }
 
   private cleanupTimers(): void {
