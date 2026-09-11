@@ -94,6 +94,37 @@ async function waitForChatView(page: Page): Promise<void> {
   await page.locator('[data-testid="chat-view"]').waitFor({ state: 'visible', timeout: 30_000 });
 }
 
+/** M5 任务 01 验证轮收尾——markdown chunk 竞态防御：recover 后
+ *  assistant 终态行走 `<AssistantMessageBody>` 的 `React.lazy` +
+ *  `<Suspense fallback={<span/>}>` 路径，冷缓存下 `.message-body`
+ *  在 chunk 解析前可能暂时无 textContent。`waitForChatView` 只
+ *  等 chat-view 可见，对账前的 `snapshotMessageRows` 读到的是
+ *  空 body → `expect(afterRows).toEqual(beforeRows)` 间歇性失败。
+ *
+ *  轮询「所有 `.message-role-assistant` 行 `.message-body` 文本
+ *  非空」，timeout 给到 15s（覆盖冷缓存 chunk 解析 + 慢机回归）。
+ *  Pre-reload 的 `sendPromptAndAwait` 已经用 `hasText` 走相同语
+ *  义等过一遍，无需重复保护；本 helper 仅 post-reload 用。
+ *
+ *  空 assistant 行集合（length === 0）视为已就绪——spec 里 2 条
+ *  assistant 行必然存在（fixture 与 setup 保证），但兜底写明避免
+ *  在 scenario 演化后引入新的死锁路径。 */
+async function waitForAssistantBodiesRendered(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () => {
+      const assistantRows = document.querySelectorAll(
+        '[data-testid="message-row"].message-role-assistant',
+      );
+      if (assistantRows.length === 0) return true;
+      return Array.from(assistantRows).every(
+        (row) => (row.querySelector('.message-body')?.textContent ?? '').trim() !== '',
+      );
+    },
+    undefined,
+    { timeout: 15_000 },
+  );
+}
+
 /** Send a prompt, wait for agent_settled (input-field back to
  *  enabled), then verify the assistant terminal row contains the
  *  scripted reply text. Used in steps 1 + 2 (both pre-reload
@@ -245,6 +276,11 @@ test.describe('scenario (b) — F5 reload recovery (M4 flow)', () => {
     // assert on it; it's allowed to be missed if the machine is
     // fast). The retry-tolerant helper covers the 5s timeout挂账.
     await waitForChatView(page);
+
+    // M5 验证轮收尾——markdown chunk 竞态防御：等所有 assistant 行
+    // 的 `.message-body` 都已渲染出实际文本，再做对账。详见
+    // `waitForAssistantBodiesRendered` 的 JSDoc。
+    await waitForAssistantBodiesRendered(page);
 
     // Step 4: history consistency assertions — filter to this
     // scenario's messages (same rationale as above: SQLite is

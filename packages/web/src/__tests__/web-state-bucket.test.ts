@@ -1428,7 +1428,7 @@ describe('WsClient M5 §3 — streaming draft segment accumulation', () => {
     });
   });
 
-  it('8.16 orphan toolcall_delta (no prior toolcall_start) still migrates an empty text_delta draft (W3 — empty-by-segment semantic)', () => {
+  it('8.16 empty text_delta draft still triggers migration — pending bucket treated as empty by W3 segment-content helper', () => {
     // M5 review W3 — `migratePendingBucket` judges a draft as
     // "empty" by `segments.length === 0`. The M3 contract was
     // `text === ''` (a draft that exists but carries no content
@@ -1491,6 +1491,61 @@ describe('WsClient M5 §3 — streaming draft segment accumulation', () => {
     expect(ws.bucketFor('new').messages).toEqual([]);
     expect(ws.bucketFor('new').streamingDraft).toBeNull();
     expect(ws.bucketFor('new').queue).toEqual({ steering: [], followUp: [] });
+  });
+
+  it('8.17 orphan toolcall_delta (no prior toolcall_start) emits fresh streamingDraft refs (Object.is inequality) AND args accumulate monotonically', () => {
+    // M5 验证轮收尾——补 8.15 的 orphan 对称钉桩。8.15 覆盖的是
+    // 「toolcall_start 先到 → 后续 delta」的常路；本测试钉
+    // 「先 delta 后 start（乱序到达）」的 orphan 路径同样遵守
+    // C1 引用契约：每次 delta 都产新 `streamingDraft` 对象 + 新
+    // `segments` 数组（`useSyncExternalStore` 的 `Object.is` 判等
+    // 必须观察到变化），且 args 单调累积到同一个 synthetic tool
+    // 段（`name === ''`，因为始终没有 start 提供名字）。预修复
+    // 实现里 orphan 路径先调 `openToolSegment`（emit 一次）再调
+    // `appendToolArgs`（再 emit 一次），不仅双重 emit 且第二次
+    // 走的是「找不到 tool 段再 push」的旧分支（仍原位变更
+    // segments）——`Object.is` 持续返回 true，UI 永远不刷新。修
+    // 后两条分支合并（详见 WsClient.appendToolArgs），单次 emit +
+    // 单次新引用，本测试是 WsClient.ts 第 2005–2062 行的回归锚。
+    const { ws, fake } = makeConnectedWs();
+    // Orphan path: first emit is a toolcall_delta WITHOUT any
+    // preceding toolcall_start (out-of-order arrival).
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_delta', delta: '{"orphan1":' },
+      }),
+      fake,
+    );
+    const refAfterDelta1 = ws.streamingDraft;
+    const segmentsRefAfterDelta1 = ws.streamingDraft!.segments;
+    expect(refAfterDelta1).not.toBeNull();
+    // Synthetic tool segment: empty name, args already bootstrapped
+    // with the first delta.
+    expect(ws.streamingDraft!.segments).toEqual([
+      { type: 'tool', name: '', args: '{"orphan1":' },
+    ]);
+    // Second delta — also orphan (still no start). Must accumulate
+    // into the SAME synthetic tool segment AND produce a fresh
+    // streamingDraft ref + fresh segments array.
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_delta', delta: '"v1"}' },
+      }),
+      fake,
+    );
+    const refAfterDelta2 = ws.streamingDraft;
+    const segmentsRefAfterDelta2 = ws.streamingDraft!.segments;
+    // C1 reference contract — both transitions must produce new
+    // refs (the orphan-path regression was a stale-ref bug that
+    // silenced React's re-render).
+    expect(Object.is(refAfterDelta2, refAfterDelta1)).toBe(false);
+    expect(Object.is(segmentsRefAfterDelta2, segmentsRefAfterDelta1)).toBe(false);
+    // Args accumulate monotonically into the same synthetic segment.
+    expect(ws.streamingDraft!.segments).toEqual([
+      { type: 'tool', name: '', args: '{"orphan1":"v1"}' },
+    ]);
   });
 });
 
