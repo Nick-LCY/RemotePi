@@ -72,6 +72,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { useFocusTrap } from '../hooks/useFocusTrap.js';
+import { useIsMobile } from '../hooks/useIsMobile.js';
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -130,6 +133,22 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
   const { required, onSubmit, onClose, bannerHint, storageError } = props;
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const isMobile = useIsMobile();
+  // 容器 ref：useFocusTrap 目标。closable 模式启用 trap（brief
+  // §2.7 「TokenModal open + closable 模式（required 模式默认即
+  // 唯一 focusable 元素，无需 trap）」）；required 模式唯一
+  // focusable 即 input——已有 autoFocus 处理，不必 trap。
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // M5 task 07 — closable 模式启用 useFocusTrap。Escape 触发
+  // onClose；active 翻转时无 returnFocusRef（token modal 是全屏
+  // overlay，焦点归还目标取决于调用场景——settings 按钮 / 直接
+  // 路由等各异，hook 调用方决定；本组件保持中性）。
+  useFocusTrap({
+    active: !required,
+    containerRef,
+    onEscape: !required ? onClose : undefined,
+  });
 
   // autoFocus the input on mount (required mode → user pastes
   // immediately; closable mode → user can tab to it but
@@ -187,7 +206,8 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
 
   return (
     <div
-      className="fixed inset-0 z-[400] flex items-center justify-center p-4"
+      ref={containerRef}
+      className={`fixed inset-0 z-[400] ${isMobile ? 'flex flex-col' : 'flex items-center justify-center p-4'}`}
       data-testid="token-modal"
       role="dialog"
       aria-modal="true"
@@ -205,7 +225,10 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
         className="absolute inset-0 bg-black/40 backdrop-blur-sm cursor-default disabled:cursor-default"
       />
 
-      <div className="relative w-full max-w-md rounded-lg border border-border bg-bg p-6 shadow-xl">
+      <div className={isMobile
+        ? 'relative flex h-full w-full flex-col overflow-y-auto bg-bg p-4'
+        : 'relative w-full max-w-md rounded-lg border border-border bg-bg p-6 shadow-xl'
+      }>
         {/* Close button — only rendered in closable mode (D10). */}
         {!required ? (
           <button

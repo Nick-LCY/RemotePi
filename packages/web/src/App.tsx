@@ -233,6 +233,17 @@ export function App() {
   // session change / hash navigation can reset them predictably.
   const [browserOpen, setBrowserOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // M5 task 07 — mobile drawer state. `sidebarOpen` controls
+  // whether the sidebar drawer is expanded on mobile (<768px);
+  // desktop (>=768px) ignores this value (sidebar is permanently
+  // mounted in the grid). `hamburgerRef` is shared between
+  // AppShell (for useFocusTrap return-focus) and SessionStatusBar
+  // (for the actual <button>); the same RefObject instance
+  // identity guarantees the ref reads/writes line up across
+  // components. Default `false` (drawer collapsed); AppShell
+  // mount-once handles the initial viewport check.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const hamburgerRef = useRef<HTMLButtonElement>(null);
 
   // One WsClient per mount. Memoized so React StrictMode's double-invoke
   // in dev returns the same instance and we don't end up with two parallel
@@ -393,6 +404,20 @@ export function App() {
   const handleCloseBrowser = useCallback(() => {
     setBrowserOpen(false);
   }, []);
+  // M5 task 07 — mobile drawer toggle (汉堡按钮回调)。
+  // 桌面端不渲染汉堡按钮，所以此回调不会被调用，但传 AppShell
+  // 给 SessionStatusBar 共享同一回调即可（identity stable via
+  // useCallback）。
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => !prev);
+  }, []);
+  // 抽屉关闭回调：backdrop click / Escape / hashchange 都走此。
+  // 在 useCallback 内只读 setState，identity 稳定——AppShell 的
+  // hashchange 监听器 effect 依赖此 identity（不要每次 render
+  // 变新，否则 listener 每次重挂）。
+  const handleCloseSidebar = useCallback(() => {
+    setSidebarOpen(false);
+  }, []);
 
   // Build the right-rail content (chat / choice panel / recovery).
   // The `<SessionStatusBar>` is always mounted above the main
@@ -443,10 +468,18 @@ export function App() {
           view={view}
           onSettingsClick={handleSettingsClick}
           onBrowseWorkDirsClick={handleBrowseWorkDirsClick}
+          sidebarOpen={sidebarOpen}
+          onCloseSidebar={handleCloseSidebar}
+          hamburgerRef={hamburgerRef}
           mainContent={
             <>
               {sessionForSessionBar !== null ? (
-                <SessionStatusBar session={sessionForSessionBar} />
+                <SessionStatusBar
+                  session={sessionForSessionBar}
+                  sidebarOpen={sidebarOpen}
+                  onToggleSidebar={handleToggleSidebar}
+                  hamburgerRef={hamburgerRef}
+                />
               ) : null}
               {mainContent}
             </>

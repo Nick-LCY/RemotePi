@@ -34,6 +34,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { useFocusTrap } from '../hooks/useFocusTrap.js';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 import { useWsClient } from '../ws/WsClientContext.js';
 
 // Review 修复轮 C1+W1——废弃 POLL_INTERVAL_MS / POLL_TIMEOUT_MS
@@ -84,6 +86,17 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
   // ChoicePage level=1 mount 路径（父组件 `<>{browsing ? <DB
   // /> : null}</>` 一直显式 mount）。
   if (open === false) return <></>;
+
+  // M5 task 07 — 移动端全屏 sheet 形态 + useFocusTrap 启用。
+  // 桌面端保持既有 `.card directory-browser` 居中卡片形态。
+  const isMobile = useIsMobile();
+  const containerRef = useRef<HTMLElement | null>(null);
+  useFocusTrap({
+    active: true, // 永远 trap（open=true 时）：移动端避免键盘跑
+                  // 到背后 hidden 区；桌面端避免 Tab 跳出模态。
+    containerRef,
+    onEscape: onCancel,
+  });
 
   // `path === null` ⇒ 列 home (path omitted from outbound); otherwise
   // 列 this absolute path. Initial value `null` so the first paint
@@ -218,9 +231,19 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
   );
 
   return (
-    <section className="card directory-browser" data-testid="directory-browser">
+    <section
+      ref={containerRef}
+      className={isMobile
+        ? 'fixed inset-0 z-[250] flex flex-col gap-3 overflow-y-auto bg-bg p-4'
+        : 'card directory-browser'
+      }
+      data-testid="directory-browser"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="directory-browser-title"
+    >
       <div className="directory-browser-header">
-        <h3>浏览目录</h3>
+        <h3 id="directory-browser-title">浏览目录</h3>
         <p className="directory-browser-path" data-testid="directory-browser-path">
           当前路径：<code>{path ?? '$HOME'}</code>
         </p>

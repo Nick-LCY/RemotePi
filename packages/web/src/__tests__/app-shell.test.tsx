@@ -102,6 +102,9 @@ interface RenderAppShellOpts {
   mainContent?: ReactElement;
   onSettingsClick?: () => void;
   onBrowseWorkDirsClick?: () => void;
+  // M5 task 07 — mobile drawer props (default closed).
+  sidebarOpen?: boolean;
+  onCloseSidebar?: () => void;
 }
 
 function renderShell(opts: RenderAppShellOpts = {}): string {
@@ -109,11 +112,15 @@ function renderShell(opts: RenderAppShellOpts = {}): string {
   const mainContent = opts.mainContent ?? createElement('div', { 'data-testid': 'main-slot' });
   const onSettingsClick = opts.onSettingsClick ?? (() => undefined);
   const onBrowseWorkDirsClick = opts.onBrowseWorkDirsClick ?? (() => undefined);
+  const onCloseSidebar = opts.onCloseSidebar ?? (() => undefined);
   // M5 task 06 review W1 — `client` / `gateMapRef` removed from
   // AppShellProps. AppShell is purely a layout container; the
   // WsClient + gate map live in App and are wired into
   // `mainContent` directly (RecoveryShell is composed by App, not
   // forwarded through AppShell).
+  // M5 task 07 — `sidebarOpen` / `onCloseSidebar` added for
+  // mobile drawer; tests default to closed (sidebarOpen=false)
+  // which keeps the desktop rendering path stable.
   const element: ReactElement = createElement(
     WsClientProvider,
     {
@@ -125,6 +132,8 @@ function renderShell(opts: RenderAppShellOpts = {}): string {
         mainContent,
         onSettingsClick,
         onBrowseWorkDirsClick,
+        sidebarOpen: opts.sidebarOpen ?? false,
+        onCloseSidebar,
       }),
     },
   );
