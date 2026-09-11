@@ -5,6 +5,8 @@
 > **M4 修订注记（2026-09-08）**：control 家族从 9 增至 13 type（新增 `list_directories` / `work_dir_list` / `work_dir_add` / `work_dir_remove`，破锁依据见 [[architecture/decisions/0010-protocol-v3-multi-session-unlock.md|ADR-0010]]，沿用 [[architecture/decisions/0006-protocol-v1-get-state-unlock.md|ADR-0006]] 范式）；`session_list.payload` / `session_state.payload` / `session_list` 回执字段同步修订。
 >
 > **bridge 接收侧 read-idle 判死修订注记（2026-09-10）**：bridge 不再主动发 `control/ping`；原 §2「web / bridge 双方互发」语义修订为「web 侧仍主动 / bridge 侧仅应答」；bridge 改走滑动窗口 read-idle 判死（机制见新增 §9）。wire 协议不变（ping/pong 帧结构、DO 心跳 20s/30s/3 全不变）；DO 对旧版 bridge 仍完全兼容。决策依据见 [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md|ADR-0011]]。
+>
+> **DO 侧 duplicate-bridge 挑战式接管修订注记（2026-09-10）**：bridge 异常断开（close 1006，纯 TCP 层断）后快速重连被 DO 永久拒绝——根因是 worker `room.ts` duplicate 检查纯对象身份比对（`this.bridge !== meta.ws`），无活性判断；workerd 对纯 TCP 层断开不保证派发 close/error 事件 → 僵尸 ws 长期占用 `this.bridge` 槽位。§1 原「同一 token 已有 bridge 在线，第二个 bridge → `duplicate_bridge`」立即拒绝语义修订为「先向在位旧桥发挑战 `control/ping` 探测，3s 内收到 pong → 旧桥仍存活 → 拒新桥；3s 内未收到 → 视为僵尸踢旧纳新」。bridge 侧 `attempt` 改为经 `handshakeConfirmed` 门控归零（`handleOpen` 不再归零，避免被 1008 拒后退避永远卡 800-1200ms 高频重试）。wire 协议不变（`ping`/`pong`/`duplicate_bridge`/`bridge_status` 帧全部复用既有结构；`bridge_status.reason` 复用既有 `'stale'` / `'connected'` 不新增）；web/shared 零改动；DO 对旧版 bridge 仍完全兼容；bridge/worker 可独立升级（无协同部署要求）。机制见新增 §10；决策依据见 [[architecture/decisions/0012-challenge-based-duplicate-bridge-takeover.md|ADR-0012]]。
 
 ## 家族定位
 
@@ -43,7 +45,7 @@
   - 服务端在 101 升级响应中必须回显 Sec-WebSocket-Protocol: remotepi.v1（RFC 6455：客户端带 subprotocol 而服务端不回显/回显多项，浏览器会判握手失败——已实测 workerd 默认不回显，需显式设置；2026-09-05 M2 联调确认）。
   - 连接建立后 **5 秒内** 必须收到 handshake，超时则回 `error(auth_failed)` 并断开（见 [配套常量](#配套常量)）。
   - `role` 与连接入口路径（`/web` / `/bridge`）不符 → `error(auth_failed)`。
-  - 同一 token 已有 bridge 在线，第二个 bridge → `error(duplicate_bridge)`。
+  - 同一 token 已有 bridge 在线，第二个 bridge **不再立即拒绝**——按「挑战式接管」语义处理：先向在位旧桥发 `control/ping` 挑战探测（独立 `challengeNonce` + 3s `CHALLENGE_TIMEOUT_MS` 预算），3s 内旧桥回 pong 证明仍存活 → 拒新桥（`error(duplicate_bridge)` terminal 1008）；3s 内未回 → 视为僵尸踢旧 + 纳新（广播 `bridge_status{online:false, reason:'stale'}` + 纳新广播 `connected`）。完整边界语义见 [§10](#10-do-侧-duplicate-bridge-挑战式接管) / [[architecture/decisions/0012-challenge-based-duplicate-bridge-takeover.md|ADR-0012]]。
 - **备注**：token 颁发方式（bridge 启动时动态生成、网页经 URL 携带、吊销流程等）属**产品流程**，由后续 PRD 定义；本文档只约束 wire 行为。
 
 ---
@@ -101,7 +103,7 @@ bridge 在不在线（由中间层生成）。
   - `online`：boolean。
   - `changed_at`：ISO8601 时间戳。
   - `reason`：`"connected"`（连上）/ `"closed"`（连接断开）/ `"stale"`（心跳判死）。
-- **触发时机**：bridge 完成 handshake / bridge 连接断开 / 心跳判死；新网页完成 handshake 后**立刻补发一条当前状态**。
+- **触发时机**：bridge 完成 handshake / bridge 连接断开 / 心跳判死 / **duplicate-bridge 挑战超时踢旧时（复用 `reason:'stale'`）**；新网页完成 handshake 后**立刻补发一条当前状态**。
 - **设计理由**：由中间层发是因为 bridge 无法播报自己的死讯——崩溃、断网时它什么都发不出来。离线显示不区分正常停止与崩溃（用户不关心，故不设 bye 消息）。
 
 ---
@@ -373,7 +375,7 @@ control 请求的通用回执。
   | code | 触发条件 | terminal |
   |------|----------|----------|
   | `auth_failed` | token 不符 / handshake 超时 / role 与入口不符 | true |
-  | `duplicate_bridge` | 同 token 已有 bridge 在线 | true |
+  | `duplicate_bridge` | **挑战式接管确认旧桥仍存活时拒绝新桥**（duplicate 命中后向在位旧桥发 `control/ping` 挑战探测，3s `CHALLENGE_TIMEOUT_MS` 内旧桥回 pong 证明仍存活 → 拒新桥；详见 [§10](#10-do-侧-duplicate-bridge-挑战式接管) / [[architecture/decisions/0012-challenge-based-duplicate-bridge-takeover.md|ADR-0012]]）/ 挑战期间第三个桥 handshake（先到先得，立即拒绝） | true |
   | `invalid_envelope` | 消息结构解析失败 / `session:'new'` 缺 `payload.work_dir`（M4 钉子 2 边界） | false |
   | `unsupported_version` | `v` 不是 `1` | true |
   | `unsupported_type` | type 不识别且无法转发处理时 | false |
@@ -394,6 +396,7 @@ control 请求的通用回执。
 | fatal 关闭码（WebSocket） | `1008` | §8 / [[architecture/protocol/envelope.md#锁版承诺v1-存续期内不可变]] | DO 协议 fatal 关闭（1008 仍保留） |
 | 空闲杀进程倒计时 | 5 分钟 | §5 | `PiProcessManager` `IDLE_TIMEOUT_MS`（**与 §9 bridge client 的 90s 是两个不同的常量**，不要 grep 同名混淆——前者是进程级 idle 杀 pi，后者是 WSS 接收侧 read-idle 判死） |
 | **bridge 接收侧 read-idle 阈值**（**新增 2026-09-10**） | **90_000 ms（≈ DO 20s 心跳 ×3 + 余量）** | **§9** | **bridge client 侧 `IDLE_TIMEOUT_MS`**（**`packages/bridge/src/client.ts`，read-idle 滑动窗口；与上面 5min `PiProcessManager.IDLE_TIMEOUT_MS` 同名但用途不同——前者判死 WSS 连接，后者判死 pi 子进程；详见 §9 与 ADR-0011 §决策）** |
+| **duplicate-bridge 挑战探测超时**（**新增 2026-09-10**） | **3_000 ms** | **§10** | **DO 侧 `room.ts` `CHALLENGE_TIMEOUT_MS`**（**与上面 30s `PONG_TIMEOUT_MS` 正交——前者判"现役 bridge 是否存活"的一次性确认（duplicate 命中时探测），后者判"heartbeat 周期内是否有应答"的循环判定（每次心跳 ping 等 pong）；两常量在 `routeOpenMessage` 与 `tickHeartbeat` 各管各的账目，详见 §10 与 [[architecture/decisions/0012-challenge-based-duplicate-bridge-takeover.md\|ADR-0012]] §决策.2**）** |
 
 > 数值为初始经验值，实现时可调，调整属 [[conventions/README.md|实现约定]] 范畴。
 >
@@ -432,6 +435,47 @@ bridge 是**常驻后台工人**（长连 worker DO，多 session 多 pi 子进�
 - **新 bridge 对老版本 web 完全兼容**——web 主动 ping 仍能被新 bridge 收到并回 pong（bridge 对 ping 应答路径未变）；web 不感知 bridge 是否主动 ping。
 - **bridge 切换无需 worker 配合部署**——纯客户端行为变更 + 文档注记；worker / DO / web 三端无需同步切换。
 - **用户行动**：本地跑旧版 bridge 的实例需要择机重启才生效（重启时加载新版 `packages/bridge`，行为自动切到 §9.2 接收侧 read-idle）；旧版 bridge 在 5min 内连续触发旧 30s×3 判死 → 无限退避重连循环的缺陷（详见 ADR-0011 §背景）随重启一并消失。
+
+## 10. DO 侧 duplicate-bridge 挑战式接管（**新增 2026-09-10**）
+
+> **本节为新增节**，承载 DO 侧「duplicate bridge handshake 不再立即拒绝，改向在位旧桥发挑战 ping 探测活性」机制的契约层定义。代码层落地于 `worker/src/room.ts` 的 `CHALLENGE_TIMEOUT_MS = 3_000` + `ConnMeta` 新增 `challengeNonce` / `challengeSentAt` + `Room` 新增 `challenge` 状态字段 + `startChallenge` / `resolveChallenge` 两个新方法；bridge 侧配合改造在 `packages/bridge/src/client.ts` `handshakeConfirmed` 门控（见 §10.2.5）。决策依据见 [[architecture/decisions/0012-challenge-based-duplicate-bridge-takeover.md|ADR-0012]]。
+
+### 10.1 应用模型
+
+bridge 是**常驻后台工人**（§9.1 同模型）；DO 的 `Room` 在每个 token 下持有**唯一活 bridge 槽位**（§1 handshake duplicate 规则本意：「拒绝第二个**活着的** bridge」）。worker `room.ts` 旧实现把 `this.bridge !== null` 等同于「槽位被活 bridge 占据」，但**纯对象身份比对无活性判断**——bridge 进程被 `kill -9` 或中间网络设备静默掐断时，workerd 不保证对纯 TCP 层断开（close code 1006）派发 `close`/`error` 事件，僵尸 ws 长期霸占槽位；新桥重连被立即拒绝，永久打不通。本节机制把「活」字补回——duplicate 命中时用一次性 ping 挑战探测旧桥活性，超时即踢旧纳新。
+
+### 10.2 机制（七条）
+
+1. **挑战 ping + 独立 nonce / 预算**——duplicate 命中时，DO 向在位旧桥发一次 `control/ping {nonce: <challengeNonce>}`，并起 3s `CHALLENGE_TIMEOUT_MS` 一次性预算 timer。`challengeNonce` 是 `ConnMeta` 新增的独立字段，与 heartbeat 的 `pendingPingNonce` / `pingSentAt` / `missedPong` 三件套**完全独立**——两个账目在 `routeOpenMessage` 的 pong 处理与 `tickHeartbeat` 的循环里各管各的。共享 nonce 会让慢但活的 bridge 收到挑战 ping 回 pong 时顺手清掉一个真实的待回答 heartbeat nonce，掩盖真 stale。
+2. **pong 三桶优先级**——`routeOpenMessage` 处理 `case 'pong'` 时按 (a) → (b) → (c) 三桶判定：(a) 挑战 nonce 命中且挑战在位 → `resolveChallenge(true)`（旧桥仍活，拒新桥）；(b) heartbeat nonce 命中 → 清账 heartbeat（不影响挑战）；(c) 都不命中 → 转发到对端（peer 的 ping/pong 配对）。详见 [[architecture/decisions/0012-challenge-based-duplicate-bridge-takeover.md|ADR-0012]] §决策.1。
+3. **挑战期边界语义**——挑战进行中 (`this.challenge !== null`)：
+   - **第二个新桥 → 立即拒绝**：先到先得，`duplicate_bridge` 拒掉，避免多桥并发挑战互踢。
+   - **旧桥主动断开 → 跳过 stale 广播直接纳新**：`handleDisconnect` 走 `ch.oldWs === ws` 分支，调 `resolveChallenge(false, nonce, /*broadcastStaleForOld*/ false)`；`broadcastStaleForOld` seam 是为这一边界保留——旧桥若是用户主动 kill（操作者已知它死了），再发 `stale → connected` 闪烁会让 web UI bar 抖一下，操作者行为不应触发 stale 路径。
+   - **新桥主动断开 → 取消挑战**：`handleDisconnect` 走 `ch.newWs === ws` 分支，清 timer + 清 `challenge` 字段，旧桥保持槽位不变。
+   - **挑战超时后迟到 pong → 安全 no-op**：`resolveChallenge` 用 `expectedNonce` 守门（`ch.nonce !== expectedNonce` → 早返），nonce 已清账 + 挑战已 null + 状态机已回退，迟到 pong 进 (b)/(c) 桶自然 fallback。
+   - **新桥停放期接管 5s handshake timer**：`startChallenge` 第一步 `clearTimeout(newMeta.handshakeTimer); newMeta.handshakeTimer = null`，把 challenger 的 5s 预算收归 challenge 账目下；3s 解决后 challenger 要么被 `sendTerminalError` 关闭（无需 5s 计时器），要么被 promote（promote 时清账）。
+4. **卫生缺陷一并闭合**——(a) `tickHeartbeat` stale 分支补 `webs.delete(ws)`（在 `ws.close` 前，与 `handleDisconnect` 的删除顺序对齐，避免僵尸条目泄漏）；(b) `tickHeartbeat` 循环 per-connection try/catch（异常按死连接清理——clear bridge slot + broadcast stale + webs.delete + best-effort close——不中断循环）。即便没有主因这两点也是必须的清理缺陷，闭环必须在此一并落实。
+5. **bridge 侧 `attempt` 重置时机——`handshakeConfirmed` 门控**——`packages/bridge/src/client.ts` 改造：(a) `handleOpen` 不再 `attempt = 0`（仅 `handshakeConfirmed = false` + 发 handshake + arm idle deadline）；(b) `handleMessage` 首个 `safeParse` 成功的 inbound envelope 经 `handshakeConfirmed` 门控 `attempt = 0` 并打 `"handshake confirmed by server"` 日志。语义：解析失败不刷新（与 [[architecture/decisions/0011-bridge-receiver-side-read-idle-deadlock.md|ADR-0011]] §决策.3 同哲学——「服务器狂发坏帧本身即病态信号」是当前实现的有意选择）。效果：1008 拒后退避指数增长至 30s cap（800/1600/3200/6400/12800ms 5 周期 → 30s 平尾）；正常重连握手确认后归零，后续闪断仍从 1s 起步。`BACKOFF_BASE_MS = 1_000` / `BACKOFF_CAP_MS = 30_000` / ±20% jitter 沿用既有常量不变。
+6. **3s 挑战预算的取值依据**——三条：(a) DO 心跳 ping → bridge 本地 `replyToPing` 回 pong 的本地链路延迟 < 1ms（pong 在 ping 出队后立即返回），3s 是活连接所需的 10⁶ 倍余量；(b) 介于 handshake 5s 窗口与 heartbeat 20s 周期之间，留有清晰边界；(c) 用户视角「看到 web UI 桥离线 → 重连 → 桥上线」的总体验链路在 3s 内完成，无可感暂停。
+7. **测试基建从零搭建**——worker 此前无测试基建（`worker/` 包从未配置过 vitest）。本轮落地：`worker/vitest.config.ts` + `worker/src/__tests__/fake-ws.ts`（`FakeWebSocket` 实现 `addEventListener` + `send` + `close` 三件套 + 工具模拟 helper）+ `worker/src/__tests__/room.test.ts` 11 条用例（覆盖 1 挑战 + pong 拒新 / 2 挑战超时踢旧纳新 / 3 挑战中旧桥断立即纳新 / 4 挑战中新桥断取消 / 5 第三桥立即拒 / 6 双 nonce 独立 / 7 stale 清理完整 / 8 send 异常不杀 tick / 9 迟到 pong 安全 / 10 标准断开清理 / 11 heartbeat pong 回归）。bridge 端新增 5e（连续 1008 指数退避钉桩）+ 5f（首解析成功 attempt 归零 + 下次断开从 1 起步）。
+
+### 10.3 wire 不变
+
+- `control/ping` / `control/pong` / `duplicate_bridge` / `bridge_status` 帧结构零变化（nonce 可选 / 必填规则不变；`bridge_status.reason` 枚举 `'connected' | 'closed' | 'stale'` 不新增——挑战超时踢旧即发 `reason:'stale'`，复用既有枚举）。
+- DO 心跳 20s / pong 超时 30s / 判死 3 次 全部不变（worker `heartbeat.ts` 零改动）。
+- envelope schema 锁版承诺不变；`CONTROL_TYPES` 字面量不变。
+
+### 10.4 web 端不变
+
+- web 端 WsClient 不感知 DO 挑战式接管机制——web 收到的是 `bridge_status` 帧（`online:true/false` + `reason`），原因枚举不变。
+- web 端 `bridge_status{online:false, reason:'stale'}` 在两个语义下都可能收到：(a) heartbeat 30s×3 判死（既有）；(b) duplicate-bridge 挑战超时踢旧（新增）。两者复用同一枚举，不需 UI 区分——对 web 而言都是「桥离线」的等价信号。
+
+### 10.5 向后兼容
+
+- **DO 对旧版 bridge 完全兼容**——旧 bridge 照常应答挑战 ping（bridge `replyToPing` 路径不变；旧 bridge 收到任何 ping 都回 pong，含 DO 主动 heartbeat ping 与本轮新增的挑战 ping）。
+- **旧 DO 对新 bridge：行为与 bug 前一致**——新 bridge 重连仍会被老 DO 拒直到 90s stale 触发。即 bridge / worker 可独立升级，无协同部署要求。
+- **新 DO 对新 bridge**——本 ADR 的核心修复路径。
+- **用户行动**：bridge / worker 可**独立升级**——worker 先上即解决拒绝循环（挑战式接管在 DO 侧，bridge 不感知）；bridge 端退避修复后上只是少锤服务器（避免无谓重连开销）。建议两条同步上，效果最优。push 后 Actions CD 自动部署 worker；服务器端 bridge 由用户手动 `systemctl restart remotepi-bridge` 或重启 bridge 进程加载新版 `packages/bridge`。
 
 ## 中间层处理规则
 
