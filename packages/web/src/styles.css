@@ -18,6 +18,13 @@
   --state-offline: #c0392b;
   --state-connecting: #6b6b76;
 
+  /* M5 task 02 — InputBar textarea auto-grow cap. Mirrors
+     `DEFAULT_TEXTAREA_MAX_HEIGHT` in `hooks/useAutoResizeTextarea.ts`;
+     keep both in sync (the JS side wins because it sets
+     `style.height` inline, but the CSS cap is what visually
+     constrains `overflow-y: auto` for content past the cap). */
+  --input-max-height: 200px;
+
   font-family:
     system-ui,
     -apple-system,
@@ -386,7 +393,12 @@ td code {
 
 .input-bar {
   display: flex;
-  align-items: center;
+  /* M5 task 02 — the field is now a multi-line `<textarea>`;
+     `align-items: flex-end` keeps the Send / Abort buttons pinned
+     to the textarea's bottom edge so they don't drift upward as
+     the textarea grows past one line (which would look broken
+     with the prior `align-items: center` rule). */
+  align-items: flex-end;
   gap: 0.5rem;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -399,11 +411,29 @@ td code {
   flex: 1 1 12rem;
   font-family: inherit;
   font-size: 0.95rem;
+  line-height: 1.4;
   padding: 0.45rem 0.6rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--text);
+  /* M5 task 02 — textarea-specific shape rules. `resize: none`
+     disables the browser's drag handle (we manage height via
+     the hook, so a user-draggable handle would let them make
+     it taller than `--input-max-height`, defeating the cap).
+     `min-height` keeps the field visually a single row at idle
+     (`rows={1}` + line-height gives ~32px) so the Send / Abort
+     buttons stay close to where the user expects on first
+     paint. `max-height` + `overflow-y: auto` is the auto-grow
+     ceiling — content past the cap gets an internal scrollbar
+     rather than blowing the row height past the layout budget.
+     `box-sizing: border-box` keeps padding inside the cap so
+     `scrollHeight` measurements agree with the visible box. */
+  resize: none;
+  min-height: 32px;
+  max-height: var(--input-max-height);
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .input-bar-field:focus {
@@ -420,6 +450,18 @@ td code {
   background: var(--surface);
   color: var(--text);
   border-color: var(--border);
+}
+
+/* M5 task 02 — the global `button` rule has `align-self:
+   flex-start` (it predates the multi-line textarea). The
+   `.input-bar` container now uses `align-items: flex-end` to
+   keep the buttons pinned to the textarea's bottom edge as
+   the textarea grows; the `align-self` override on the buttons
+   is what makes them honour that container alignment. Without
+   this, the Send / Abort buttons would stay glued to the top
+   of the row regardless of how tall the textarea gets. */
+.input-bar button {
+  align-self: flex-end;
 }
 
 .input-bar .abort-button.abort-live {

@@ -47,6 +47,8 @@ import {
   useStreamingDraftFor,
   useWsClient,
 } from '../ws/WsClientContext.js';
+import { useAutoResizeTextarea } from '../hooks/useAutoResizeTextarea.js';
+import { decideKeyDownAction } from './inputBarKeydown.js';
 import { DialogHost } from './dialogs/DialogHost.js';
 import type { StreamingSegment } from '../ws/WsClient.js';
 
@@ -651,7 +653,17 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
   const inputDisabled = phase === 'running' || phase === 'spawning';
   const abortLive = phase === 'running';
 
-  const onChange = (event: ChangeEvent<HTMLInputElement>) => {
+  // M5 task 02 — auto-grow textarea (see
+  // `hooks/useAutoResizeTextarea.ts`). The ref is owned by the
+  // component (so the hook can keep using `value` as a stable
+  // dep) and the hook writes `style.height` against `ref.current`
+  // on every render that touches `value`. The hook intentionally
+  // does not manage the ref itself — keeping ref ownership local
+  // matches the existing `commandErrorTimerRef` style.
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useAutoResizeTextarea({ ref: textareaRef, value });
+
+  const onChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     setValue(event.target.value);
   };
 
@@ -717,15 +729,36 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
     submitText(value);
   };
 
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    // Enter without Shift — submit. Shift+Enter falls through to the
-    // default newline behaviour (currently no-op since we render a
-    // single-line input, but the rule is documented so a future
-    // textarea swap doesn't accidentally lose newlines).
-    if (event.key === 'Enter' && !event.shiftKey) {
+  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // M5 task 02 / PRD §4 / 验收 §3 — three-piece guard:
+    //   Enter + !shiftKey + !isComposing → submit
+    //   Shift+Enter → browser native newline (no preventDefault)
+    //   IME composing → ignore (let candidate commit)
+    // The decision is extracted to `decideKeyDownAction` so the
+    // rules are unit-testable without spinning up a DOM /
+    // WsClient stack (see `__tests__/input-bar-keydown.test.ts`).
+    // `event.nativeEvent.isComposing` is the spec-correct IME
+    // flag (UI Events §6.3) — every modern browser sets it on
+    // composition-end Enter; Safari historically used
+    // `keyCode === 229` for the same state but modern Safari
+    // now sets `isComposing` correctly, so no keyCode defence is
+    // needed (S-implification: don't carry dead-code paths).
+    const action = decideKeyDownAction({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+    });
+    if (action === 'submit') {
+      // preventDefault so the textarea doesn't ALSO insert a
+      // '\n' alongside the submit (mirrors the prior <input>
+      // implementation).
       event.preventDefault();
       submitText(value);
     }
+    // 'newline' / 'ignore' → no preventDefault, no submit. The
+    // textarea / IME handles the keypress natively (Shift+Enter
+    // inserts '\n' in the value; IME composing Enter commits
+    // the candidate).
   };
 
   const onAbort = () => {
@@ -736,10 +769,11 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
 
   return (
     <form className="input-bar" onSubmit={onSubmit} aria-label="Send a prompt">
-      <input
+      <textarea
+        ref={textareaRef}
         className="input-bar-field"
         data-testid="input-field"
-        type="text"
+        rows={1}
         placeholder={
           inputDisabled
             ? 'agent is working — abort to take over'
