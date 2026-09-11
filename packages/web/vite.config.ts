@@ -1,8 +1,17 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  plugins: [react()],
+  // M5 task 04 — Tailwind v4 via the official Vite plugin (zero
+  // config). It walks the CSS import graph for `@import
+  // "tailwindcss"` + `@theme` + `@layer ...` blocks in
+  // `src/styles.css` and emits the preflight + utilities layers.
+  // Existing `manualChunks` / `modulePreload` config below is the
+  // markdown lazy-load setup from M5 task 01 — it stays exactly
+  // as-is so the markdown chunk separation / cache behavior is
+  // untouched.
+  plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
     strictPort: true,

@@ -2,6 +2,60 @@
    components need to look like an integrated page rather than a dev console.
    Layout is a single column on narrow viewports. */
 
+/* =====================================================================
+ * M5 task 04 — Tailwind v4 intro.
+ *
+ * The directive order below is intentional and load-bearing:
+ *
+ *   1. `@import "tailwindcss";` injects preflight (the v4 CSS
+ *      reset) + the utilities layer + the default @theme. This
+ *      MUST be the first non-comment content.
+ *   2. `@theme inline { ... }` re-maps 12 legacy color custom
+ *      properties (e.g. `--bg`) onto Tailwind's `--color-*`
+ *      tokens. The `inline` modifier means the value is pasted
+ *      into each utility class as `var(--bg)`, so utilities
+ *      auto-track any future `:root` override (including the
+ *      `@media (prefers-color-scheme: dark)` block further down).
+ *   3. `:root { ... }` keeps the original 13 legacy CSS custom
+ *      properties verbatim (their names are unchanged on
+ *      purpose: every existing `background: var(--bg)` rule
+ *      below depends on them) and adds ONE new var,
+ *      `--sidebar-width: 280px`, for task 06 (AppShell sidebar).
+ *   4. `@media (prefers-color-scheme: dark) { :root { ... } }`
+ *      keeps its 12 dark-color overrides — because @theme inline
+ *      re-references the original vars, dark mode keeps working
+ *      for both legacy rules and Tailwind utilities.
+ *   5. `@layer components { ... }` wraps the 1280 lines of
+ *      legacy CSS so they stack ABOVE preflight (legacy overrides
+ *      reset) but BELOW ad-hoc Tailwind utilities (new components
+ *      win on specificity without re-architecting). This is
+ *      the standard progressive-migration cascade order.
+ *
+ * Preflight is intentionally LEFT ON (D11 user ruling — see PRD
+ * §D11) so utilities get a consistent reset; the visual diff is
+ * logged in the task completion report.
+ * ===================================================================== */
+
+@import "tailwindcss";
+
+@theme inline {
+  /* 12 color tokens — values are re-references to the legacy
+     vars in :root below, so dark-mode overrides + any future
+     theme override propagates to utilities automatically. */
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-disabled: var(--accent-disabled);
+  --color-code-bg: var(--code-bg);
+  --color-state-online: var(--state-online);
+  --color-state-offline: var(--state-offline);
+  --color-state-connecting: var(--state-connecting);
+}
+
 :root {
   color-scheme: light dark;
   --bg: #f7f7f8;
@@ -31,6 +85,12 @@
      in independently of the JS inline `style.height`. */
   --input-max-height: 200px;
 
+  /* M5 task 04 — AppShell sidebar width (task 06+).
+     Pure addition; no existing var touched. Lives in :root so
+     light/dark overrides in the @media block below can override
+     it too if a future theme needs a narrower rail. */
+  --sidebar-width: 280px;
+
   font-family:
     system-ui,
     -apple-system,
@@ -52,6 +112,17 @@
     --code-bg: #2a2a35;
   }
 }
+
+/* =====================================================================
+ * Legacy component CSS — wrapped in `@layer components` so the
+ * cascade order is `preflight (base) < components < utilities`. The
+ * original 1280-line rule body is unchanged; only the wrapping
+ * changed. Every rule continues to address legacy selectors
+ * (`.app-shell`, `.input-bar-field`, `.message-row`, ...) so visual
+ * parity is preserved.
+ * ===================================================================== */
+
+@layer components {
 
 body {
   margin: 0;
@@ -1278,3 +1349,4 @@ td code {
   font-style: italic;
 }
 
+}
