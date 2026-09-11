@@ -50,8 +50,9 @@ interface ChoiceLevel1PanelProps {
   /** Optional error from a recent `work_dir_remove` that
    *  happened in the Sidebar's WorkDirsTab. Reserved for future
    *  surfacing — current Sidebar shows the remove error inline
-   *  in its own WorkDirsTab (data-testid="choice-page-remove-error"
-   *  owned by Sidebar). Optional — when null, no banner renders. */
+   *  in its own WorkDirsTab (the choice-page-remove-error
+   *  banner, owned by Sidebar). Optional — when null, no
+   *  banner renders. */
   removeError?: string | null;
 }
 

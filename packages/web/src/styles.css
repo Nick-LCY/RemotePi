@@ -245,61 +245,6 @@ td code {
   max-width: 100%;
 }
 
-/* ---- PhaseIndicator ---------------------------------------------------- */
-
-.phase-indicator {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.45rem 0.85rem;
-  font-size: 0.9rem;
-}
-
-.phase-indicator .phase-badge {
-  display: inline-flex;
-  align-items: center;
-  font-size: 0.78rem;
-  font-weight: 600;
-  padding: 0.15rem 0.55rem;
-  border-radius: 999px;
-  color: white;
-  background: var(--state-connecting);
-  text-transform: lowercase;
-  letter-spacing: 0.02em;
-}
-
-.phase-indicator .phase-spawning {
-  background: var(--state-connecting);
-}
-
-.phase-indicator .phase-ready {
-  background: var(--accent);
-}
-
-.phase-indicator .phase-running {
-  background: #e69138;
-}
-
-.phase-indicator .phase-idle {
-  background: var(--state-online);
-}
-
-.phase-indicator .phase-exited {
-  background: var(--state-offline);
-}
-
-.phase-indicator .phase-unknown {
-  background: var(--muted);
-}
-
-.phase-indicator .phase-hint {
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-
 /* ---- RecoveryView ------------------------------------------------------ */
 
 .recovery-in-flight,
@@ -384,29 +329,6 @@ td code {
   font-size: 0.92rem;
   word-break: break-word;
   white-space: pre-wrap;
-}
-
-/* ---- QueueIndicator --------------------------------------------------- */
-
-.queue-indicator {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-.queue-pill {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 0.2rem 0.55rem;
-}
-
-.queue-pill strong {
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  margin-left: 0.2rem;
 }
 
 /* ---- InputBar --------------------------------------------------------- */

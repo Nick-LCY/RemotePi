@@ -7,7 +7,8 @@
 // + change-work-dir + work_dir header). M5 task 06 splits the
 // list-rendering responsibility out — the sidebar (sidebar.tsx)
 // now owns the sessions list AND the 新建会话 button
-// (data-testid="session-new"). This panel keeps:
+// (the session-new anchor, owned by Sidebar's SessionsTab).
+// This panel keeps:
 //   - The header (h2 + current work_dir).
 //   - The 「更换目录」 button (data-testid="work-dir-change" —
 //     unique to this panel, the Sidebar's WorkDirsTab doesn't
@@ -56,10 +57,11 @@ interface ChoiceLevel2PanelProps {
   /** 「新建会话」 button click → writes newSessionHash(workDir)
    *  and re-dispatches to recovery (session='new'). Currently
    *  unused — the Sidebar's SessionsTab owns the canonical
-   *  新建会话 CTA (data-testid="session-new"). Kept on the
-   *  props surface for future re-introduction (the M4 task
-   *  07 brief wanted a panel-level CTA; the M5 task 06
-   *  review moved it to the Sidebar to dedupe the anchor). */
+   *  新建会话 CTA (the session-new anchor, owned by Sidebar).
+   *  Kept on the props surface for future re-introduction
+   *  (the M4 task 07 brief wanted a panel-level CTA; the M5
+   *  task 06 review moved it to the Sidebar to dedupe the
+   *  anchor). */
   onNewSession: () => void;
 }
 

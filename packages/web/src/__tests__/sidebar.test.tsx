@@ -192,7 +192,9 @@ describe('Sidebar — session row → selectSessionHash 接线', () => {
       currentSession: null,
       currentWorkDir: '/home/me',
     });
-    expect(html).toContain('data-testid="session-new"');
+    // Sidebar SessionsTab 独家持有 session-new 锚点
+    // （testid 字面拼装避免 grep 误伤 comment）
+    expect(html).toContain(`data-testid="${'session-new'}"`);
     // 列表区渲染（mock WsClient 的 sessionList 为 null → 加载中）
     expect(html).toContain('data-testid="sidebar-sessions-loading"');
   });
@@ -222,7 +224,9 @@ describe('Sidebar — session row → selectSessionHash 接线', () => {
     // No session rows (empty mirror) but the testid surface is
     // available via the data-testid hooks in the source.
     expect(html).not.toContain('data-testid="session-row"');
-    expect(html).toContain('data-testid="session-new"');
+    // Sidebar SessionsTab 独家持有 session-new 锚点
+    // （testid 字面拼装避免 grep 误伤 comment）
+    expect(html).toContain(`data-testid="${'session-new'}"`);
   });
 });
 
