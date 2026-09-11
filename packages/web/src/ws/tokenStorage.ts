@@ -196,24 +196,32 @@ export function read(): string | null {
 /**
  * Persist a token.
  *
- * Empty / whitespace-only tokens are REJECTED — `write('')` is a
- * silent no-op (we deliberately do NOT call `clear()` here; an
- * empty token is an invalid input, not a "remove the cached one"
- * signal — the caller is responsible for `clear()` when that's the
- * intent). Whitespace is trimmed before the empty-check so a
- * trailing newline from a paste action doesn't silently pass.
+ * Empty / whitespace-only tokens are REJECTED — `write('')` returns
+ * `false` as a silent no-op (we deliberately do NOT call `clear()`
+ * here; an empty token is an invalid input, not a "remove the
+ * cached one" signal — the caller is responsible for `clear()`
+ * when that's the intent). Whitespace is trimmed before the
+ * empty-check so a trailing newline from a paste action doesn't
+ * silently pass.
  *
- * Other write failures (SecurityError, quota) are swallowed per
- * the module-level rationale (storage failures must not crash the
- * render path). The function returns `void` because the App-level
- * flow doesn't branch on success/failure — if `write` fails the
- * next `read` will be `null` and the user lands on TokenModal again
- * (defensible degradation).
+ * Other write failures (SecurityError, quota) are also returned as
+ * `false` per the module-level rationale (storage failures must not
+ * crash the render path). The `boolean` return value (M5 task 05
+ * review W1 — was `void` before) lets the App-level flow distinguish
+ * "persisted" from "rejected / swallowed" and surface the inline
+ * error UX ("浏览器禁用了本地存储，无法保存 token") instead of
+ * silently reloading onto a TokenModal required flash. The required-
+ * mode submit path is `if (ok) window.location.reload()` — false
+ * doesn't reload, so a flaky privacy-mode write doesn't bounce the
+ * user back into the same modal with no explanation. The closable
+ * mode submit path is `if (ok) client.connect(value) + setAuth(...)`
+ * — false doesn't reconnect, so an exchange-token attempt that
+ * silently no-ops doesn't break the existing WsClient connect.
  */
-export function write(token: string): void {
+export function write(token: string): boolean {
   const trimmed = token.trim();
-  if (trimmed.length === 0) return;
-  writeRaw(KEY, trimmed);
+  if (trimmed.length === 0) return false;
+  return writeRaw(KEY, trimmed);
 }
 
 /**

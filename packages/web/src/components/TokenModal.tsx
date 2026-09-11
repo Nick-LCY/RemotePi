@@ -108,6 +108,17 @@ export interface TokenModalProps {
    *  default empty string keeps the dialog compact for the
    *  Settings → 更换 Token path. */
   bannerHint?: string;
+  /** Optional inline error banner — surfaced when `tokenStorage.write`
+   *  returned `false` (privacy mode / quota exceeded / SecurityError).
+   *  M5 task 05 review W1 — without this, the App-level submit
+   *  handler would silently no-op on write failure and the user
+   *  would see no feedback. Inline render at the top of the dialog
+   *  (visually below the optional bannerHint) with the bridge-error
+   *  colour family so the operator learns one "red = something
+   *  failed" signal across all surfaces (mirrors `.dialog-error` /
+   *  `.input-bar-error`). Default `null` keeps the dialog compact
+   *  for the happy path. */
+  storageError?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +126,7 @@ export interface TokenModalProps {
 // ---------------------------------------------------------------------------
 
 export function TokenModal(props: TokenModalProps): JSX.Element {
-  const { required, onSubmit, onClose, bannerHint } = props;
+  const { required, onSubmit, onClose, bannerHint, storageError } = props;
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -215,6 +226,29 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
             role="note"
           >
             {bannerHint}
+          </div>
+        ) : null}
+
+        {/* Inline storage-error banner — surfaced when
+            `tokenStorage.write` returned false (privacy mode /
+            quota exceeded / SecurityError). Renders with the same
+            bridge-error colour family as `.dialog-error` / `.input-
+            bar-error` so the operator learns one "red = something
+            failed" signal across all surfaces. The literal
+            `rgba(...)` is hard-coded to mirror `.input-bar-error`'s
+            8%-alpha offline tint; using a Tailwind opacity modifier
+            on `bg-state-offline/10` would require a Tailwind v4
+            `<alpha-value>` channel rewrite of the `var(--state-offline)`
+            definition, which would ripple to every other surface —
+            not worth it for one inline banner. */}
+        {storageError !== undefined && storageError !== null && storageError.length > 0 ? (
+          <div
+            className="mb-4 rounded border border-state-offline px-3 py-2 text-sm text-state-offline"
+            style={{ backgroundColor: 'rgba(192, 57, 43, 0.08)' }}
+            data-testid="token-modal-storage-error"
+            role="alert"
+          >
+            {storageError}
           </div>
         ) : null}
 

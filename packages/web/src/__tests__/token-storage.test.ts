@@ -184,9 +184,9 @@ describe('tokenStorage — read()', () => {
 // write()
 // ---------------------------------------------------------------------------
 
-describe('tokenStorage — write()', () => {
+describe('tokenStorage — write() — boolean return contract (M5 task 05 review W1)', () => {
   it('9. write("abc") persists; subsequent read returns "abc"', () => {
-    write('abc');
+    expect(write('abc')).toBe(true);
     expect(read()).toBe('abc');
     // setItem was called with the trimmed value.
     const setItemCall = stub.calls.find((c) => c.op === 'setItem');
@@ -195,9 +195,9 @@ describe('tokenStorage — write()', () => {
     expect(setItemCall!.value).toBe('abc');
   });
 
-  it('10. write("") is rejected as a no-op (does NOT clear, does NOT throw)', () => {
+  it('10. write("") is rejected as a no-op (does NOT clear, does NOT throw) — returns false', () => {
     seed(stub, KEY, 'existing');
-    write('');
+    expect(write('')).toBe(false);
     // The pre-existing value survives — empty input is "invalid",
     // not "remove the cached one" (the latter is `clear()`'s job).
     expect(read()).toBe('existing');
@@ -206,45 +206,80 @@ describe('tokenStorage — write()', () => {
     expect(setItemCalls).toHaveLength(0);
   });
 
-  it('11. write("   ") (whitespace only) is rejected as a no-op', () => {
+  it('11. write("   ") (whitespace only) is rejected as a no-op — returns false', () => {
     seed(stub, KEY, 'existing');
-    write('   ');
+    expect(write('   ')).toBe(false);
     expect(read()).toBe('existing');
     const setItemCalls = stub.calls.filter((c) => c.op === 'setItem');
     expect(setItemCalls).toHaveLength(0);
   });
 
-  it('12. write("  abc  ") trims and persists "abc"', () => {
-    write('  abc  ');
+  it('12. write("  abc  ") trims and persists "abc" — returns true', () => {
+    expect(write('  abc  ')).toBe(true);
     expect(read()).toBe('abc');
   });
 
-  it('13. write() swallows SecurityError (privacy mode)', () => {
+  it('13. write() swallows SecurityError (privacy mode) — returns false', () => {
     stub.behaviour.setItem = 'throw-security';
     expect(() => write('abc')).not.toThrow();
+    expect(write('abc')).toBe(false);
   });
 
-  it('14. write() swallows quota / other errors (e.g. quota exceeded)', () => {
+  it('14. write() swallows quota / other errors (e.g. quota exceeded) — returns false', () => {
     stub.behaviour.setItem = 'throw-other';
     expect(() => write('abc')).not.toThrow();
+    expect(write('abc')).toBe(false);
   });
 
-  it('15. write() is a silent no-op when localStorage is absent (SSR safety)', () => {
+  it('15. write() is a silent no-op when localStorage is absent (SSR safety) — returns false', () => {
     uninstallStub();
     expect(() => write('abc')).not.toThrow();
+    expect(write('abc')).toBe(false);
   });
 
   it('16. write() does NOT call getItem / removeItem — write-only contract', () => {
-    write('abc');
+    expect(write('abc')).toBe(true);
     const ops = stub.calls.map((c) => c.op);
     expect(ops).toEqual(['setItem']);
   });
 
   it('17. successive writes: the latest value wins', () => {
-    write('first');
-    write('second');
-    write('third');
+    expect(write('first')).toBe(true);
+    expect(write('second')).toBe(true);
+    expect(write('third')).toBe(true);
     expect(read()).toBe('third');
+  });
+
+  it('18. M5 task 05 review W1钉桩 — write failure → next read returns null (write 失败 → 走 TokenModal 重提流)', () => {
+    // M5 task 05 review W1 — the App-level required-mode submit
+    // handler is `const ok = tokenStorage.write(t); if (ok)
+    // window.location.reload(); else setStorageError(true)`. The
+    // false branch must NOT reload — the user stays on the
+    // modal with the inline storageError banner. The next read
+    // returns null (write failed → no entry was persisted),
+    // which is the documented "退化但合理" path.
+    stub.behaviour.setItem = 'throw-security';
+    const ok = write('my-token');
+    expect(ok).toBe(false);
+    // The next read should be null — write failure left no
+    // persisted entry behind, so the user lands back on the
+    // required TokenModal on the next auth check.
+    expect(read()).toBeNull();
+  });
+
+  it('19. M5 task 05 review W1钉桩 — write success → next read returns the same value (no reload race)', () => {
+    // M5 task 05 review W1 — the App-level required-mode submit
+    // path is `const ok = write(t); if (ok) window.location.reload()`.
+    // A successful write must round-trip through read() — the
+    // post-reload `readAuth()` reads localStorage, finds the token,
+    // and routes to App's normal recovery path. If write returned
+    // true but localStorage didn't actually persist (silent
+    // mismatch), the reload would land back on TokenModal
+    // required and the user would be stuck in an infinite reload
+    // loop. This钉桩 pins that happy-path round-trip.
+    const ok = write('round-trip-token');
+    expect(ok).toBe(true);
+    expect(read()).toBe('round-trip-token');
   });
 });
 

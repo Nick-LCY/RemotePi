@@ -143,12 +143,16 @@ code {
 }
 
 .app-shell {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 1.5rem;
+  /* M5 task 06 顺期迁移——原 `.app-shell` 是单列居中 max-width:960px
+     布局；M5 双栏布局后，`<AppShell>` 接 grid(`grid-template-columns:
+     var(--sidebar-width) 1fr`)，Tailwind utility 写在 JSX 上。本
+     类仅作为兜底（任何在 JSX 外仍引用 `.app-shell` 的代码不应被
+     错误渲染为单列居中）。未来 task 07 移动端 drawer 接手后，本
+     类可删除。 */
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  min-height: 100vh;
 }
 
 .card {
@@ -166,84 +170,23 @@ code {
   font-size: 1.1rem;
 }
 
-/* ---- StatusBar -------------------------------------------------------- */
+/* ---- StatusBar (legacy M2/M3/M4 — deleted in M5 task 06; the
+   bridge-status badge + meta are now inlined into the sidebar's
+   `BridgeStatusBar` (Tailwind utilities, see components/BridgeStatusBar.tsx).
+   The original `.status-bar` / `.badge-*` rules were only ever
+   used by the deleted component, so they're removed in lockstep
+   to keep the layer slim. The `bridge-status` testid anchor is
+   preserved on the new component (Tailwind inline classNames
+   don't use this class — the testid + data-state live on the
+   new component directly). */
 
-.status-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-}
-
-.status-meta {
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.status-warning {
-  margin: 0 0 0 auto;
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  font-size: 0.8rem;
-  font-weight: 600;
-  padding: 0.2rem 0.6rem;
-  border-radius: 999px;
-  color: white;
-}
-
-.badge-connecting {
-  background: var(--state-connecting);
-}
-
-.badge-online {
-  background: var(--state-online);
-}
-
-.badge-offline {
-  background: var(--state-offline);
-}
-
-/* ---- TokenPrompt ------------------------------------------------------- */
-
-.token-prompt {
-  max-width: 480px;
-  margin: 4rem auto;
-}
-
-.token-prompt form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.token-prompt label {
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-.token-prompt input {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.95rem;
-  padding: 0.5rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--text);
-}
-
-.token-prompt input:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
+/* ---- TokenPrompt (M3/M4 — deleted in M5 task 05/06; token
+   moved to localStorage + TokenModal. The original `.token-prompt`
+   rules were only ever used by the deleted component, so
+   they're removed in lockstep. The `token-input` / `token-submit`
+   testid anchors are preserved on the new TokenModal component
+   (Tailwind inline classNames don't use this class — the testids
+   live on the new component directly). */
 
 /* ---- Buttons ---------------------------------------------------------- */
 

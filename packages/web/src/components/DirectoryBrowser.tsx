@@ -43,6 +43,14 @@ import { useWsClient } from '../ws/WsClientContext.js';
 // （定义在文件中段，靠近使用点便于审阅）。
 
 interface DirectoryBrowserProps {
+  /** When false, the browser renders nothing (parent is hiding
+   *  it). Default true for backward compat with the ChoicePage
+   *  level=1 mount path (where the parent renders the browser
+   *  inline whenever `browsing === true`). M5 task 06
+   *  Sidebar → WorkDirs tab → 浏览添加 路径下，`open` is the
+   *  canonical visibility flag and the parent no longer needs
+   *  to track a separate `browsing` state. */
+  open?: boolean;
   /** Called after `work_dir_add` succeeds. Parent typically uses
    *  this to write the new work_dir into the URL hash, which
    *  triggers App's `hashchange` listener and re-dispatches to
@@ -68,8 +76,15 @@ interface ListEntries {
 const LIST_DIRECTORIES_TIMEOUT_MS = 10_000;
 const WORK_DIR_ADD_TIMEOUT_MS = 5_000;
 
-export function DirectoryBrowser({ onAdded, onCancel }: DirectoryBrowserProps) {
+export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserProps) {
   const client = useWsClient();
+  // M5 task 06 — modal-化：父组件持 `open` 开关；`open === false`
+  // 时不渲染（避免 modal 仍占 DOM 槽位导致 backdrop 点击触发空
+  // handler / a11y 焦点泄漏）。`open` 默认 `true` 向后兼容既有
+  // ChoicePage level=1 mount 路径（父组件 `<>{browsing ? <DB
+  // /> : null}</>` 一直显式 mount）。
+  if (open === false) return <></>;
+
   // `path === null` ⇒ 列 home (path omitted from outbound); otherwise
   // 列 this absolute path. Initial value `null` so the first paint
   // immediately shows $HOME without an extra click — most users

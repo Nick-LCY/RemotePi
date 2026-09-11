@@ -1,10 +1,10 @@
 // App root — owns:
 //   1. The single WsClient instance (memoized for StrictMode safety).
-//   2. The hash → three-field derivation (`token` + `work_dir` +
-//      `session`, M4 钉子 1). URL convention is
-//      `#<token>&work_dir=<encoded>&session=<key|new>`; missing
-//      fields are tolerated (`#<token>` is the M3 legacy shape and
-//      is treated as "no work_dir, no session" → level=1).
+//   2. The hash + localStorage auth derivation (`token` from
+//      `tokenStorage`, `work_dir` + `session` from the URL hash).
+//      The hash carries only navigation state per M5 §G6 / D9;
+//      the token is sourced from localStorage (see
+//      `ws/tokenStorage.ts`).
 //   3. The connect/disconnect lifecycle tied to token presence.
 //   4. The per-session M3 dual-query recovery gate (M4 task 08 /
 //      §4.2) — each session key gets its own gate, persisted across
@@ -27,50 +27,40 @@
 //      (`&session=<realStem>`) and a session_list re-query is
 //      fired so ChoicePage level=2's mirror catches up
 //      (钉子 5 — stem 回填后重查).
+//   8. M5 task 06 — AppShell 双栏装配（任务书 §a/§g）：
+//      AppShell 接 sidebar + main 两栏；gateMapRef / handleRefill
+//      仍在 App 层创建（不下移——M4 验收期 4th gap 修复路径要求
+//      App 级闭包稳定），props 透传到 RecoveryShell。
+//      Sidebar 持 Sessions/WorkDirs tabs + 列表区 + 设置按钮
+//      → TokenModal closable；SessionStatusBar 接管对话区顶部
+//      status bar（本 session 状态）。DirectoryBrowser modal 化
+//      （`open` prop；App 持 `browserOpen` state）。
 //
-// The URL hash is the single source of truth. The TokenPrompt /
+// ## M5 task 05 review W1 — write-failure handling
+//
+// `tokenStorage.write()` returns `boolean` (was `void`). The App
+// submit handlers check the return and:
+//   - required mode → if (ok) window.location.reload(); else
+//     setStorageError(true) (inline error banner in TokenModal).
+//   - closable mode → if (ok) client.connect(value) +
+//     setAuth(readAuth()); else setStorageError(true).
+// Failure surfaces inline ("浏览器禁用了本地存储，无法保存 token")
+// — no silent no-op / no infinite-reload loop.
+//
+// ## M5 task 05 review W2 — closable auth state sync
+//
+// Settings → TokenModal closable → submit success → MUST call
+// `setAuth(readAuth())` after `client.connect(newToken)` to keep
+// `auth.token` state in sync with localStorage. Without this, the
+// app's `auth.token` snapshot would lag the localStorage source of
+// truth (any subsequent `useEffect` dep on `auth.token` would
+// read the stale value until the next `hashchange`).
+//
+// The URL hash is the single source of truth. The TokenModal /
 // ChoicePage / DirectoryBrowser all write `window.location.hash` and
-// the `hashchange` listener re-derives the three-field model via
-// `readAuthFromHash()`. `decideView()` then picks the render branch.
-//
-// M3 routing (task 06 + task 07):
-//   - token absent → TokenPrompt.
-//   - token present → RecoveryView → ChatView (only after the
-//     dual-query ceremony's `get_state` + `get_messages` replies
-//     have both landed; the gate is the single source of truth
-//     for the render decision).
-//   - On the gate flipping to `error`, RecoveryView shows a
-//     "恢复失败" card with a retry button that re-fires the
-//     dual queries. F5 takes the same path — a fresh mount
-//     builds a fresh gate, runs the ceremony once, and only
-//     renders ChatView on success.
-//
-// M4 three-state dispatch (task 07 / PRD §4.2 / 钉子 6):
-//   - no token → TokenPrompt (M3 path, preserved)
-//   - token + no work_dir → ChoicePage level=1 (work_dirs list +
-//     DirectoryBrowser entry point)
-//   - token + work_dir + no session → ChoicePage level=2
-//     (session list + "新建会话" button + "更换目录" button)
-//   - token + work_dir + session → RecoveryView → ChatView
-//     (`session: 'new'` falls through here; task 08 wires the
-//     pending-state stem refilling).
-//
-// M4 per-session wiring (task 08 / PRD §4.2 / 钉子 6):
-//   - ChatView takes `session` as a prop; its store reads/writes
-//     go through `sessions[session]` (or the M3_LEGACY bucket
-//     when session is `null` — the M3 token-only URL path).
-//   - RecoveryGate per-session: a `Map<sessionKey, RecoveryGate>`
-//     in the `RecoveryShell` keeps one gate per session. Enter
-//     creates; leave does NOT destroy (暂存 so re-entering a
-//     session doesn't re-fire the ceremony).
-//   - Stem refilling: a session_state broadcast whose session
-//     field is a real stem (i.e. not the literal 'new') while
-//     the URL hash's `session` is still 'new' triggers a hash
-//     refill (`&session=<realStem>`) and a session_list re-query
-//     for the current work_dir (钉子 5 — see `useStemRefilled`).
-//   - ChoicePage level=2 reads `sessionList` from the per-session
-//     bucket (M3_LEGACY bucket when `currentSessionKey === null`,
-//     which is the level=2 case).
+// the `hashchange` listener re-derives the auth model via
+// `readAuth()` (token from localStorage + work_dir/session from
+// hash). `decideView()` then picks the render branch.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncExternalStore } from 'react';
@@ -78,9 +68,12 @@ import { useSyncExternalStore } from 'react';
 import { watchStemRefilled } from './ws/stem-refilled.js';
 import type { SessionPhase } from '@remotepi/shared';
 
+import { AppShell } from './components/AppShell.js';
 import { ChatView } from './components/ChatView.js';
-import { ChoicePage } from './components/ChoicePage.js';
-import { StatusBar } from './components/StatusBar.js';
+import { ChoiceLevel1Panel } from './components/ChoiceLevel1Panel.js';
+import { ChoiceLevel2Panel } from './components/ChoiceLevel2Panel.js';
+import { DirectoryBrowser } from './components/DirectoryBrowser.js';
+import { SessionStatusBar } from './components/SessionStatusBar.js';
 import { TokenModal } from './components/TokenModal.js';
 import { errorHint } from './components/error-hint.js';
 import { decideView, readAuthFromHash } from './hash.js';
@@ -100,9 +93,9 @@ export { errorHint };
 /** Read the auth model used by App.tsx. M5 §G6 / D9 — the token
  *  is sourced from `localStorage` (see `ws/tokenStorage.ts`) and
  *  injected into the model alongside the hash-derived `work_dir` +
- *  `session`. The returned `AuthFromHash` shape is the M5 two-field
- *  form (`workDir` + `session` only) plus the separately-sourced
- *  `token`. App.tsx treats `auth.token === null` as the trigger for
+ *  `session`. The returned shape is the M5 two-field form
+ *  (`workDir` + `session`) plus the separately-sourced `token`.
+ *  App.tsx treats `auth.token === null` as the trigger for
  *  `<TokenModal required>` (D9 / D10).
  *
  *  Token-vs-hash ordering note: `token` is read on every call (not
@@ -120,8 +113,26 @@ function readAuth(): { token: string | null; workDir: string | null; session: st
   };
 }
 
+/** Inline error banner copy surfaced when `tokenStorage.write()`
+ *  returns `false` (privacy mode / quota exceeded / SecurityError).
+ *  Single source of truth — both required + closable submit
+ *  handlers set the same message via `setStorageError(true)`. */
+const STORAGE_ERROR_COPY = '浏览器禁用了本地存储，无法保存 token';
+
 export function App() {
   const [auth, setAuth] = useState(() => readAuth());
+  // M5 task 05 review W1 — `storageError` 状态：当
+  // `tokenStorage.write()` 返回 false 时设为 true，渲染内联错误
+  // banner。`null` 时不渲染（happy path）。Required 模式触发后
+  // 用户重新提交时复位为 null（每次 onSubmit 重置）。
+  const [storageError, setStorageError] = useState<string | null>(null);
+  // M5 task 06 — App-level modal state. DirectoryBrowser modal
+  // (`browserOpen`) + TokenModal closable (`settingsOpen`) are
+  // owned by App so the sidebar buttons can dispatch them through
+  // AppShell. The state lives here (not in the sidebar) so a
+  // session change / hash navigation can reset them predictably.
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // One WsClient per mount. Memoized so React StrictMode's double-invoke
   // in dev returns the same instance and we don't end up with two parallel
@@ -143,6 +154,11 @@ export function App() {
   //   - 初始 `setCurrentWorkDir` + `setCurrentSessionKey` 同步移出
   //     该 effect，作为独立 mount-once 调用 + 监听器为权威路径
   //     （每次 hashchange 重新调用）——消除冗余 setState。
+  //
+  // M5 task 05 review W2 — closable 模式 `setAuth(readAuth())` 后
+  // 也会触发 hashchange（hash 没变，但 token 变了 → setAuth 内部
+  // state 刷新）。监听器只在 hash 实际变化时回调；token 变化靠
+  // `setAuth` 直接生效。
   useEffect(() => {
     // Mount-time mirror——初始镜像写在 mount-once 主体中。
     const initial = readAuth();
@@ -187,16 +203,12 @@ export function App() {
   // 被 `RecoveryInFlight` 顶替导致流式打字机效果丢失。详见
   // `ws/stem-refilled.ts` 顶部 §M4 验收期 4th gap 修复段 + `handleRefill`
   // JSDoc。
+  //
+  // M5 task 06 — gateMapRef / handleRefill 仍在 App 层创建（任务书
+  // §g 雷区代码：不下移到 AppShell）。AppShell 只是布局容器。
   const gateMapRef = useRecoveryGateMap();
   const handleRefill = useCallback(
     (stem: string, _refillWorkDir: string): void => {
-      // Take-and-set: 把 'new' 的 ready gate 移交到 stem 键，删除 'new' 键。
-      // Hash 翻转后 `gateForSession(<stem>)` 命中既有 ready gate → ChatView
-      // 全程挂载，流式不断。
-      //
-      // 边界：若 'new' gate 不存在（时序边缘——用户在 stem 到达前已退回
-      // level2 / 切换会话），no-op fallback：维持既有 gateForSession 路径
-      // （会触发 initiateRecovery 仪式，但这是降级路径而非崩溃）。
       const map = gateMapRef.current;
       if (map === null) return;
       const newGate = map.get('new');
@@ -204,9 +216,6 @@ export function App() {
       map.set(stem, newGate);
       map.delete('new');
     },
-    // handleRefill 的 deps 必须稳定：gateMapRef 是 useRef 返回的
-    // identity-stable 对象（`useRecoveryGateMap` JSDoc 详述），`.current`
-    // 内部 Map 也是 mount-once 创建后不变。空 deps 即可。
     [],
   );
   useEffect(() => {
@@ -228,9 +237,13 @@ export function App() {
   // `auth.token` 重新读取（hash 不再承载 token），仅在硬刷新 /
   // `TokenModal required` 提交 → `window.location.reload()` 后
   // 重新读 localStorage → 走正常 recovery 流程。
+  //
+  // M5 task 05 review W1 — `tokenStorage.write()` 现在返回 boolean；
+  // `false` 时不 reload（避免无限 reload 循环），改设 storageError
+  // state → TokenModal 内联错误 banner 显示。
   if (auth.token === null) {
     // 旧书签检测：URL hash 仍携带非空 body（说明原 #<token>&work_dir=...
-    // 形态的旧书签被访问了）。提示文案明示“书签 token 已失效”——避免
+    // 形态的旧书签被访问了）。提示文案明示"书签 token 已失效"——避免
     // 用户误以为仅仅 lost-credentials。
     const legacyBookmark = typeof window !== 'undefined'
       && (window.location.hash.includes('work_dir=')
@@ -241,8 +254,18 @@ export function App() {
         bannerHint={legacyBookmark
           ? '旧书签中的 token 已不再生效，请重新粘贴新 token。'
           : ''}
+        storageError={storageError}
         onSubmit={(value: string) => {
-          tokenStorage.write(value);
+          setStorageError(null);
+          const ok = tokenStorage.write(value);
+          if (!ok) {
+            // Review W1 — write 失败不 reload；设内联错误文案
+            // 提示用户「浏览器禁用了本地存储」。下一次提交会
+            // 重新覆盖 storageError state（`setStorageError(null)`
+            // 在 onSubmit 入口已执行）。
+            setStorageError(STORAGE_ERROR_COPY);
+            return;
+          }
           // 硬刷新触发 App 重新 readAuth → token !== null → App
           // 走正常 recovery 流程（D10 required 模式提交 = write +
           // reload）。
@@ -252,63 +275,133 @@ export function App() {
     );
   }
 
+  // Token 已就绪 → 装配 AppShell + 双栏内容。
+  // DirectoryBrowser modal state lives in App (not Sidebar) so
+  // hash navigation can predictably reset it; the Sidebar's
+  // WorkDirsTab 「浏览添加」 button dispatches `setBrowserOpen(true)`
+  // via the `onBrowseWorkDirsClick` callback.
+  const handleSettingsClick = useCallback(() => {
+    setSettingsOpen(true);
+  }, []);
+  const handleBrowseWorkDirsClick = useCallback(() => {
+    setBrowserOpen(true);
+  }, []);
+  const handleCloseSettings = useCallback(() => {
+    setSettingsOpen(false);
+    setStorageError(null);
+  }, []);
+  const handleCloseBrowser = useCallback(() => {
+    setBrowserOpen(false);
+  }, []);
+
+  // Build the right-rail content (chat / choice panel / recovery).
+  // The `<SessionStatusBar>` is always mounted above the main
+  // content — it shows the per-session status (phase badge + queue
+  // pills + session name) and bridge status now lives in the sidebar.
+  let mainContent: JSX.Element;
+  let sessionForSessionBar: string | null;
+
   if (view === 'choiceLevel1') {
-    return (
-      <WsClientProvider client={client}>
-        <main className="app-shell">
-          <h1>RemotePi</h1>
-          <StatusBar />
-          <ChoicePage level={1} />
-        </main>
-      </WsClientProvider>
+    sessionForSessionBar = null;
+    mainContent = (
+      <ChoiceLevel1Panel />
+    );
+  } else if (view === 'choiceLevel2') {
+    sessionForSessionBar = null;
+    mainContent = (
+      <ChoiceLevel2Panel
+        workDir={auth.workDir!}
+        onChangeWorkDir={() => { window.location.hash = ''; }}
+        onNewSession={() => {
+          // 釘子 6 新建会话：写 hash `&session=new` → 进 ChatView pending
+          // (bridge pending-key path takes over from there).
+          window.location.hash = `work_dir=${encodeURIComponent(auth.workDir!)}&session=new`;
+        }}
+      />
+    );
+  } else {
+    // recovery — token + work_dir + session.
+    const sessionForGate = auth.session ?? M3_LEGACY_KEY;
+    sessionForSessionBar = auth.session;
+    mainContent = (
+      <RecoveryShell
+        token={auth.token}
+        session={sessionForGate}
+        workDir={auth.workDir ?? ''}
+        client={client}
+        gateMapRef={gateMapRef}
+      />
     );
   }
 
-  if (view === 'choiceLevel2') {
-    return (
-      <WsClientProvider client={client}>
-        <main className="app-shell">
-          <h1>RemotePi</h1>
-          <StatusBar />
-          <ChoicePage level={2} workDir={auth.workDir!} />
-        </main>
-      </WsClientProvider>
-    );
-  }
-
-  // Token + work_dir + session → render the M3 chat surface via the
-  // per-session dual-query recovery gate (task 08). The gate map is
-  // created once per mount and persisted in `useRecoveryGateMap` at
-  // App level (M4 验收期 4th gap 修复——lift up so `handleRefill` 闭包
-  // 可访问 gateMapRef 并执行 take-and-set）；see `RecoveryShell`
-  // 接 gateMapRef 作为 prop。map 生命周期与 WsClient 连接状态独立
-  // （reconnects are WsClient-internal; a mid-recovery drop shows
-  // up as a `both_failed` after the 5s timer fires, and the user
-  // can retry）。The token / session are non-null at this branch
-  // (`decideView` already proved them).
-  //
-  // M3-compat: the `decideView` M3 branch (token only) routes
-  // here too. In that case `auth.session === null` and we use
-  // `M3_LEGACY_KEY` as the gate / bucket key — same constant as
-  // the WsClient uses for session-less inbound routing. ChatView
-  // (pinned to the M3_LEGACY bucket via `useBucketField(null, …)`)
-  // renders the M3 single-bucket state. The M3_LEGACY retire
-  // evaluation is in the task 08 report.
-  const sessionForGate = auth.session ?? M3_LEGACY_KEY;
   return (
-    <WsClientProvider client={client}>
-      <main className="app-shell">
-        <h1>RemotePi</h1>
-        <StatusBar />
-        <RecoveryShell
-          token={auth.token}
-          session={sessionForGate}
-          workDir={auth.workDir ?? ''}
+    <>
+      <WsClientProvider client={client}>
+        <AppShell
           client={client}
           gateMapRef={gateMapRef}
+          currentSession={sessionForSessionBar}
+          currentWorkDir={auth.workDir}
+          view={view}
+          onSettingsClick={handleSettingsClick}
+          onBrowseWorkDirsClick={handleBrowseWorkDirsClick}
+          mainContent={
+            <>
+              {sessionForSessionBar !== null ? (
+                <SessionStatusBar session={sessionForSessionBar} />
+              ) : null}
+              {mainContent}
+            </>
+          }
         />
-      </main>
-    </WsClientProvider>
+      </WsClientProvider>
+
+      {/* DirectoryBrowser modal — `open={true}` mounts the
+          browser; clicking cancel / a "选择" path fires
+          onCancel / onAdded, both reset the open state. App owns
+          the `open` state so the sidebar's WorkDirsTab 「浏览添加」
+          button + a future `WorkDirsTab → 直接 mount` (M+ candidate)
+          can share the same modal slot. */}
+      {browserOpen ? (
+        <WsClientProvider client={client}>
+          <DirectoryBrowser
+            open={browserOpen}
+            onAdded={(path: string) => {
+              setBrowserOpen(false);
+              window.location.hash = `work_dir=${encodeURIComponent(path)}`;
+            }}
+            onCancel={handleCloseBrowser}
+          />
+        </WsClientProvider>
+      ) : null}
+
+      {/* TokenModal closable — settings button → open. Submit:
+          M5 task 05 review W2 — 必须 setAuth(readAuth()) 同步
+          auth state 与 localStorage（避免脱钩）。Failure → 内联
+          storageError banner（review W1）。 */}
+      {settingsOpen ? (
+        <TokenModal
+          required={false}
+          onSubmit={(value: string) => {
+            setStorageError(null);
+            const ok = tokenStorage.write(value);
+            if (!ok) {
+              setStorageError(STORAGE_ERROR_COPY);
+              return;
+            }
+            // Review W2 — 三步走：write → connect → setAuth(readAuth())
+            // 保持 auth state 与 localStorage 同步。hash 没变 → 不触发
+            // hashchange listener → 主动调 setAuth 让 React state
+            // 立即刷新。
+            client.connect(value);
+            setAuth(readAuth());
+            setSettingsOpen(false);
+          }}
+          onClose={handleCloseSettings}
+          storageError={storageError}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -428,7 +521,7 @@ function gateForSession(
       //   - sessionKey 来自 URL hash 的 session 分量；
       //   - workDir 来自 URL hash 的 work_dir 分量（pending
       //     session='new' 时仪式需 work_dir 触发 bridge pending-
-      //     key 路由——钉子 2）。本分支是真 stem 走仪式，work_dir
+      //     key 路由——釘子 2）。本分支是真 stem 走仪式，work_dir
       //     仅在 session='new' 时被仪式消费；真 stem 时仪式不
       //     消费（manager 已存在，session 路由已命中）。
       //   M3-compat 路径（currentSessionKey=null）下 M3_LEGACY

@@ -70,6 +70,7 @@ function render(props: {
   onSubmit?: (token: string) => void;
   onClose?: () => void;
   bannerHint?: string;
+  storageError?: string | null;
 }): { html: string; onSubmit: (token: string) => void; onClose: (() => void) | undefined } {
   const onSubmit = props.onSubmit ?? (() => undefined);
   const onClose = props.onClose;
@@ -78,6 +79,7 @@ function render(props: {
     onSubmit,
     ...(onClose !== undefined ? { onClose } : {}),
     ...(props.bannerHint !== undefined ? { bannerHint: props.bannerHint } : {}),
+    ...(props.storageError !== undefined ? { storageError: props.storageError } : {}),
   });
   const html = renderToStaticMarkup(element);
   return { html, onSubmit, onClose };
@@ -322,6 +324,43 @@ describe('TokenModal — banner hint (legacy-bookmark UX)', () => {
     });
     expect(html).toContain('data-testid="token-modal-banner"');
     expect(html).toContain('更换 token 提示');
+  });
+});
+
+describe('TokenModal — inline storage-error banner (M5 task 05 review W1)', () => {
+  it('20a. storageError=null (default): no inline error banner is rendered', () => {
+    const { html } = render({ required: true });
+    expect(html).not.toContain('data-testid="token-modal-storage-error"');
+  });
+
+  it('20b. storageError="..." : inline error banner is rendered with the message text', () => {
+    const { html } = render({
+      required: true,
+      storageError: '浏览器禁用了本地存储，无法保存 token',
+    });
+    expect(html).toContain('data-testid="token-modal-storage-error"');
+    expect(html).toContain('浏览器禁用了本地存储');
+    expect(html).toMatch(/role="alert"/);
+  });
+
+  it('20c. storageError renders in closable mode too (when provided)', () => {
+    const { html } = render({
+      required: false,
+      onClose: () => undefined,
+      storageError: 'storage unavailable',
+    });
+    expect(html).toContain('data-testid="token-modal-storage-error"');
+    expect(html).toContain('storage unavailable');
+  });
+
+  it('20d. storageError renders alongside bannerHint (both can be visible)', () => {
+    const { html } = render({
+      required: true,
+      bannerHint: '旧书签已失效',
+      storageError: '浏览器禁用了本地存储，无法保存 token',
+    });
+    expect(html).toContain('data-testid="token-modal-banner"');
+    expect(html).toContain('data-testid="token-modal-storage-error"');
   });
 });
 
