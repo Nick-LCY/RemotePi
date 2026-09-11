@@ -19,7 +19,15 @@
 //      dead and close with code 1000 reason 'idle timeout' — which
 //      drives the reconnect loop via `handleClose`.
 //   5. Reconnect with exponential backoff: base=1s, cap=30s, ±20% jitter.
-//      Reset the attempt counter on a successful open.
+//      Reset the attempt counter on the first successfully-parsed inbound
+//      envelope after a successful open — i.e. once the worker has
+//      confirmed the handshake end-to-end. We do NOT reset on `handleOpen`
+//      alone: a `new WebSocket(...)` that completes the TCP/TLS handshake
+//      and then immediately receives a 1008 (auth_failed / duplicate_bridge)
+//      must keep its attempt counter so the next reconnect waits longer,
+//      rather than giving the broken host infinite free retries. The
+//      confirmation log line ("handshake confirmed by server") is the
+//      single source of truth for "this connection is healthy".
 //
 // We use the global `WebSocket` constructor (Node 22 ships one). It's
 // injectable via the `createSocket` option for unit tests; otherwise the
@@ -110,6 +118,15 @@ export class BridgeClient {
   private ws: WebSocketLike | null = null;
   private stopped = false;
   private attempt = 0;
+  /** Has the worker confirmed the handshake end-to-end? `handleOpen`
+   *  flips this to false on every new socket; the first successfully-
+   *  parsed inbound envelope after open flips it back to true (and
+   *  resets `attempt` to 0). Until that confirmation arrives, a 1008
+   *  from the server is treated as a *failed* connection: the next
+   *  reconnect uses the next backoff slot, not base. Without this gate,
+   *  a host that immediately 1008s every connect would retry forever
+   *  at the floor delay, amplifying the load on a broken peer. */
+  private handshakeConfirmed = false;
   /** Read-side idle detector: fires `handleIdleTimeout()` if no
    *  inbound envelope arrives within `opts.idleTimeoutMs`. Refreshed
    *  on every message we successfully parse. `null` when no deadline
@@ -214,7 +231,14 @@ export class BridgeClient {
 
   private handleOpen(): void {
     logger.info(`connected to ${this.url}`);
-    this.attempt = 0;
+    // Mark the handshake as unconfirmed on every fresh open. The first
+    // successfully-parsed inbound envelope (in handleMessage) flips
+    // it back to true and resets `attempt` — that envelope is the
+    // worker's "yes, I see you" signal. Until it arrives, a 1008 close
+    // counts as a failed connection and the next reconnect uses the
+    // next backoff slot rather than restarting at base. See the
+    // `handshakeConfirmed` field JSDoc for the full rationale.
+    this.handshakeConfirmed = false;
     this.sendHandshake();
     this.armIdleDeadline();
   }
@@ -293,6 +317,19 @@ export class BridgeClient {
       return;
     }
     const env = result.data;
+    // First successfully-parsed inbound envelope = worker has confirmed
+    // the handshake end-to-end. This is the gate that gates the
+    // backoff-reset: until it fires, a 1008 from the server must count
+    // as a failed connection and feed into the next backoff slot. We
+    // log explicitly so an operator scanning the bridge log can tell
+    // at a glance which reconnects actually completed the handshake
+    // protocol (vs. those that opened the TCP/TLS socket but were then
+    // 1008'd by the worker — typically auth_failed or duplicate_bridge).
+    if (!this.handshakeConfirmed) {
+      this.handshakeConfirmed = true;
+      this.attempt = 0;
+      logger.info('handshake confirmed by server');
+    }
     // Any successfully-parsed inbound envelope refreshes the read-side
     // idle detector. We refresh here (after parse, before switch) so
     // the deadline is reset by `ping` (which we then reply to), by

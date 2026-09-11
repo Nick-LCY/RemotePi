@@ -9,13 +9,15 @@
     "deploy:cf": "wrangler deploy",
     "deploy:dry-run": "wrangler deploy --dry-run --outdir=dist",
     "build": "wrangler deploy --dry-run --outdir=dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@remotepi/shared": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5",
+    "vitest": "^2.1.9",
     "wrangler": "^4"
   }
 }

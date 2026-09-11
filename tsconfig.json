@@ -10,6 +10,7 @@
     "packages/*/src/**/*.ts",
     "packages/*/src/**/*.tsx",
     "packages/*/vite.config.ts",
-    "worker/src/**/*.ts"
+    "worker/src/**/*.ts",
+    "worker/vitest.config.ts"
   ]
 }

@@ -409,6 +409,208 @@ describe('BridgeClient (4 cases per M2 PRD §6)', () => {
     client.stop();
   });
 
+  it('5e. handleOpen no longer resets attempt — consecutive 1008 closes grow the backoff exponentially', () => {
+    // Bridge-side half of the zombie-rejection-loop fix (worker side:
+    // room.ts startChallenge + resolveChallenge). The previous
+    // shape reset the attempt counter on every `handleOpen()`, so a
+    // server that 1008s every reconnect (the canonical
+    // `duplicate_bridge` rejection) saw the bridge retry at the
+    // floor delay forever — pinning a healthy bridge into a
+    // permanent 800ms-spam against a hostile or unreachable worker.
+    // The fix: `handleOpen()` no longer touches `attempt`. Only the
+    // first successfully-parsed inbound envelope (the worker's
+    // "yes, I see you" signal) resets the counter via the
+    // `handshakeConfirmed` gate inside `handleMessage()`. Until
+    // that envelope arrives, every reconnect uses the next backoff
+    // slot — so a broken peer pays an exponentially-growing
+    // reconnect cost rather than holding the bridge at the floor.
+    //
+    // Pin jitter to the bottom of the band (factor = 0.8 → delay =
+    // 0.8 * base * 2^(attempt-1)) so the expected sequence is the
+    // fully-deterministic 800 / 1600 / 3200 / 6400 / 12800 ms. Real
+    // jitter would otherwise drag the asserted numbers out of the
+    // exact-equality path. Test 6 covers the jittered range in
+    // isolation; here we only need to prove the counter grows.
+    installLoggerSpies();
+    vi.useFakeTimers();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      // Push the read-side idle detector well past the longest
+      // single-cycle advance (12800 ms) so it never fires mid-test
+      // and shadows the close path we're asserting on.
+      idleTimeoutMs: 60_000,
+      rng: () => 0,
+    });
+    client.start();
+
+    // Drive 5 reconnect cycles. Each one opens a fresh socket, the
+    // bridge sends a handshake frame, and the server immediately
+    // 1008s the connection (the duplicate_bridge scenario the
+    // zombie loop reproduces). The attempt counter MUST grow
+    // across cycles because handleOpen no longer resets it.
+    const delays: number[] = [];
+    const attempts: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const sock = MockSocket.instances[i]!;
+      sock.simulateOpen();
+      // Server rejects the handshake with 1008 + reason
+      // 'duplicate_bridge' — the canonical rejection the worker
+      // DO emits for the zombie-loop scenario (see room.ts
+      // startChallenge / resolveChallenge). The bridge never sees
+      // a valid inbound envelope, so handshakeConfirmed stays
+      // false and the attempt counter keeps growing.
+      sock.simulateRemoteClose({ code: 1008, reason: 'duplicate_bridge' });
+      // Extract (delay, attempt) from handleClose's log line —
+      //   "reconnecting in <delay>ms (attempt <N>)"
+      // so we can assert both numbers explicitly. The mock's
+      // onclose fires synchronously inside simulateRemoteClose, so
+      // by the time we read the log handleClose has already run.
+      const lastLog = infoSpy!.mock.calls.at(-1)?.[0];
+      expect(typeof lastLog).toBe('string');
+      const match = /reconnecting in (\d+)ms \(attempt (\d+)\)/.exec(
+        lastLog as string,
+      );
+      expect(match).not.toBeNull();
+      const delay = Number(match![1]);
+      const attempt = Number(match![2]);
+      delays.push(delay);
+      attempts.push(attempt);
+      // Advance past the recorded delay so the next reconnect
+      // timer fires. Reading the delay from the log keeps the
+      // advance exact — no over/undershoot that would let a stale
+      // timer leak into the next cycle.
+      vi.advanceTimersByTime(delay);
+    }
+
+    // Counter grew 1 → 5 across the 5 cycles. The exact-delta
+    // assertion is what catches a regression where someone
+    // re-introduces the old "handleOpen resets attempt" behaviour
+    // — every cycle's attempt would snap back to 1 and this
+    // array would read [1, 1, 1, 1, 1].
+    expect(attempts).toEqual([1, 2, 3, 4, 5]);
+
+    // Backoff grew exponentially: 0.8 * 1000 * 2^(N-1) → 800,
+    // 1600, 3200, 6400, 12800 ms. We assert exact equality
+    // because rng=()=>0 pins the jitter at the floor — any
+    // deviation here means the backoff math (or the pin) is
+    // wrong, not the test.
+    expect(delays).toEqual([800, 1600, 3200, 6400, 12800]);
+
+    client.stop();
+    vi.useRealTimers();
+  });
+
+  it('5f. first successfully-parsed inbound envelope resets attempt and logs "handshake confirmed by server"', () => {
+    // The other half of the 5e/5f pair: once the server finally
+    // sends a parseable envelope (e.g. `bridge_status`), the
+    // bridge treats the handshake as end-to-end confirmed — the
+    // `handshakeConfirmed` gate inside `handleMessage()` flips
+    // to true, `attempt` resets to 0, and the explicit
+    // "handshake confirmed by server" log line fires so an
+    // operator scanning the bridge log can tell which reconnects
+    // actually completed the protocol (vs. those that opened the
+    // TCP/TLS socket but were then 1008'd by the worker).
+    //
+    // After confirmation, a subsequent disconnect starts back at
+    // attempt 1 — proving the reset fired AND that the next
+    // backoff slot is the floor again, not the carry-over from
+    // the failed cycles. This is the full round-trip: a hostile
+    // peer → exponential growth → handshake succeeds → fresh
+    // attempt counter for the next failure cycle.
+    installLoggerSpies();
+    vi.useFakeTimers();
+    const create = socketFactory();
+    const client = new BridgeClient('wss://example.test/bridge', 'TOKEN', {
+      createSocket: create,
+      idleTimeoutMs: 60_000,
+      rng: () => 0,
+    });
+    client.start();
+
+    // Two failed reconnects first so the attempt counter has
+    // actually grown above 1 — proving the reset is non-trivial
+    // (a test that resets from attempt 1 to 0 wouldn't distinguish
+    // "no growth" from "growth happened but the reset undid it").
+    for (let i = 0; i < 2; i++) {
+      const sock = MockSocket.instances[i]!;
+      sock.simulateOpen();
+      sock.simulateRemoteClose({ code: 1008, reason: 'duplicate_bridge' });
+      // Read the actual delay from the disconnect log and
+      // advance by that — same pattern as 5e. After two cycles
+      // attempt should be 2 (asserted below).
+      const lastLog = infoSpy!.mock.calls.at(-1)?.[0];
+      expect(typeof lastLog).toBe('string');
+      const match = /reconnecting in (\d+)ms \(attempt (\d+)\)/.exec(
+        lastLog as string,
+      );
+      expect(match).not.toBeNull();
+      expect(Number(match![2])).toBe(i + 1); // 1 then 2
+      vi.advanceTimersByTime(Number(match![1]));
+    }
+
+    // Pre-flight: the "handshake confirmed" line has NOT fired
+    // yet — no valid inbound envelope has reached the bridge.
+    // Using `.some` with a string-typed guard (vi's mock.calls[i]
+    // is `Parameters<typeof logger.info>`, which is a tuple that
+    // may include non-string branches in other tests; here it's
+    // all strings but we keep the guard consistent with 5d).
+    expect(
+      infoSpy!.mock.calls
+        .map((c) => (typeof c[0] === 'string' ? c[0] : ''))
+        .some((line) => line.includes('handshake confirmed by server')),
+    ).toBe(false);
+
+    // Third socket opens and the server finally sends a valid
+    // envelope. bridge_status is the natural choice — it's
+    // server-originated metadata that lands on every real
+    // connect, and its schema (online/changed_at/reason) is
+    // fully covered by Envelope.safeParse. The changed_at
+    // timestamp satisfies the schema's required field; without
+    // it safeParse would drop the frame as invalid and the
+    // test would degenerate into "first safeParse success
+    // never fires, attempt never resets".
+    const sock3 = MockSocket.instances[2]!;
+    sock3.simulateOpen();
+    sock3.simulateMessage({
+      v: 1,
+      kind: 'control',
+      type: 'bridge_status',
+      id: 'srv-bs-confirm',
+      payload: {
+        online: true,
+        changed_at: '2026-01-01T00:00:00Z',
+        reason: 'connected',
+      },
+    });
+
+    // The explicit confirmation log line fires. This is the
+    // operator-facing seam: without it, a log of "disconnected
+    // (code=1008) reconnecting in 800ms" followed by silence
+    // gives no clue whether the next connect completed the
+    // handshake or just opened a socket.
+    expect(infoSpy).toHaveBeenCalledWith('handshake confirmed by server');
+
+    // Now disconnect — the attempt counter MUST restart at 1.
+    // If the reset had not fired, the log would say "attempt 3"
+    // (carry-over from the two prior cycles). This is the
+    // assertion that pins the "reset is wired through" contract.
+    sock3.simulateRemoteClose({ code: 1006, reason: '' });
+    const lastLog = infoSpy!.mock.calls.at(-1)?.[0];
+    expect(typeof lastLog).toBe('string');
+    const match = /reconnecting in (\d+)ms \(attempt (\d+)\)/.exec(
+      lastLog as string,
+    );
+    expect(match).not.toBeNull();
+    expect(Number(match![2])).toBe(1);
+    // And the delay is back at the floor (800 ms with rng=()=>0),
+    // not the carry-over 3200 ms — same backoff math, fresh start.
+    expect(Number(match![1])).toBe(800);
+
+    client.stop();
+    vi.useRealTimers();
+  });
+
   it('6. computeBackoff produces the 1/2/4/8/16/30/30 sequence within ±20% jitter', () => {
     // Use a fixed midpoint of the jitter range (factor = 1.0) so we can
     // assert exact base values; then sweep with `Math.random` and assert
