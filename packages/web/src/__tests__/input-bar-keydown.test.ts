@@ -2,6 +2,11 @@
 // `decideKeyDownAction` (M5 task 02 / PRD §4 / 验收 §3 —
 // Enter submit + Shift+Enter newline + IME composing guard).
 //
+// 9 specs covering 4 decision surfaces: submit (1.x, 2 cases),
+// newline (2.x, 2 cases), IME composing guard (3.x, 2 cases
+// incl. the legacy WebKit `keyCode === 229` safety net), and
+// non-Enter keys (4.x, 3 cases).
+//
 // The decision logic itself lives in
 // `packages/web/src/components/inputBarKeydown.ts` as a pure
 // function so it can be unit-tested without a DOM / WsClient /
@@ -93,21 +98,35 @@ describe('decideKeyDownAction — IME composing guard', () => {
     // intended. The helper must return 'ignore' so the InputBar
     // leaves the event alone and the IME commits the candidate
     // into the textarea naturally.
+    //
+    // This test ALSO pins the ORDER of the three checks — the
+    // `isComposing` branch is the FIRST one in the helper, so a
+    // composing Enter is ignored regardless of shift / key. Test
+    // 2.2 covers the same composition + shift combination; both
+    // would fail simultaneously if a regression reordered the
+    // checks, which is why a separate precedence test was
+    // dropped (the comment block above now carries that intent
+    // rather than duplicating the assertion in a 3.2).
     expect(
       decideKeyDownAction({ key: 'Enter', shiftKey: false, isComposing: true }),
     ).toBe('ignore');
   });
 
-  it('3.2 isComposing checked BEFORE shift / key so a composing Enter is always ignored', () => {
-    // Pin the ORDER of the three checks. `isComposing` is the
-    // first branch in the helper — a regression that reordered
-    // the checks (e.g. key-first) would still pass tests 1.1
-    // / 2.1 / 3.1 individually but would change the behaviour
-    // for this corner case where the IME flag is set AND shift
-    // is held. Test 2.2 covers the same composition + shift
-    // case; this one documents the explicit precedence.
+  it('3.2 Enter + no shift + keyCode 229 (legacy WebKit composition) → ignore', () => {
+    // Old-WebKit safety net: Safari on older macOS / iOS still
+    // surfaces composition state as `event.keyCode === 229` even
+    // when `event.isComposing` is undefined / false (UI Events
+    // §6.3 keeps 229 as the historical "IME in progress" sentinel).
+    // The helper defends on that branch so the InputBar doesn't
+    // accidentally submit a half-typed CJK candidate. Modern
+    // Safari / Chromium set `isComposing` correctly so this
+    // branch is a safety net, not the hot path; the assertion
+    // pins it explicitly so a future refactor that drops the
+    // guard (e.g. on a "modern browsers only" cleanup pass) is
+    // caught by the test suite rather than by an angry Japanese
+    // user's bug report.
     expect(
-      decideKeyDownAction({ key: 'Enter', shiftKey: false, isComposing: true }),
+      decideKeyDownAction({ key: 'Enter', shiftKey: false, isComposing: false, keyCode: 229 }),
     ).toBe('ignore');
   });
 });

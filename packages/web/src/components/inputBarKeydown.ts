@@ -24,10 +24,13 @@
 //      etc.) → the IME is using Enter to commit a candidate.
 //      We MUST NOT submit or call preventDefault; the candidate
 //      lands in the value naturally (tag = 'ignore'). The
-//      `isComposing` flag is the primary guard — Safari / older
-//      Chromium used `keyCode === 229` for the same state, but
-//      `isComposing` is the spec-correct field (UI Events §6.3)
-//      and every modern browser sets it correctly.
+//      `isComposing` flag is the primary guard; legacy WebKit
+//      builds also surface `keyCode === 229` during composition
+//      even when `isComposing` is undefined / false, so the
+//      helper defends on that sentinel too (UI Events §6.3
+//      keeps 229 as the historical "IME in progress" marker).
+//      Modern Safari / Chromium set `isComposing` correctly so
+//      the keyCode branch is a pure safety net, not the hot path.
 //
 // Non-Enter keys → 'ignore' (the textarea handles them
 // natively — backspace, arrow keys, etc. all just work).
@@ -46,6 +49,17 @@ export interface InputBarKeyDownLike {
    *  composition is in progress. Spec-correct guard for the
    *  "user pressed Enter to commit a candidate" case. */
   isComposing?: boolean;
+  /** Optional `event.keyCode` (a legacy numeric field still set
+   *  by Safari on macOS / iOS during IME composition even when
+   *  `isComposing` is undefined or false). UI Events §6.3 keeps
+   *  `keyCode === 229` as the historical "IME composition in
+   *  progress" sentinel; modern Safari now sets `isComposing`
+   *  correctly, but a defensive guard here protects callers
+   *  that observe the old-WebKit shape via React's synthetic
+   *  event (`event.nativeEvent.keyCode`). Not part of the
+   *  public contract beyond the IME guard — absent or zero is
+   *  treated as "no legacy signal". */
+  keyCode?: number;
 }
 
 /** Decision returned to the InputBar's onKeyDown handler. The
@@ -60,12 +74,20 @@ export function decideKeyDownAction(event: InputBarKeyDownLike): InputBarKeyDown
   // IME composition guard FIRST — the IME may also press Enter
   // to commit a candidate, and we must not submit in that case
   // regardless of shift state. (`isComposing` is the spec-correct
-  // flag; Safari historically used `keyCode === 229` but modern
-  // Safari now sets `isComposing` correctly so we don't need to
-  // defend on keyCode.)
+  // flag; modern Safari now sets it correctly too, but the
+  // legacy WebKit shape still surfaces as `keyCode === 229` on
+  // older Safari builds even when `isComposing` is undefined /
+  // false, so we defend on that sentinel here to avoid an
+  // accidental submit during a CJK composition.)
   if (event.isComposing === true) {
     return 'ignore';
   }
+  // Old-WebKit IME composition sentinel (legacy Safari
+  // surfaces `keyCode === 229` even when `isComposing` is
+  // undefined / false — UI Events §6.3 historical marker).
+  // Same tag as the modern guard so the InputBar's onKeyDown
+  // mapping is unchanged.
+  if (event.keyCode === 229) return 'ignore';
   if (event.key !== 'Enter') {
     return 'ignore';
   }

@@ -42,15 +42,23 @@ export interface UseAutoResizeTextareaOptions {
   /** Hard ceiling on the textarea height (pixels). Defaults to
    *  200 per the PRD. When content exceeds this, the textarea
    *  caps at `maxHeight` and `overflow-y: auto` shows the
-   *  scrollbar (CSS contract). */
+   *  scrollbar (paired with the `--input-max-height` rule on
+   *  `.input-bar-field` in `styles.css`, which is the visual
+   *  source of truth for the cap). */
   maxHeight?: number;
 }
 
-/** Default max-height in pixels. Mirrors the `--input-max-height`
- *  CSS variable defined in `styles.css` — the JS default and the
- *  CSS default must agree, otherwise the textarea would visually
- *  cap at one and JS-allow growth past the other (the JS side
- *  wins because it sets `style.height` inline). */
+/** Default max-height in pixels. Set to mirror the visual
+ *  cap declared by the `--input-max-height` CSS variable in
+ *  `styles.css`; the CSS value is the visual source of truth
+ *  for `overflow-y: auto` + the cap, while this default is the
+ *  JS-side floor that callers get when they don't pass an
+ *  explicit `maxHeight`. They happen to agree today (200 / 200px)
+ *  and one test (`use-auto-resize-textarea.test.ts` §2.1) pins
+ *  that agreement, but they're not a hard contract — adjusting
+ *  either side in isolation is safe because the JS default only
+ *  sets `style.height` up to the value it knows about, and the
+ *  CSS cap kicks in independently for anything past it. */
 export const DEFAULT_TEXTAREA_MAX_HEIGHT = 200;
 
 /** Pure height-clamp helper. Exported so tests can pin the

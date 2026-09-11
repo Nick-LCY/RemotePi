@@ -18,11 +18,17 @@
   --state-offline: #c0392b;
   --state-connecting: #6b6b76;
 
-  /* M5 task 02 — InputBar textarea auto-grow cap. Mirrors
-     `DEFAULT_TEXTAREA_MAX_HEIGHT` in `hooks/useAutoResizeTextarea.ts`;
-     keep both in sync (the JS side wins because it sets
-     `style.height` inline, but the CSS cap is what visually
-     constrains `overflow-y: auto` for content past the cap). */
+  /* M5 task 02 — InputBar textarea auto-grow cap. This CSS
+     value is the visual source of truth for the
+     `max-height` + `overflow-y: auto` pair on `.input-bar-field`
+     (the user actually sees the cap here). The JS-side
+     `DEFAULT_TEXTAREA_MAX_HEIGHT` in
+     `hooks/useAutoResizeTextarea.ts` mirrors it as the default
+     for callers that don't pass an explicit `maxHeight`, and
+     one test (`use-auto-resize-textarea.test.ts` §2.1) pins
+     that today's values still agree (200px / 200) — adjusting
+     either side in isolation is safe because the CSS cap kicks
+     in independently of the JS inline `style.height`. */
   --input-max-height: 200px;
 
   font-family:
