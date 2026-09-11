@@ -289,7 +289,13 @@ describe('WsClient M4 task 08 — inbound per-session routing', () => {
       }),
       fake,
     );
-    expect(ws.bucketFor('A').streamingDraft?.text).toBe('d1');
+    // M5 §3 (D3 路线 B) — streamingDraft is now a segment list;
+    // a single text_delta opens a single text segment. The
+    // semantic invariant is preserved: bucket A holds the
+    // accumulated delta, bucket B is untouched.
+    expect(ws.bucketFor('A').streamingDraft?.segments).toEqual([
+      { type: 'text', text: 'd1' },
+    ]);
     expect(ws.bucketFor('B').streamingDraft).toBeNull();
   });
 
@@ -334,7 +340,11 @@ describe('WsClient M4 task 08 — inbound per-session routing', () => {
       }),
       fake,
     );
-    expect(ws.bucketFor('X').streamingDraft?.text).toBe('hello');
+    // M5 §3 — draft now stored as a segment list; the semantic
+    // invariant (the delta landed in bucket X) is preserved.
+    expect(ws.bucketFor('X').streamingDraft?.segments).toEqual([
+      { type: 'text', text: 'hello' },
+    ]);
     // M3_LEGACY 桶未受污染。
     expect(ws.bucketFor(M3_LEGACY_KEY).streamingDraft).toBeNull();
   });
@@ -741,7 +751,13 @@ describe('WsClient M4 task 08 review R4 — stem refilled bucket migration', () 
     // message_update text_delta 累积；message_end 才会 push 到
     // messages 数组；helper 不发 message_end 以保留 draft 状态
     // 验证迁移语义）。
-    expect(ws.bucketFor('new').streamingDraft?.text).toBe('pending-text');
+    //
+    // M5 §3 — draft now stored as `segments[]`. Single text_delta
+    // opens a single text segment; the semantic invariant
+    // ('pending-text' delta lands in the draft) is preserved.
+    expect(ws.bucketFor('new').streamingDraft?.segments).toEqual([
+      { type: 'text', text: 'pending-text' },
+    ]);
     // 同时验证 queue 也累积（pi 发的 queue_update 事件）——
     // 也应被迁移。
     simulateInbound(
@@ -765,7 +781,9 @@ describe('WsClient M4 task 08 review R4 — stem refilled bucket migration', () 
 
     // 'new' 桶内容已搬到 stem 桶——所有字段保留（streamingDraft /
     // sessionPhase / workDir / queue / 等）。
-    expect(ws.bucketFor('realStem-abc').streamingDraft?.text).toBe('pending-text');
+    expect(ws.bucketFor('realStem-abc').streamingDraft?.segments).toEqual([
+      { type: 'text', text: 'pending-text' },
+    ]);
     expect(ws.bucketFor('realStem-abc').sessionPhase).toBe('ready');
     expect(ws.bucketFor('realStem-abc').workDir).toBe('/h');
     expect(ws.bucketFor('realStem-abc').queue.steering).toEqual(['mid-stream-queued']);
@@ -790,7 +808,13 @@ describe('WsClient M4 task 08 review R4 — stem refilled bucket migration', () 
       }),
       fake,
     );
-    expect(ws.bucketFor('realStem-abc').streamingDraft?.text).toBe('pending-textpost-stem-delta');
+    // M5 §3 — appendStreamingDraft appends to the LAST matching-
+    // type segment; the migrated segment persists as a single
+    // text segment that grows monotonically. The semantic
+    // invariant (single concatenated draft string) is preserved.
+    expect(ws.bucketFor('realStem-abc').streamingDraft?.segments).toEqual([
+      { type: 'text', text: 'pending-textpost-stem-delta' },
+    ]);
     // 'new' 桶未被新事件污染（空桶重建）。
     expect(ws.bucketFor('new').streamingDraft).toBeNull();
   });
@@ -808,7 +832,9 @@ describe('WsClient M4 task 08 review R4 — stem refilled bucket migration', () 
       fake,
     );
     // 'new' 桶内容未动——仍持有累积（迁移未触发）。
-    expect(ws.bucketFor('new').streamingDraft?.text).toBe('pending-text');
+    expect(ws.bucketFor('new').streamingDraft?.segments).toEqual([
+      { type: 'text', text: 'pending-text' },
+    ]);
     // stem 桶**仍接收** session_state 入站的 phase 更新（该
     // 信封本身描述 stem 的状态）——这是正确的（不能因防御 R4
     // 迁移而丢弃 session_state 入站本身）。但其 work_dir 是
@@ -843,7 +869,12 @@ describe('WsClient M4 task 08 review R4 — stem refilled bucket migration', () 
     // 归属 Y 的累积（不属于）。
     simulateInbound(ws, sessionState('realStem-abc', 'ready', [], '/h'), fake);
     // 'new' 桶内容未迁移——用户已离开 pending 流。
-    expect(ws.bucketFor('new').streamingDraft?.text).toBe('pending-text');
+    // M5 §3 — assertion checks the segment list shape (single
+    // text segment holding the original delta); same semantic
+    // invariant as the M3 `text` field check.
+    expect(ws.bucketFor('new').streamingDraft?.segments).toEqual([
+      { type: 'text', text: 'pending-text' },
+    ]);
     // stem 桶未从 'new' 桶获得迁移内容。
     expect(ws.bucketFor('realStem-abc').streamingDraft).toBeNull();
   });
@@ -972,3 +1003,358 @@ describe('WsClient M4 task 08 — resetChatState scope', () => {
     expect(ws.bucketFor('B').sessionPhase).toBe('running');
   });
 });
+
+// ---------------------------------------------------------------------------
+// M5 §3 (D3 路线 B) — streaming draft segment accumulation
+// ---------------------------------------------------------------------------
+//
+// M5 §3 changes `streamingDraft` from `{text: string}` to
+// `{segments: Array<{type, text, ...}>}`. These tests pin the
+// segment-level accumulation semantics so a future refactor can't
+// silently regress the monotonic-accumulation invariant the e2e
+// 01 spec §6 streaming-continuity assertion depends on.
+
+describe('WsClient M5 §3 — streaming draft segment accumulation', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('8.1 single text_delta opens a single text segment with the delta text', () => {
+    const { ws, fake } = makeConnectedWs();
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_delta', delta: 'hello' },
+      }),
+      fake,
+    );
+    const draft = ws.streamingDraft;
+    expect(draft).not.toBeNull();
+    expect(draft!.segments).toEqual([{ type: 'text', text: 'hello' }]);
+  });
+
+  it('8.2 two consecutive text_deltas append to the SAME text segment (monotonic accumulation)', () => {
+    const { ws, fake } = makeConnectedWs();
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_delta', delta: 'foo' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_delta', delta: 'bar' },
+      }),
+      fake,
+    );
+    const draft = ws.streamingDraft;
+    expect(draft!.segments).toEqual([{ type: 'text', text: 'foobar' }]);
+  });
+
+  it('8.3 text → thinking → text opens THREE segments (alternating types do not merge)', () => {
+    const { ws, fake } = makeConnectedWs();
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_delta', delta: 'A' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'thinking_delta', delta: 'thinking-B' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_delta', delta: 'C' },
+      }),
+      fake,
+    );
+    expect(ws.streamingDraft!.segments).toEqual([
+      { type: 'text', text: 'A' },
+      { type: 'thinking', text: 'thinking-B' },
+      { type: 'text', text: 'C' },
+    ]);
+  });
+
+  it('8.4 thinking → thinking appends to the SAME thinking segment', () => {
+    const { ws, fake } = makeConnectedWs();
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'thinking_delta', delta: 'part1 ' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'thinking_delta', delta: 'part2' },
+      }),
+      fake,
+    );
+    expect(ws.streamingDraft!.segments).toEqual([
+      { type: 'thinking', text: 'part1 part2' },
+    ]);
+  });
+
+  it('8.5 toolcall_start opens a tool segment with name + empty args', () => {
+    const { ws, fake } = makeConnectedWs();
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_start', toolName: 'bash', id: 'tc-1' },
+      }),
+      fake,
+    );
+    expect(ws.streamingDraft!.segments).toEqual([
+      { type: 'tool', toolCallId: 'tc-1', name: 'bash', args: '' },
+    ]);
+  });
+
+  it('8.6 toolcall_delta accumulates args into the LAST tool segment', () => {
+    const { ws, fake } = makeConnectedWs();
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_start', toolName: 'bash', id: 'tc-1' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_delta', delta: '{"cmd":' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_delta', delta: '"ls"}' },
+      }),
+      fake,
+    );
+    expect(ws.streamingDraft!.segments).toEqual([
+      { type: 'tool', toolCallId: 'tc-1', name: 'bash', args: '{"cmd":"ls"}' },
+    ]);
+  });
+
+  it('8.7 toolcall_start/delta/end sequence yields a single closed tool segment', () => {
+    const { ws, fake } = makeConnectedWs();
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_start', toolName: 'grep', id: 'tc-2' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_delta', delta: '{"pattern":"x"}' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_end' },
+      }),
+      fake,
+    );
+    // Single segment — no end marker stored in the segment shape
+    // (the renderer treats a `tool` segment with non-empty args
+    // as complete).
+    expect(ws.streamingDraft!.segments).toHaveLength(1);
+    const seg = ws.streamingDraft!.segments[0]!;
+    expect(seg.type).toBe('tool');
+    if (seg.type === 'tool') {
+      expect(seg.name).toBe('grep');
+      expect(seg.args).toBe('{"pattern":"x"}');
+    }
+  });
+
+  it('8.8 toolcall_delta WITHOUT prior toolcall_start opens a synthetic tool segment (defensive)', () => {
+    const { ws, fake } = makeConnectedWs();
+    // No toolcall_start first — out-of-order arrival.
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_delta', delta: '{"orphan":true}' },
+      }),
+      fake,
+    );
+    expect(ws.streamingDraft!.segments).toHaveLength(1);
+    const seg = ws.streamingDraft!.segments[0]!;
+    expect(seg.type).toBe('tool');
+    if (seg.type === 'tool') {
+      expect(seg.name).toBe('');
+      expect(seg.args).toBe('{"orphan":true}');
+    }
+  });
+
+  it('8.9 *_end events AFTER any matching-type delta are dropped (no duplication)', () => {
+    const { ws, fake } = makeConnectedWs();
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_delta', delta: 'hi' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_end', content: 'hi' },
+      }),
+      fake,
+    );
+    // text_end dropped — segment is still a single 'hi'.
+    expect(ws.streamingDraft!.segments).toEqual([{ type: 'text', text: 'hi' }]);
+  });
+
+  it('8.10 text_end WITHOUT preceding text_delta uses full content as bootstrap (rare provider fallback)', () => {
+    const { ws, fake } = makeConnectedWs();
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_end', content: 'bootstrap' },
+      }),
+      fake,
+    );
+    // Bootstrap path — opens a single text segment with the full
+    // content. Same shape as a text_delta with the same content.
+    expect(ws.streamingDraft!.segments).toEqual([{ type: 'text', text: 'bootstrap' }]);
+  });
+
+  it('8.11 mixed text + tool segments stay in arrival order; tool args do not bleed into text', () => {
+    const { ws, fake } = makeConnectedWs();
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_delta', delta: 'prefix ' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_start', toolName: 'read', id: 'tc-3' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_delta', delta: '{"path":"x"}' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_delta', delta: 'suffix' },
+      }),
+      fake,
+    );
+    expect(ws.streamingDraft!.segments).toEqual([
+      { type: 'text', text: 'prefix ' },
+      { type: 'tool', toolCallId: 'tc-3', name: 'read', args: '{"path":"x"}' },
+      { type: 'text', text: 'suffix' },
+    ]);
+  });
+
+  it('8.12 tool segments do NOT arm _draftHasDelta (toolcall_end does not duplicate)', () => {
+    // The `_draftHasDelta` flag guards text / thinking duplication
+    // only; mixing tool events into the flag's semantic would
+    // silently change existing guard behaviour for streams that
+    // include tool calls. Verify by emitting text_delta then
+    // toolcall_* events; the text_end that follows should still
+    // be dropped (because text_delta armed the flag).
+    const { ws, fake } = makeConnectedWs();
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_delta', delta: 'a' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_start', toolName: 'x', id: 'tc-4' },
+      }),
+      fake,
+    );
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_end', content: 'a-full' },
+      }),
+      fake,
+    );
+    expect(ws.streamingDraft!.segments).toEqual([
+      { type: 'text', text: 'a' },
+      { type: 'tool', toolCallId: 'tc-4', name: 'x', args: '' },
+    ]);
+  });
+
+  it('8.13 message_end clears the segments list (authoritative replacement path)', () => {
+    const { ws, fake } = makeConnectedWs();
+    // Use a stable messageId so message_end can match the draft
+    // (clearStreamingDraft is gated on messageId equality — the
+    // original WsClient contract from M3 onwards).
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        messageId: 'm-1',
+        assistantMessageEvent: { type: 'text_delta', delta: 'draft' },
+      }),
+      fake,
+    );
+    expect(ws.streamingDraft!.segments).toHaveLength(1);
+    simulateInbound(
+      ws,
+      event(undefined, 'message_end', {
+        message: { role: 'assistant', content: [{ type: 'text', text: 'final' }] },
+        messageId: 'm-1',
+      }),
+      fake,
+    );
+    expect(ws.streamingDraft).toBeNull();
+  });
+
+  it('8.14 snapshot clears the segments list (no leftover draft across recovery)', () => {
+    const { ws, fake } = makeConnectedWs();
+    // Snapshot's setBucketStreamingDraft(bucket, null) clears
+    // unconditionally — no messageId gating here. So even an
+    // unkeyed draft is wiped, which the original M3 contract
+    // already promised.
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'text_delta', delta: 'leftover' },
+      }),
+      fake,
+    );
+    expect(ws.streamingDraft!.segments).toHaveLength(1);
+    const id = ws.sendGetMessages();
+    simulateInbound(
+      ws,
+      snapshot(undefined, id, [{ role: 'user', content: 'A' }]),
+      fake,
+    );
+    expect(ws.streamingDraft).toBeNull();
+  });
+});
+

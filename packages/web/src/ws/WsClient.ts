@@ -131,18 +131,36 @@ export const M3_LEGACY_KEY = 'm3-legacy';
  *  they need to introspect (e.g. extract a text preview). */
 export type AgentMessage = unknown;
 
-/** A streaming draft message — accumulates text_delta events. `text` is
- *  built up locally from consecutive `message_update` payloads carrying
- *  a text delta; `messageId` is the pi-native id (carried in
- *  `data.messageId`) so we can correlate a later `message_end` (which
- *  carries the authoritative full message). The PRD §4.3 wording
- *  requires `message_end` to overwrite / append — using `messageId`
- *  lets us clear the draft when the matching end arrives, even if
+/** A segment of an in-flight streaming draft. The order in
+ *  `StreamingDraft.segments` is the rendering order. Segment text
+ *  fields accumulate monotonically within their type (a fresh
+ *  delta of a different type opens a new segment — see
+ *  `appendStreamingDraft` in WsClient). */
+export type StreamingSegment =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; text: string }
+  | {
+      type: 'tool';
+      toolCallId?: string;
+      name: string;
+      args: string;
+    };
+
+/** A streaming draft message — accumulates `message_update` deltas
+ *  into a per-type segment list. M5 §3 (D3 路线 B) replaces the
+ *  M3 single-`text` field with `segments` so the renderer can show
+ *  thinking / text / tool segments side-by-side with their own
+ *  fold state without a full re-layout on each delta. `messageId`
+ *  is the pi-native id (carried in `data.messageId`) so we can
+ *  correlate a later `message_end` (which carries the
+ *  authoritative full message). The PRD §4.3 wording requires
+ *  `message_end` to overwrite / append — using `messageId` lets
+ *  us clear the draft when the matching end arrives, even if
  *  another message's deltas interleaved. */
 export interface StreamingDraft {
   messageId?: string;
   role?: string;
-  text: string;
+  segments: StreamingSegment[];
 }
 
 /** Steering / follow_up queue snapshot. Both arrays contain the raw
@@ -1352,13 +1370,23 @@ export class WsClient {
         // sessions' drafts don't share the flag. Reset happens on
         // bucket draft clear (snapshot / message_end / reconnect /
         // recovery) OR a new `message_start` arrives.
+        //
+        // M5 §3 (D3 路线 B) — `text_delta` / `thinking_delta`
+        // append to the LAST segment of the matching type (creating
+        // a new segment when the previous segment is a different
+        // type). `*_end` events are guarded by `_draftHasDelta`
+        // (existing semantics preserved) so the bug above doesn't
+        // recur for the new segment structure. `toolcall_start` /
+        // `toolcall_delta` / `toolcall_end` are NEW captures that
+        // push a `tool` segment into the list so the renderer can
+        // show the tool pill while still streaming.
         const innerType = innerEventType(data);
         if (innerType === 'text_delta' || innerType === 'thinking_delta') {
           // Streaming delta — typewriter appends this to the draft
           // and arms `_draftHasDelta` via `appendStreamingDraft`.
           const delta = extractDeltaText(data);
           if (delta === null) return;
-          this.appendStreamingDraft(bucket, data, delta);
+          this.appendStreamingDraft(bucket, data, innerType, delta);
           return;
         }
         if (innerType === 'text_end' || innerType === 'thinking_end') {
@@ -1372,13 +1400,43 @@ export class WsClient {
           // token-chunk providers) still renders.
           const full = extractEndContent(data);
           if (full === null) return;
-          this.appendStreamingDraft(bucket, data, full);
+          this.appendStreamingDraft(bucket, data, innerType, full);
+          return;
+        }
+        if (innerType === 'toolcall_start') {
+          // Open a new `tool` segment so the renderer shows the
+          // pill with the tool name; subsequent `toolcall_delta`
+          // events fill in the args. We do NOT arm `_draftHasDelta`
+          // (a tool-only stream has no duplicate-`*_end` risk; the
+          // matching `toolcall_end` is informational). `toolcall_*`
+          // events are not part of the original `_draftHasDelta`
+          // semantic — the flag was introduced to guard text / thinking
+          // duplication only. Mixing them in here would silently
+          // change existing guard behaviour for streams that include
+          // tool calls.
+          this.openToolSegment(bucket, data);
+          return;
+        }
+        if (innerType === 'toolcall_delta') {
+          // Accumulate partial JSON args into the LAST tool
+          // segment. We deliberately do not arm `_draftHasDelta` —
+          // see `toolcall_start` comment above.
+          this.appendToolArgs(bucket, data);
+          return;
+        }
+        if (innerType === 'toolcall_end') {
+          // End-of-tool marker. No state mutation needed (the
+          // renderer treats a `tool` segment as finished when
+          // its args are non-empty + a later event arrives; we
+          // don't currently track a separate "ended" flag inside
+          // the segment). Drop on the floor after the args have
+          // landed.
           return;
         }
         // Unknown / defensive-fallback shapes (no inner
         // `assistantMessageEvent`, or top-level `text_delta` /
         // `delta` / `text` / `content`, or nested content array).
-        // Treat as deltas — same behaviour as the original
+        // Treat as text deltas — same behaviour as the original
         // `extractTextDelta` fallback — and arm the flag so any
         // later `*_end` is dropped too. (Note: `extractTextDelta`
         // was split into `extractDeltaText` / `extractEndContent`
@@ -1386,7 +1444,7 @@ export class WsClient {
         // the comment keeps the historical name for traceability.)
         const delta = extractDeltaText(data);
         if (delta === null) return;
-        this.appendStreamingDraft(bucket, data, delta);
+        this.appendStreamingDraft(bucket, data, 'text_delta', delta);
         break;
       }
       case 'message_end': {
@@ -1818,34 +1876,54 @@ export class WsClient {
     this.emitStateChange();
   }
 
-  private appendStreamingDraft(bucket: SessionBucket, data: unknown, delta: string): void {
+  private appendStreamingDraft(
+    bucket: SessionBucket,
+    data: unknown,
+    innerType: 'text_delta' | 'thinking_delta' | 'text_end' | 'thinking_end',
+    delta: string,
+  ): void {
     const id = extractMessageId(data);
     const role = extractRole(data);
     const existing = bucket.streamingDraft;
+    const segmentType: 'text' | 'thinking' =
+      innerType === 'thinking_delta' || innerType === 'thinking_end' ? 'thinking' : 'text';
     // Match the existing draft by id when possible — if the messageId
     // shifts (e.g. pi emits a fresh draft after an error), start a new
     // one rather than concatenating onto a stale buffer.
-    if (existing !== null && (id === undefined || existing.messageId === id)) {
-      bucket.streamingDraft = {
-        ...(existing.messageId !== undefined
-          ? { messageId: existing.messageId }
-          : id !== undefined
-            ? { messageId: id }
-            : {}),
-        ...(existing.role !== undefined
-          ? { role: existing.role }
-          : role !== undefined
-            ? { role }
-            : {}),
-        text: existing.text + delta,
-      };
+    const sameDraft = existing !== null && (id === undefined || existing.messageId === id);
+    const ref = sameDraft ? existing : null;
+    let nextSegments: StreamingSegment[];
+    if (ref !== null) {
+      nextSegments = ref.segments.slice();
+      const tail = nextSegments[nextSegments.length - 1];
+      if (tail !== undefined && tail.type === segmentType) {
+        // Append into the trailing segment of the matching type —
+        // preserves monotonic accumulation within a type while still
+        // allowing text → thinking → text transitions to start
+        // fresh segments.
+        nextSegments[nextSegments.length - 1] = {
+          type: segmentType,
+          text: tail.text + delta,
+        };
+      } else {
+        nextSegments.push({ type: segmentType, text: delta });
+      }
     } else {
-      bucket.streamingDraft = {
-        ...(id !== undefined ? { messageId: id } : {}),
-        ...(role !== undefined ? { role } : {}),
-        text: delta,
-      };
+      nextSegments = [{ type: segmentType, text: delta }];
     }
+    bucket.streamingDraft = {
+      ...(ref !== null && ref.messageId !== undefined
+        ? { messageId: ref.messageId }
+        : id !== undefined
+          ? { messageId: id }
+          : {}),
+      ...(ref !== null && ref.role !== undefined
+        ? { role: ref.role }
+        : role !== undefined
+          ? { role }
+          : {}),
+      segments: nextSegments,
+    };
     // We just appended a delta — the draft now holds accumulated
     // text. Any subsequent `*_end` for this draft would carry the
     // same text as a full-content field, so flag it to make
@@ -1854,6 +1932,84 @@ export class WsClient {
     // message_end / resetChatState) and on `message_start` (new
     // draft).
     bucket._draftHasDelta = true;
+    this.emitStateChange();
+  }
+
+  /** Open a new `tool` segment for a `toolcall_start` event. Reads
+   *  the tool name + toolCallId (when present) off the inner
+   *  `assistantMessageEvent` payload and pushes a fresh segment
+   *  onto the bucket's draft. Subsequent `toolcall_delta` events
+   *  fill in `args` via `appendToolArgs`. We do NOT arm
+   *  `_draftHasDelta` — tool segments don't carry the duplicate-
+   *  end risk the text / thinking paths have, and keeping the
+   *  flag's semantic narrow protects existing test coverage
+   *  (`text_end` / `thinking_end` guards). */
+  private openToolSegment(bucket: SessionBucket, data: unknown): void {
+    if (data === null || typeof data !== 'object') return;
+    const inner = (data as Record<string, unknown>).assistantMessageEvent;
+    if (inner === null || typeof inner !== 'object') return;
+    const innerObj = inner as Record<string, unknown>;
+    const name = typeof innerObj.toolName === 'string' ? innerObj.toolName : '';
+    const toolCallId =
+      typeof innerObj.id === 'string' || typeof innerObj.toolCallId === 'string'
+        ? (innerObj.id as string | undefined) ?? (innerObj.toolCallId as string | undefined)
+        : undefined;
+    const id = extractMessageId(data);
+    const role = extractRole(data);
+    const existing = bucket.streamingDraft;
+    const sameDraft = existing !== null && (id === undefined || existing.messageId === id);
+    const ref = sameDraft ? existing : null;
+    const nextSegments: StreamingSegment[] = ref !== null ? ref.segments.slice() : [];
+    nextSegments.push({
+      type: 'tool',
+      ...(toolCallId !== undefined ? { toolCallId } : {}),
+      name,
+      args: '',
+    });
+    bucket.streamingDraft = {
+      ...(ref !== null && ref.messageId !== undefined
+        ? { messageId: ref.messageId }
+        : id !== undefined
+          ? { messageId: id }
+          : {}),
+      ...(ref !== null && ref.role !== undefined
+        ? { role: ref.role }
+        : role !== undefined
+          ? { role }
+          : {}),
+      segments: nextSegments,
+    };
+    this.emitStateChange();
+  }
+
+  /** Accumulate partial JSON args into the LAST tool segment.
+   *  Mirrors `appendStreamingDraft`'s type-tail-appending pattern:
+   *  always the LAST tool segment gets the delta, and we open a
+   *  fresh tool segment when no tool segment exists yet (defensive
+   *  against out-of-order events where a `toolcall_delta` lands
+   *  before the matching `toolcall_start`). */
+  private appendToolArgs(bucket: SessionBucket, data: unknown): void {
+    const delta = extractToolDeltaText(data);
+    if (delta === null) return;
+    const existing = bucket.streamingDraft;
+    if (existing === null) {
+      // No draft yet — open one with an empty-named tool segment.
+      this.openToolSegment(bucket, data);
+    }
+    const draft = bucket.streamingDraft;
+    if (draft === null) return;
+    const idx = lastToolSegmentIndex(draft.segments);
+    if (idx === -1) {
+      // Defensive — a delta for a type we never opened. Push a
+      // synthetic segment so the args aren't silently dropped
+      // (the user would otherwise see no tool activity at all).
+      draft.segments.push({ type: 'tool', name: '', args: delta });
+      this.emitStateChange();
+      return;
+    }
+    const tail = draft.segments[idx]!;
+    if (tail.type !== 'tool') return; // type-narrowing paranoia
+    draft.segments[idx] = { ...tail, args: tail.args + delta };
     this.emitStateChange();
   }
 
@@ -2002,11 +2158,19 @@ export class WsClient {
     // substantive pending state. `sessionList` is a refreshable mirror,
     // so a pending bucket containing only that mirror is still safe to
     // discard when the stem bucket already exists.
+    //
+    // M5 §3 (D3 路线 B) — `streamingDraft` is now a segment list
+    // (M3 single `text` → M5 `segments[]`); the empty-check
+    // adapts from `=== null` (no draft at all) to
+    // `segments.length === 0` (no draft OR a draft with no
+    // accumulated content). Both shapes imply "nothing to lose"
+    // — the draft was either absent or trivially empty. Same
+    // semantic as the original M3 check.
     const pendingIsEmpty =
       pending.messages.length === 0 &&
       pending.queue.steering.length === 0 &&
       pending.queue.followUp.length === 0 &&
-      pending.streamingDraft === null &&
+      (pending.streamingDraft === null || pending.streamingDraft.segments.length === 0) &&
       pending.sessionPhase === null &&
       pending.blockedOn.length === 0;
     const stemHasState =
@@ -2015,7 +2179,7 @@ export class WsClient {
         existing.messages.length > 0 ||
         existing.queue.steering.length > 0 ||
         existing.queue.followUp.length > 0 ||
-        existing.streamingDraft !== null ||
+        (existing.streamingDraft !== null && existing.streamingDraft.segments.length > 0) ||
         existing.blockedOn.length > 0 ||
         existing.sessionList !== null);
     if (stemHasState) {
@@ -2429,6 +2593,49 @@ function extractMessageEndMessage(data: unknown): unknown {
     return data;
   }
   return undefined;
+}
+
+/** Pluck the streaming delta string from a `toolcall_delta`
+ *  payload. Symmetric to `extractDeltaText` but accepts the
+ *  `toolcall_delta` inner-event type — `extractDeltaText` is
+ *  intentionally narrow (only `text_delta` / `thinking_delta`)
+ *  so a future `*_end`-duplication guard for tool calls doesn't
+ *  accidentally pick up text/thinking semantic by sharing the
+ *  same extractor. Falls back to the top-level `delta` field
+ *  for defensive shapes (some pi builds / wire variants put the
+ *  delta at the top level). Returns `null` when nothing usable
+ *  is found — caller treats this as a no-op. */
+function extractToolDeltaText(data: unknown): string | null {
+  if (data === null || typeof data !== 'object') return null;
+  const obj = data as Record<string, unknown>;
+  const inner = obj.assistantMessageEvent;
+  if (inner !== null && typeof inner === 'object') {
+    const innerObj = inner as Record<string, unknown>;
+    if (
+      innerObj.type === 'toolcall_delta' &&
+      typeof innerObj.delta === 'string'
+    ) {
+      return innerObj.delta;
+    }
+  }
+  const value = obj.delta;
+  if (typeof value === 'string') return value;
+  return null;
+}
+
+/** Find the index of the last `tool` segment in a draft's
+ *  segment list. Returns `-1` when the draft has no tool segment
+ *  (text/thinking-only). Used by `appendToolArgs` to locate the
+ *  tail tool segment for arg accumulation; the WsClient
+ *  intentionally keeps the lookup linear because a draft's
+ *  segment count is bounded by the number of distinct content
+ *  blocks pi emits per turn (typically a handful — even a long
+ *  turn rarely exceeds 20 tool calls). */
+function lastToolSegmentIndex(segments: readonly StreamingSegment[]): number {
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    if (segments[i]!.type === 'tool') return i;
+  }
+  return -1;
 }
 
 /** Pluck a queue_update payload. Shape is

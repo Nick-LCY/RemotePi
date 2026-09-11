@@ -934,3 +934,257 @@ td code {
   font-size: 0.88rem;
   color: var(--muted);
 }
+
+/* ---- M5 markdown + folding (AssistantMessageBody + streaming draft) ---
+ *
+ * Styles for react-markdown output (terminal assistant messages)
+ * and the folded thinking / toolCall pills (terminal + streaming
+ * drafts). Inline code / fenced code blocks use the `--code-bg`
+ * CSS variable defined in the :root + dark-mode blocks above
+ * for theme parity with the rest of the chat surface.
+ */
+
+/* Markdown body container (AssistantMessageBody) — vertical
+ * rhythm for stacked segments inside one message. */
+.assistant-text-segment {
+  margin: 0.4rem 0;
+}
+.assistant-text-segment:first-child {
+  margin-top: 0;
+}
+.assistant-text-segment:last-child {
+  margin-bottom: 0;
+}
+
+/* Heading rhythm — keep h1/h2/h3 compact so a long answer doesn't
+ * push the conversation off-screen. */
+.assistant-text-segment h1,
+.assistant-text-segment h2,
+.assistant-text-segment h3,
+.assistant-text-segment h4 {
+  margin: 0.8rem 0 0.4rem;
+  font-size: 1em;
+  font-weight: 600;
+}
+.assistant-text-segment h1 { font-size: 1.15em; }
+.assistant-text-segment h2 { font-size: 1.05em; }
+.assistant-text-segment h3 { font-size: 1em; }
+.assistant-text-segment h1:first-child,
+.assistant-text-segment h2:first-child,
+.assistant-text-segment h3:first-child,
+.assistant-text-segment h4:first-child {
+  margin-top: 0;
+}
+
+.assistant-text-segment p {
+  margin: 0.4rem 0;
+}
+.assistant-text-segment p:first-child {
+  margin-top: 0;
+}
+.assistant-text-segment p:last-child {
+  margin-bottom: 0;
+}
+
+/* Lists inside markdown bodies — pad the markers so they align
+ * with the surrounding text. */
+.assistant-text-segment ul,
+.assistant-text-segment ol {
+  margin: 0.4rem 0;
+  padding-left: 1.5rem;
+}
+.assistant-text-segment li {
+  margin: 0.15rem 0;
+}
+
+/* GFM tables — keep the layout dense but readable. */
+.assistant-text-segment table {
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.9em;
+  width: auto;
+  max-width: 100%;
+}
+.assistant-text-segment th,
+.assistant-text-segment td {
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+.assistant-text-segment th {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+
+/* Links — pick up the accent colour so they stand out without
+ * clashing with the surrounding prose. */
+.assistant-text-segment a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.assistant-text-segment a:hover {
+  text-decoration: none;
+}
+
+/* Inline + block code — both use --code-bg for theme parity;
+ * inline is rendered tighter (no extra padding) while blocks
+ * get a scrollable <pre> wrapper. */
+.markdown-code-inline {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--code-bg);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.markdown-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.markdown-pre {
+  background: var(--code-bg);
+  padding: 0.6rem 0.75rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+  font-size: 0.88em;
+  border: 1px solid var(--border);
+}
+
+/* Block quotes — used by markdown `>` syntax; subtle indent
+ * + left border so they read as quoted text. */
+.assistant-text-segment blockquote {
+  margin: 0.5rem 0;
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+/* Horizontal rules — drawn as a thin divider. */
+.assistant-text-segment hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 0.75rem 0;
+}
+
+/* ---- Thinking fold (terminal + streaming) ---------------------------- */
+
+.message-thinking-details {
+  margin: 0.4rem 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.message-thinking-details.assistant-thinking {
+  /* terminal-state variant — slightly more pronounced to
+   * distinguish from the streaming-time fold. */
+  border-style: solid;
+}
+
+.thinking-summary {
+  cursor: pointer;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  list-style: none;
+  user-select: none;
+}
+.thinking-summary::-webkit-details-marker {
+  display: none;
+}
+.thinking-summary::before {
+  content: '▶';
+  display: inline-block;
+  margin-right: 0.4rem;
+  font-size: 0.7em;
+  transition: transform 0.15s ease-in-out;
+}
+.message-thinking-details[open] .thinking-summary::before {
+  transform: rotate(90deg);
+}
+
+.thinking-body {
+  padding: 0.4rem 0.7rem 0.6rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.88rem;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---- Tool fold (terminal + streaming) ------------------------------- */
+
+.message-tool-details {
+  margin: 0.4rem 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.message-tool-details.assistant-tool-call {
+  /* terminal-state variant — slightly more pronounced. */
+  border-style: solid;
+}
+
+.message-tool-pill {
+  cursor: pointer;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.88rem;
+  list-style: none;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text);
+}
+.message-tool-pill::-webkit-details-marker {
+  display: none;
+}
+.message-tool-pill::before {
+  content: '▶';
+  display: inline-block;
+  margin-right: 0.3rem;
+  font-size: 0.7em;
+  color: var(--muted);
+  transition: transform 0.15s ease-in-out;
+}
+.message-tool-details[open] .message-tool-pill::before {
+  transform: rotate(90deg);
+}
+
+.message-tool-body {
+  padding: 0.5rem 0.7rem 0.7rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.88rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.message-tool-body strong {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.message-tool-args,
+.message-tool-result {
+  margin: 0;
+  padding: 0.4rem 0.55rem;
+  background: var(--code-bg);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 20rem;
+  overflow: auto;
+}
+.message-tool-pending {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-style: italic;
+}
+

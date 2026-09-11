@@ -22,6 +22,15 @@
 // background sessions can't accidentally leak into the foreground
 // UI.
 //
+// M5 §1 / §3 — MessageList now renders streaming drafts by
+// segment (thinking → `<details>` folded, text → plain `\n`-split
+// text inside `.message-body` for e2e 01 spec §6 continuity
+// compatibility, tool → folded pill). The terminal assistant
+// message body delegates to `<AssistantMessageBody>` which does
+// the markdown / folded-think / tool-pill final-state rendering.
+// Non-assistant messages (user / toolResult) keep the existing
+// pure-text path unchanged (D6).
+//
 // State source: WsClient per-session bucket. ChatView reads via
 // `useXxxFor(session)` hooks (no local state that could drift from
 // the protocol) — the only React state local to this subtree is
@@ -39,6 +48,8 @@ import {
   useWsClient,
 } from '../ws/WsClientContext.js';
 import { DialogHost } from './dialogs/DialogHost.js';
+import { AssistantMessageBody } from './AssistantMessageBody.js';
+import type { StreamingSegment } from '../ws/WsClient.js';
 
 // ---------------------------------------------------------------------------
 // ChatView
@@ -119,7 +130,16 @@ function phaseHint(phase: ReturnType<typeof useSessionPhaseFor>): string | null 
  *  `role` and a text body when the shape carries one. Anything that
  *  doesn't match the renderer pattern falls back to a
  *  `<pre>{JSON.stringify(...)}</pre>` so the user can still see what
- *  pi emitted (the shared package treats messages as opaque). */
+ *  pi emitted (the shared package treats messages as opaque).
+ *
+ *  M5 §3 — streaming draft renders by segments (thinking folded
+ *  `<details>` / text plain `<br>`-split inside `.message-body` /
+ *  tool folded pill). The plain-text path inside `.message-body`
+ *  is preserved so the e2e 01 spec §6 streaming-continuity
+ *  assertion (`.message-body` textContent monotonic) keeps working
+ *  — `<details>` children still contribute to textContent whether
+ *  folded or unfolded.
+ */
 function MessageList({ session }: { session: string }) {
   const messages = useMessagesFor(session);
   const draft = useStreamingDraftFor(session);
@@ -130,16 +150,16 @@ function MessageList({ session }: { session: string }) {
   // If a session outgrows this, swap to a virtualized list — the
   // shape below (item = role + text) is the right abstraction.
   const items = useMemo(() => {
-    const list: { key: string; role: string; text: string; isDraft: boolean }[] = [];
+    const list: MessageItem[] = [];
     for (let i = 0; i < messages.length; i += 1) {
-      list.push(messageToItem(messages[i], i, false));
+      list.push(messageToItem(messages[i], i));
     }
-    if (draft !== null && draft.text.length > 0) {
+    if (draft !== null && draft.segments.length > 0) {
       list.push({
+        kind: 'draft',
         key: `draft:${draft.messageId ?? 'live'}`,
         role: draft.role ?? 'assistant',
-        text: draft.text,
-        isDraft: true,
+        segments: draft.segments,
       });
     }
     return list;
@@ -154,17 +174,16 @@ function MessageList({ session }: { session: string }) {
           {items.map((item) => (
             <li
               key={item.key}
-              className={`message-row message-role-${item.role}${item.isDraft ? ' message-draft' : ''}`}
-              data-testid={item.isDraft ? 'message-draft' : 'message-row'}
+              className={`message-row message-role-${item.role}${item.kind === 'draft' ? ' message-draft' : ''}`}
+              data-testid={item.kind === 'draft' ? 'message-draft' : 'message-row'}
             >
               <div className="message-role">{item.role}</div>
               <div className="message-body">
-                {item.text.split('\n').map((line, idx, arr) => (
-                  <span key={idx}>
-                    {line}
-                    {idx < arr.length - 1 ? <br /> : null}
-                  </span>
-                ))}
+                {item.kind === 'draft' ? (
+                  <StreamingDraftBody segments={item.segments} />
+                ) : (
+                  <TerminalMessageBody role={item.role} raw={item.raw} />
+                )}
               </div>
             </li>
           ))}
@@ -174,34 +193,137 @@ function MessageList({ session }: { session: string }) {
   );
 }
 
-/** Coerce a pi-native message shape into a uniform `{ role, text }`
- *  item. Falls back to a JSON dump for shapes we don't recognise —
- *  the shared package treats `messages` as `unknown[]`, so we never
- *  throw on an unfamiliar element. */
-function messageToItem(
-  raw: unknown,
-  index: number,
-  isDraft: boolean,
-): { key: string; role: string; text: string; isDraft: boolean } {
-  const key = isDraft ? 'draft' : stableKey(raw, index);
-  if (raw === null || typeof raw !== 'object') {
-    // Defensive stringification: primitives get String(); null/undefined
-    // become the literal empty string. Avoid `String(raw ?? '')` which
-    // would trigger Object's default toString for object fallthroughs.
-    let primitiveText: string;
-    if (raw === null || raw === undefined) {
-      primitiveText = '';
-    } else if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
-      primitiveText = String(raw);
-    } else {
-      primitiveText = extractJson(raw);
+/** Render an in-flight streaming draft's segments inside
+ *  `.message-body`. The thinking / tool segments use a
+ *  `<details>` element (D3 路线 B — always folded by default);
+ *  the text segments stay as plain `\n`-split text so the e2e
+ *  01 spec §6 streaming-continuity assertion continues to
+ *  observe monotonically growing `textContent`. Text inside a
+ *  `<details>` element still contributes to its `textContent`
+ *  regardless of the `open` attribute, so folding never resets
+ *  the observed length. */
+function StreamingDraftBody({ segments }: { segments: readonly StreamingSegment[] }) {
+  return (
+    <>
+      {segments.map((seg, idx) => {
+        if (seg.type === 'thinking') {
+          return (
+            <details
+              key={`think-${idx}`}
+              className="message-thinking-details"
+              data-testid="message-draft-thinking"
+            >
+              <summary className="thinking-summary">
+                Thinking… ({seg.text.length} chars)
+              </summary>
+              <div className="thinking-body">{seg.text}</div>
+            </details>
+          );
+        }
+        if (seg.type === 'tool') {
+          return (
+            <details
+              key={`tool-${idx}`}
+              className="message-tool-details"
+              data-testid="message-draft-tool"
+            >
+              <summary className="message-tool-pill">
+                <span aria-hidden="true">🔧</span> {seg.name || 'tool'}
+              </summary>
+              <pre className="message-tool-body">{seg.args || '(running…)'}</pre>
+            </details>
+          );
+        }
+        // text segment — plain text inside `.message-body` so the
+        // e2e 01 spec §6 monotonic-length assertion works
+        // unchanged. Stream-time never renders markdown (D2).
+        return (
+          <span key={`text-${idx}`}>
+            {seg.text.split('\n').map((line, lineIdx, arr) => (
+              <span key={lineIdx}>
+                {line}
+                {lineIdx < arr.length - 1 ? <br /> : null}
+              </span>
+            ))}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
+/** Render a terminal message body inside `.message-body`. Assistant
+ *  messages with an array `content` delegate to
+ *  `<AssistantMessageBody>` (markdown / folded thinking / tool
+ *  pill final state); everything else goes through the existing
+ *  `messageToItem` + `extractText` plain-text path unchanged (D6
+ *  — user / toolResult stay plain). */
+function TerminalMessageBody({ role, raw }: { role: string; raw: unknown }) {
+  if (role === 'assistant' && raw !== null && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    const content = obj.content;
+    if (Array.isArray(content)) {
+      return <AssistantMessageBody content={content} />;
     }
-    return { key, role: 'unknown', text: primitiveText, isDraft };
+  }
+  // Non-assistant (user / toolResult) or string content — old
+  // plain-text path. Preserves e2e spec testid / className anchors.
+  const text = extractTextFromMessage(raw);
+  return (
+    <>
+      {text.split('\n').map((line, idx, arr) => (
+        <span key={idx}>
+          {line}
+          {idx < arr.length - 1 ? <br /> : null}
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** Minimal text extractor for the terminal-message plain-text
+ *  path. Mirrors the original M3 behaviour from `messageToItem`
+ *  (extractText / JSON.stringify fallback). The D6 rule keeps
+ *  user / toolResult messages on this path; only assistant
+ *  messages with `content: Array` opt into the markdown body. */
+function extractTextFromMessage(raw: unknown): string {
+  if (raw === null || typeof raw !== 'object') {
+    if (raw === null || raw === undefined) return '';
+    if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
+      return String(raw);
+    }
+    return extractJson(raw);
+  }
+  const obj = raw as Record<string, unknown>;
+  const fromContent = extractText(obj.content);
+  if (fromContent !== undefined) return fromContent;
+  if (typeof obj.text === 'string') return obj.text;
+  return extractJson(raw);
+}
+
+/** Coerce a pi-native message shape into a uniform `MessageItem`.
+ *  Falls back to a JSON dump for shapes we don't recognise — the
+ *  shared package treats `messages` as `unknown[]`, so we never
+ *  throw on an unfamiliar element.
+ *
+ *  M5 §1 / §3 — the draft branch carries `segments` (used by
+ *  `StreamingDraftBody`); the terminal branch carries `raw` (used
+ *  by `TerminalMessageBody`, which decides between markdown for
+ *  assistant / plain-text for everything else). The two shapes
+ *  coexist because the renderer needs the segment list for the
+ *  typewriter effect but the raw shape for the terminal state. */
+type MessageItem =
+  | { kind: 'draft'; key: string; role: string; segments: readonly StreamingSegment[] }
+  | { kind: 'terminal'; key: string; role: string; raw: unknown };
+
+function messageToItem(raw: unknown, index: number): MessageItem {
+  const key = stableKey(raw, index);
+  if (raw === null || typeof raw !== 'object') {
+    return { kind: 'terminal', key, role: 'unknown', raw };
   }
   const obj = raw as Record<string, unknown>;
   const role = typeof obj.role === 'string' ? obj.role : 'unknown';
-  const text = extractText(obj.content) ?? extractText(obj.text) ?? extractJson(raw);
-  return { key, role, text, isDraft };
+  return { kind: 'terminal', key, role, raw };
 }
 
 /** A stable string key for React rendering. Pi 0.85.1's
