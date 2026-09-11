@@ -37,6 +37,33 @@
 //      DirectoryBrowser modal 化（`open` prop；App 持 `browserOpen`
 //      state）。
 //
+// ## M5 task 07 gap fix — 汉堡按钮覆盖全部移动端视图
+//
+// M5 task 07 commit `a6fd9ef` 落地汉堡按钮（`sidebar-toggle`
+// testid）仅位于 `SessionStatusBar` 左侧；SessionStatusBar 仅在
+// recovery 分支挂载（`sessionForSessionBar !== null`）→ 移动端
+// `<768px` 在 `choiceLevel1` / `choiceLevel2` 视图下**没有任何
+// 入口打开侧边栏** → 用户无法选工作目录/会话 → 功能性死路。
+//
+// 修法：本 App.tsx 按 view 分派顶部条幅——
+//
+//   - `view === 'recovery'` → 渲染 `<SessionStatusBar>`（既有
+//     路径，包含汉堡 + phase + queue + session 名）；
+//   - `view === 'choiceLevel1' || 'choiceLevel2'` → 渲染
+//     `<MobileTopBar>`（M5 task 07 新建组件，含汉堡 + 视图标题）。
+//
+// 两组件**互斥**渲染（按 view 分派；不可能同时挂载）。
+// `hamburgerRef` 在 App 层持有（`useRef<HTMLButtonElement>(null)`）
+// 并同时透传给两个组件——`ref.current` 永远指向当前可见的汉堡
+// 按钮，`useFocusTrap` 关闭时焦点归还正确（不出现「归还到
+// 已卸载组件的 ref → no-op」）。
+//
+// testid 约束：`sidebar-toggle` testid 在任一时刻仅 0 或 1 个
+// DOM 实例（mobile 1 / desktop 0），不重复；`mobile-top-bar` 是
+// 新组件新 testid（任务 06 brief 明示「新组件新 testid 不计入
+// 既有约束」）。桌面端（≥768px）零回归——MobileTopBar 内部
+// `useIsMobile()` 判定返回 null，不参与布局。
+//
 // ## M5 task 06 review W1 — AppShell dead props removed
 //
 // `client` and `gateMapRef` were declared on AppShellProps but never
@@ -129,6 +156,7 @@ import { ChatView } from './components/ChatView.js';
 import { ChoiceLevel1Panel } from './components/ChoiceLevel1Panel.js';
 import { ChoiceLevel2Panel } from './components/ChoiceLevel2Panel.js';
 import { DirectoryBrowser } from './components/DirectoryBrowser.js';
+import { MobileTopBar } from './components/MobileTopBar.js';
 import { SessionStatusBar } from './components/SessionStatusBar.js';
 import { TokenModal } from './components/TokenModal.js';
 import { errorHint } from './components/error-hint.js';
@@ -474,13 +502,30 @@ export function App() {
           mainContent={
             <>
               {sessionForSessionBar !== null ? (
+                // recovery 分支：SessionStatusBar 顶栏（带汉堡 + phase +
+                // queue + session 名）。Hamburger ref 与 mobile top bar
+                // 共享同一对象（见 App.tsx `hamburgerRef = useRef(...)`），
+                // 焦点归还永远指向当前可见的汉堡按钮。
                 <SessionStatusBar
                   session={sessionForSessionBar}
                   sidebarOpen={sidebarOpen}
                   onToggleSidebar={handleToggleSidebar}
                   hamburgerRef={hamburgerRef}
                 />
-              ) : null}
+              ) : (
+                // level1 / level2 分支：mobile 顶栏（M5 task 07 gap 修复）。
+                // 移动端 <768px 渲染 hamburger + 视图标题；桌面端
+                // 组件内部 `useIsMobile()` 判定返回 null，不参与布局。
+                // 与 SessionStatusBar 按 view 分派——互斥渲染，
+                // `sidebar-toggle` testid 在任一时刻仅 0 或 1 个
+                // DOM 实例（mobile 1 / desktop 0）。
+                <MobileTopBar
+                  title={view === 'choiceLevel1' ? '选择工作目录' : '选择会话'}
+                  sidebarOpen={sidebarOpen}
+                  onToggleSidebar={handleToggleSidebar}
+                  hamburgerRef={hamburgerRef}
+                />
+              )}
               {mainContent}
             </>
           }

@@ -36,6 +36,9 @@ import { createElement, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppShell } from '../components/AppShell.js';
+import { MobileTopBar } from '../components/MobileTopBar.js';
+import { SessionStatusBar } from '../components/SessionStatusBar.js';
+import { MOBILE_QUERY } from '../hooks/useIsMobile.js';
 import { WsClient } from '../ws/WsClient.js';
 import { WsClientProvider } from '../ws/WsClientContext.js';
 
@@ -299,5 +302,244 @@ describe('AppShell — M5 task 05 review W1 write-failure 不 reload (间接钉�
     // (if (!ok) return without reload) is a static code path
     // that's reviewable + covered by the e2e suite.
     expect(() => renderShell()).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. M5 task 07 gap fix — 汉堡按钮覆盖全部移动端视图 (修复 level1/2
+//    无法打开侧边栏的 gap)
+//
+// M5 task 07 commit `a6fd9ef` 落地汉堡按钮 (sidebar-toggle testid)
+// 仅位于 `SessionStatusBar` 左侧；SessionStatusBar 仅在 recovery
+// 分支挂载 → 移动端 <768px 在 choiceLevel1 / choiceLevel2 视图下
+// **没有任何入口打开抽屉** → 功能性死路。
+//
+// 修法：App.tsx 按 view 分派顶部条幅——
+//   - recovery → <SessionStatusBar>（既有路径）
+//   - level1 / level2 → <MobileTopBar>（M5 task 07 新建组件）
+// 两组件互斥渲染（按 view），共享同一 `hamburgerRef` useRef。
+//
+// 本测试集合验证：
+//   - view=choiceLevel1 + mobile → sidebar-toggle 可见（gap 修复）
+//   - view=choiceLevel2 + mobile → sidebar-toggle 可见（gap 修复）
+//   - view=recovery + mobile → sidebar-toggle 可见（既有 SessionStatusBar）
+//   - 任意状态 mobile → 恰好 1 个 sidebar-toggle（无双汉堡）
+//   - 任意状态 desktop → 0 个 sidebar-toggle（桌面布局零回归）
+//
+// 测试用 stubbed `window.matchMedia` 控制 isMobile 默认值。
+// `renderToStaticMarkup` 走 SSR 路径，`useState(() =>
+// readInitialMatches())` 读 stubbed matchMedia 的初始 matches，
+// 决定 MobileTopBar / SessionStatusBar 是否渲染 hamburger。
+// ---------------------------------------------------------------------------
+
+let originalMatchMedia: unknown = undefined;
+
+function installMatchMediaStub(matches: boolean): void {
+  const g = globalThis as unknown as { window?: { matchMedia?: unknown } };
+  if (g.window === undefined) {
+    (globalThis as unknown as { window: { matchMedia: unknown } }).window = {
+      matchMedia: () => ({
+        matches: stubMatches,
+        media: MOBILE_QUERY,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }),
+    };
+    originalMatchMedia = undefined;
+  } else {
+    originalMatchMedia = g.window.matchMedia;
+  }
+  stubMatches = matches;
+  (globalThis as unknown as { window: { matchMedia: unknown } }).window = {
+    matchMedia: (query: string) => {
+      if (query !== MOBILE_QUERY) {
+        throw new Error(`stubMatchMedia got unexpected query ${query}`);
+      }
+      return {
+        matches: stubMatches,
+        media: MOBILE_QUERY,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      };
+    },
+  };
+}
+
+let stubMatches = false;
+
+function uninstallMatchMediaStub(): void {
+  const g = globalThis as unknown as { window?: { matchMedia?: unknown } };
+  if (g.window !== undefined) {
+    if (originalMatchMedia === undefined) {
+      delete (globalThis as unknown as { window?: unknown }).window;
+    } else {
+      g.window.matchMedia = originalMatchMedia;
+    }
+  }
+  originalMatchMedia = undefined;
+  stubMatches = false;
+}
+
+/** Mirror App.tsx's dispatch: render SessionStatusBar for recovery,
+ *  MobileTopBar for level1/level2. The mobile top-bar hamburger
+ *  uses the `data-testid="sidebar-toggle"` testid — same as
+ *  SessionStatusBar's hamburger. The two are mutually exclusive
+ *  by view, so per render only 0 or 1 hamburger instances appear. */
+function renderMainWithTopBar(view: 'choiceLevel1' | 'choiceLevel2' | 'recovery', opts: {
+  sidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
+  currentSession?: string | null;
+} = {}): ReactElement {
+  const { sidebarOpen = false, onToggleSidebar, currentSession = null } = opts;
+  if (view === 'recovery') {
+    return createElement(SessionStatusBar, {
+      session: currentSession ?? 'sess-test',
+      sidebarOpen,
+      onToggleSidebar,
+    });
+  }
+  return createElement(MobileTopBar, {
+    title: view === 'choiceLevel1' ? '选择工作目录' : '选择会话',
+    sidebarOpen,
+    onToggleSidebar,
+  });
+}
+
+describe('AppShell — M5 task 07 gap fix: 汉堡按钮覆盖全部移动端视图', () => {
+  it('9a. mobile + view=choiceLevel1 → sidebar-toggle 可见 (gap 修复: level1 移动端可开抽屉)', () => {
+    installMatchMediaStub(true);
+    const html = renderShell({
+      view: 'choiceLevel1',
+      mainContent: renderMainWithTopBar('choiceLevel1'),
+    });
+    expect(html).toContain('data-testid="sidebar-toggle"');
+    // 恰好 1 个（无双汉堡）
+    const matches = html.match(/data-testid="sidebar-toggle"/g);
+    expect(matches!.length).toBe(1);
+  });
+
+  it('9b. mobile + view=choiceLevel2 → sidebar-toggle 可见 (gap 修复: level2 移动端可开抽屉)', () => {
+    installMatchMediaStub(true);
+    const html = renderShell({
+      view: 'choiceLevel2',
+      currentWorkDir: '/home/me',
+      mainContent: renderMainWithTopBar('choiceLevel2'),
+    });
+    expect(html).toContain('data-testid="sidebar-toggle"');
+    const matches = html.match(/data-testid="sidebar-toggle"/g);
+    expect(matches!.length).toBe(1);
+  });
+
+  it('9c. mobile + view=recovery → sidebar-toggle 可见 (既有 SessionStatusBar 汉堡继续工作)', () => {
+    installMatchMediaStub(true);
+    const html = renderShell({
+      view: 'recovery',
+      currentSession: 'sess-1',
+      currentWorkDir: '/home/me',
+      mainContent: renderMainWithTopBar('recovery', { currentSession: 'sess-1' }),
+    });
+    expect(html).toContain('data-testid="sidebar-toggle"');
+    const matches = html.match(/data-testid="sidebar-toggle"/g);
+    expect(matches!.length).toBe(1);
+  });
+
+  it('9d. mobile + 任意 view → 恰好 1 个 sidebar-toggle (无双汉堡)', () => {
+    installMatchMediaStub(true);
+    for (const view of ['choiceLevel1', 'choiceLevel2', 'recovery'] as const) {
+      const html = renderShell({
+        view,
+        currentWorkDir: view === 'choiceLevel1' ? null : '/home/me',
+        currentSession: view === 'recovery' ? 'sess-1' : null,
+        mainContent: renderMainWithTopBar(view, { currentSession: 'sess-1' }),
+      });
+      const matches = html.match(/data-testid="sidebar-toggle"/g);
+      expect(matches, `view=${view} should render exactly 1 sidebar-toggle`).not.toBeNull();
+      expect(matches!.length).toBe(1);
+    }
+  });
+
+  it('9e. desktop + 任意 view → 0 个 sidebar-toggle (桌面布局零回归)', () => {
+    installMatchMediaStub(false);
+    for (const view of ['choiceLevel1', 'choiceLevel2', 'recovery'] as const) {
+      const html = renderShell({
+        view,
+        currentWorkDir: view === 'choiceLevel1' ? null : '/home/me',
+        currentSession: view === 'recovery' ? 'sess-1' : null,
+        mainContent: renderMainWithTopBar(view, { currentSession: 'sess-1' }),
+      });
+      expect(html, `view=${view} desktop should not render sidebar-toggle`)
+        .not.toContain('data-testid="sidebar-toggle"');
+    }
+  });
+
+  it('9f. mobile + view=choiceLevel1 → MobileTopBar 渲染 (root testid mobile-top-bar 可见)', () => {
+    installMatchMediaStub(true);
+    const html = renderShell({
+      view: 'choiceLevel1',
+      mainContent: renderMainWithTopBar('choiceLevel1'),
+    });
+    expect(html).toContain('data-testid="mobile-top-bar"');
+    // 视图标题渲染
+    expect(html).toContain('data-testid="mobile-top-bar-title"');
+    expect(html).toContain('选择工作目录');
+  });
+
+  it('9g. mobile + view=choiceLevel2 → MobileTopBar 渲染「选择会话」', () => {
+    installMatchMediaStub(true);
+    const html = renderShell({
+      view: 'choiceLevel2',
+      currentWorkDir: '/home/me',
+      mainContent: renderMainWithTopBar('choiceLevel2'),
+    });
+    expect(html).toContain('data-testid="mobile-top-bar"');
+    expect(html).toContain('选择会话');
+  });
+
+  it('9h. mobile + view=recovery → 不渲染 mobile-top-bar (避免双顶栏)', () => {
+    installMatchMediaStub(true);
+    const html = renderShell({
+      view: 'recovery',
+      currentSession: 'sess-1',
+      currentWorkDir: '/home/me',
+      mainContent: renderMainWithTopBar('recovery', { currentSession: 'sess-1' }),
+    });
+    // 既然 view=recovery，App.tsx 走 SessionStatusBar 分支——
+    // 不应出现 mobile-top-bar testid (避免双顶栏)。
+    expect(html).not.toContain('data-testid="mobile-top-bar"');
+    // 但 session-status-bar 应该出现（既有 recovery 分支路径）。
+    expect(html).toContain('data-testid="session-status-bar"');
+  });
+
+  it('9i. mobile + view=choiceLevel1/2 → 不渲染 session-status-bar (避免双顶栏)', () => {
+    installMatchMediaStub(true);
+    for (const view of ['choiceLevel1', 'choiceLevel2'] as const) {
+      const html = renderShell({
+        view,
+        currentWorkDir: view === 'choiceLevel1' ? null : '/home/me',
+        mainContent: renderMainWithTopBar(view),
+      });
+      expect(html, `view=${view} should not render session-status-bar`).not.toContain(
+        'data-testid="session-status-bar"',
+      );
+    }
+  });
+
+  it('9j. AppShell 抽屉状态 prop + onCloseSidebar 接线仍保留（移动端背景点击关闭可用）', () => {
+    installMatchMediaStub(true);
+    const onCloseSidebar = vi.fn();
+    const html = renderShell({
+      view: 'choiceLevel1',
+      sidebarOpen: true,
+      onCloseSidebar,
+      mainContent: renderMainWithTopBar('choiceLevel1'),
+    });
+    // sidebarOpen=true → backdrop 渲染 (data-testid="sidebar-backdrop")
+    expect(html).toContain('data-testid="sidebar-backdrop"');
+    expect(typeof onCloseSidebar).toBe('function');
+  });
+
+  // Restore matchMedia stub after each test in this describe.
+  afterEach(() => {
+    uninstallMatchMediaStub();
   });
 });

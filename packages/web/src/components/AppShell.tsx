@@ -256,14 +256,20 @@ export function AppShell(props: AppShellProps): JSX.Element {
       </aside>
 
       {/* Backdrop — 仅移动端 + 抽屉展开时渲染。
-          z-[199]（D12 栈 sidebar 之下）。点击关闭抽屉。 */}
+          z-[199]（D12 栈 sidebar 之下）。点击关闭抽屉。
+          w-screen + h-screen 显式尺寸：纯 `<button>` 元素无 content
+          时 + `position: fixed` + `inset-0` 的组合，某些浏览器
+          会把 shrink-to-fit width 算为 0（CSS 规格：fixed 元素
+          的 auto width = shrink-to-fit），导致 Playwright
+          toBeVisible 判 hidden。显式 w-screen/h-screen 钉柜尺寸
+          与 inset-0 一致——视觉 + a11y 双满足。 */}
       {isMobile && sidebarOpen ? (
         <button
           type="button"
           aria-label="关闭侧边栏"
           data-testid="sidebar-backdrop"
           onClick={onCloseSidebar}
-          className="fixed inset-0 z-[199] cursor-default border-0 bg-black/40 backdrop-blur-sm"
+          className="fixed inset-0 z-[199] h-screen w-screen cursor-default border-0 bg-black/40 backdrop-blur-sm"
           style={{ padding: 0 }}
         />
       ) : null}
