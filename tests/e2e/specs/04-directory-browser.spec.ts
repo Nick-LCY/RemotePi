@@ -16,10 +16,11 @@
 import { test, expect } from '@playwright/test';
 
 import { readRunState } from '../helpers/global-setup.js';
+import { seedToken } from '../helpers/seed-token.js';
 
 test('scenario (d): browse a home subdirectory, add it, then enter its session list', async ({ page }) => {
   const state = await readRunState();
-  await page.goto(`${state.baseUrl}/#${state.token}`);
+  await seedToken(page, state.baseUrl, state.token);
 
   // Step 1: land on ChoicePage level=1.
   const level1 = page.locator('[data-testid="choice-page"][data-level="1"]');

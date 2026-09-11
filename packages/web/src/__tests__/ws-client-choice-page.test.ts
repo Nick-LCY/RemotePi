@@ -44,7 +44,7 @@ class FakeWs {
   close(): void {
     /* no-op */
   }
-  addEventListener(): void {
+  addEventListener(_type: string, _listener?: EventListenerOrEventListenerObject): void {
     /* no-op */
   }
   removeEventListener(): void {
@@ -579,5 +579,214 @@ describe('WsClient M4 — currentWorkDir drives session_list payload (钉子 5)'
     // mirror itself flips cleanly.
     expect(ws.currentWorkDir).toBeNull();
     expect(sentFrames().at(-1)!.payload).toEqual({ work_dir: '/h' });
+  });
+});
+// ---------------------------------------------------------------------------
+// M5 §第二块 G6 / D10 — `connect(A) → connect(B)` 钉桩
+//
+// TokenModal closable mode wires
+// `tokenStorage.write(value); client.connect(value)` to handle a
+// user-initiated token swap (D10). The WsClient itself doesn't
+// change behaviour — `connect()` already follows the
+// teardown + swap + openSocket + reconnect-backoff-reset semantics
+// from M2/M3 — but task 05 §测试义务 mandates 钉桩 unit tests
+// covering three load-bearing edges:
+//
+//   1. handshake payload uses B (the latest token), not A
+//   2. the old socket received a `close()` call (teardown
+//      happened)
+//   3. reconnect backoff uses the latest token (the outbound
+//      `pi/...` envelopes carry the new token, and the heartbeat
+//      `nonce` survives a token swap)
+//
+// The shared `FakeWs` stubs `close()` as a no-op so the close
+// count assertion needs a richer fake. We use a separate
+// `CloseCountingFakeWs` that records close-call counts and
+// replaces `globalThis.WebSocket` per test.
+// ---------------------------------------------------------------------------
+
+/** A `FakeWs` variant that records `close()` calls AND captures
+ *  the open listener so the test can fire the `open` event after
+ *  `connect()`. The base FakeWs's `addEventListener` is a no-op —
+ *  that means the WsClient's handshake (sent from `handleOpen`)
+ *  never fires, so tests that assert on the handshake payload
+ *  would fail. This variant captures the `'open'` listener and
+ *  lets the test fire it via `fireOpen()`. */
+class CloseCountingFakeWs extends FakeWs {
+  readonly closeCalls: number[] = [];
+  private openListener: (() => void) | null = null;
+  override close(): void {
+    this.closeCalls.push(Date.now());
+  }
+  override addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+    if (type === 'open' && typeof listener === 'function') {
+      this.openListener = listener as () => void;
+    }
+    // Otherwise swallow (matching the base FakeWs behaviour).
+  }
+  fireOpen(): void {
+    if (this.openListener !== null) {
+      this.openListener();
+    }
+  }
+}
+
+function makeConnectedWsWithCloseCount(): { ws: WsClient; fake: CloseCountingFakeWs; sentFrames: () => Envelope[] } {
+  const fake = new CloseCountingFakeWs();
+  // StubWebSocket ignores `new` and returns the SAME `fake` instance
+  // every time — so subsequent `openSocket()` calls reuse the same
+  // fake (the WsClient's `this.socket` field will point at it each
+  // time). This is intentional: it lets the test fire a fresh
+  // `open` event after each `connect()` to drive the handshake.
+  function StubWebSocket(this: unknown) {
+    return fake;
+  }
+  StubWebSocket.OPEN = FakeWs.OPEN;
+  // We DO NOT restore `globalThis.WebSocket` after the first
+  // `connect()` — the helper is consumed only by tests in this
+  // `describe` block, and the StubWebSocket must stay installed
+  // so subsequent `connect()` calls can construct new sockets.
+  (globalThis as unknown as { WebSocket: unknown }).WebSocket = StubWebSocket;
+  const ws = new WsClient('ws://test/web');
+  ws.connect('tok-A');
+  // Fire the open event so the WsClient sends the handshake
+  // (handleOpen). Without this, no handshake frame lands in
+  // `sentFrames` and the connect(A)→connect(B) assertions below
+  // would have nothing to compare against.
+  fake.fireOpen();
+  return {
+    ws,
+    fake,
+    sentFrames: () => fake.sentFrames.slice(),
+  };
+}
+
+describe('WsClient M5 — connect(A) → connect(B) (token swap via Settings)', () => {
+  // Original `WebSocket` is captured at module-init time so we can
+  // restore it after the tests in this describe block. The
+  // makeConnectedWsWithCloseCount helper installs a stub that
+  // persists for the lifetime of each test (because subsequent
+  // connect() calls reuse it) — if we didn't restore it, the
+  // stub would leak into other describe blocks / test files.
+  const originalWebSocket = (globalThis as { WebSocket?: unknown }).WebSocket;
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    (globalThis as { WebSocket?: unknown }).WebSocket = originalWebSocket;
+  });
+
+  it('6.1 handshake payload after connect(B) carries token B (not A)', () => {
+    // connect(A) → first handshake carries A; connect(B) → second
+    // handshake carries B. The first handshake is sent on the
+    // initial socket; the second is sent on the new socket (the
+    // FakeWs is reused across connects — WsClient.teardownSocket
+    // calls `socket.close()` on the old reference but our fake
+    // stays the same instance, so the second `openSocket()` reuses
+    // `fake` as the new `this.socket`).
+    const { ws, fake, sentFrames } = makeConnectedWsWithCloseCount();
+    const firstHandshake = sentFrames()[0]!;
+    expect(firstHandshake.type).toBe('handshake');
+    if (firstHandshake.type !== 'handshake') throw new Error('shape');
+    expect((firstHandshake.payload as { token: string }).token).toBe('tok-A');
+
+    // Swap to token B.
+    ws.connect('tok-B');
+    // Fire the open event on the (reused) fake so the WsClient
+    // sends the second handshake. The fake is the same instance
+    // across connects because WsClient's StubWebSocket constructor
+    // ignores `new` and returns the cached `fake`.
+    fake.fireOpen();
+    // WsClient calls `this.token = 'tok-B'` synchronously inside
+    // connect() (before openSocket). The next handshake uses B.
+    const handshakes = sentFrames().filter((f) => f.type === 'handshake');
+    expect(handshakes.length).toBeGreaterThanOrEqual(2);
+    const secondHandshake = handshakes[1]!;
+    if (secondHandshake.type !== 'handshake') throw new Error('shape');
+    expect((secondHandshake.payload as { token: string }).token).toBe('tok-B');
+    // Sanity: token A is not in the second payload.
+    expect((secondHandshake.payload as { token: string }).token).not.toBe('tok-A');
+    // Sanity: the fake's closeCalls records the old socket close.
+    expect(fake.closeCalls.length).toBe(1);
+  });
+
+  it('6.2 connect(A) → connect(B) closes the old socket exactly once', () => {
+    // The WsClient.connect() contract is `teardownSocket()` first
+    // (which calls `socket.close()`), then `openSocket()` (which
+    // constructs a new WebSocket and sets `this.socket`). A
+    // token swap therefore produces exactly one `close()` call
+    // per connect — the teardown of the previous socket. This
+    // is the load-bearing assertion for "old socket close"
+    // (task brief §测试义务 条目 2).
+    const { ws, fake } = makeConnectedWsWithCloseCount();
+    // The first connect('tok-A') inside makeConnectedWsWithCloseCount
+    // triggered teardownSocket (no prior socket → no close) then
+    // openSocket (new socket). fireOpen then sent the handshake.
+    // No close() call yet.
+    expect(fake.closeCalls.length).toBe(0);
+    ws.connect('tok-A');
+    // Second connect('tok-A'): teardownSocket closes the previous
+    // socket (the first one). Then openSocket creates a new one.
+    expect(fake.closeCalls.length).toBe(1);
+    fake.fireOpen();
+    ws.connect('tok-B');
+    // Third connect: teardownSocket closes the second socket.
+    expect(fake.closeCalls.length).toBe(2);
+    fake.fireOpen();
+    // A disconnect() does NOT add a close call (it already
+    // happened in connect's teardown — disconnect calls
+    // teardownSocket too but only on the current socket, which
+    // is the one we just made).
+    ws.disconnect();
+    expect(fake.closeCalls.length).toBe(3);
+  });
+
+  it('6.3 reconnect backoff uses the latest token (after a forced close on token B)', () => {
+    // After connect(B), if the socket drops (handleClose fires),
+    // the auto-reconnect backoff schedules a new socket via
+    // openSocket() — which sends a NEW handshake carrying the
+    // CURRENT token (B), not the original A. We assert that by
+    // simulating a server-side close event (handleClose) and
+    // advancing timers to trigger the backoff.
+    const { ws, fake, sentFrames } = makeConnectedWsWithCloseCount();
+    ws.connect('tok-B');
+    fake.fireOpen();
+    const handshakesBefore = sentFrames().filter((f) => f.type === 'handshake').length;
+    // Trigger a close event on the active socket. handleClose is
+    // an arrow field — invoke via the fake's `target` reference.
+    const handleClose = (ws as unknown as {
+      handleClose: (event: CloseEvent) => void;
+    }).handleClose;
+    const closeEvent = {
+      code: 1006,
+      reason: '',
+      wasClean: false,
+      target: fake,
+    } as unknown as CloseEvent;
+    handleClose(closeEvent);
+    // Advance the reconnect timer (jitter 800-1200ms base 1s ±
+    // 20%). The minimum jitter is 800ms — advance well past that.
+    vi.advanceTimersByTime(2_000);
+    // The reconnect path re-registers the open listener on a new
+    // socket (same FakeWs instance because StubWebSocket ignores
+    // `new`). Fire open so the new handshake lands.
+    fake.fireOpen();
+    // After the backoff fires, openSocket() constructs a new
+    // socket and sends a fresh handshake. Count should grow.
+    const handshakesAfter = sentFrames().filter((f) => f.type === 'handshake').length;
+    expect(handshakesAfter).toBeGreaterThan(handshakesBefore);
+    // The most recent handshake payload must carry B (the
+    // currently-cached token), not A.
+    const lastHandshake = sentFrames()
+      .filter((f) => f.type === 'handshake')
+      .slice(-1)[0]!;
+    if (lastHandshake.type !== 'handshake') throw new Error('shape');
+    expect((lastHandshake.payload as { token: string }).token).toBe('tok-B');
+    // Sanity: A must NOT appear in any of the post-swap handshakes.
+    for (const h of sentFrames().filter((f) => f.type === 'handshake').slice(1)) {
+      if (h.type !== 'handshake') continue;
+      expect((h.payload as { token: string }).token).not.toBe('tok-A');
+    }
   });
 });

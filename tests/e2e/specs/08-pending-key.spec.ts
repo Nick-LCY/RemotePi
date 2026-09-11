@@ -18,9 +18,10 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import { readRunState, type RunState } from '../helpers/global-setup.js';
+import { seedToken } from '../helpers/seed-token.js';
 
 async function openChatOnFreshSession(page: Page, state: RunState): Promise<void> {
-  await page.goto(`${state.baseUrl}/#${state.token}`);
+  await seedToken(page, state.baseUrl, state.token);
   await page.locator('[data-testid="work-dir-select"][data-path="' + state.workDir + '"]').click();
   await page.locator('[data-testid="choice-page"][data-level="2"]').waitFor();
   await page.locator('[data-testid="session-new"]').click();

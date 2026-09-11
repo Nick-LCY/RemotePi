@@ -39,6 +39,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import { readRunState } from '../helpers/global-setup.js';
+import { seedToken } from '../helpers/seed-token.js';
 import {
   sseContentBlockStart,
   sseContentBlockDelta,
@@ -183,8 +184,10 @@ test.describe('scenario (b) — F5 reload recovery (M4 flow)', () => {
     // 信封 → bridge 走 M3_LEGACY auto-spawn 路径 → 看不到本场景
     // 创建的 session 历史（不同 manager / 不同 jsonl）。
     //
-    // Step 1: load M3 legacy URL → land on ChoicePage level=1.
-    await page.goto(`${baseUrl}/#${token}`);
+    // Step 1: seed token into localStorage + load → land on
+    // ChoicePage level=1. (M5 §G6 / D9 — token is no longer in the
+    // URL hash; it's stored in `localStorage['remotepi.token']`.)
+    await seedToken(page, baseUrl, token);
     const level1 = page.locator('[data-testid="choice-page"][data-level="1"]');
     await level1.waitFor({ state: 'visible', timeout: 30_000 });
 

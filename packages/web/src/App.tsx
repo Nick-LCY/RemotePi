@@ -81,9 +81,10 @@ import type { SessionPhase } from '@remotepi/shared';
 import { ChatView } from './components/ChatView.js';
 import { ChoicePage } from './components/ChoicePage.js';
 import { StatusBar } from './components/StatusBar.js';
-import { TokenPrompt } from './components/TokenPrompt.js';
+import { TokenModal } from './components/TokenModal.js';
 import { errorHint } from './components/error-hint.js';
-import { decideView, readAuthFromHash, type AuthFromHash } from './hash.js';
+import { decideView, readAuthFromHash } from './hash.js';
+import * as tokenStorage from './ws/tokenStorage.js';
 import { WsClient, M3_LEGACY_KEY, type ConnState } from './ws/WsClient.js';
 import { useBridgeStatus, useConnState, useSessionPhase, WsClientProvider } from './ws/WsClientContext.js';
 import {
@@ -96,19 +97,31 @@ import { resolveWssUrl } from './ws/config.js';
 
 export { errorHint };
 
-/** Read the three-field hash model (`token` + `work_dir` + `session`)
- *  via the M4 parser. App.tsx calls this on every `hashchange` (and
- *  on first mount) so the render dispatch can pick the right branch
- *  per 钉子 6 决策表. The M3 single-token `readTokenFromHash()`
- *  helper is removed — `readAuthFromHash()` covers its job (token
- *  first, no key) and the new `decideView()` maps the model onto the
- *  render branches. */
-function readAuth(): AuthFromHash {
-  return readAuthFromHash(window.location.hash);
+/** Read the auth model used by App.tsx. M5 §G6 / D9 — the token
+ *  is sourced from `localStorage` (see `ws/tokenStorage.ts`) and
+ *  injected into the model alongside the hash-derived `work_dir` +
+ *  `session`. The returned `AuthFromHash` shape is the M5 two-field
+ *  form (`workDir` + `session` only) plus the separately-sourced
+ *  `token`. App.tsx treats `auth.token === null` as the trigger for
+ *  `<TokenModal required>` (D9 / D10).
+ *
+ *  Token-vs-hash ordering note: `token` is read on every call (not
+ *  cached) so the Settings → 「更换 Token」 flow (M5 §D10 closable
+ *  mode) can `tokenStorage.write()` + `client.connect(newToken)`
+ *  without a manual `readAuth()` round-trip — but the App-level
+ *  `tokenModalRequired` render only re-reads on `hashchange` / mount,
+ *  which is the right cadence for the first-touch `TokenModal
+ *  required` UX. The localStorage read is a single in-process
+ *  `localStorage.getItem` (~µs), so the lack of caching is fine. */
+function readAuth(): { token: string | null; workDir: string | null; session: string | null } {
+  return {
+    token: tokenStorage.read(),
+    ...readAuthFromHash(window.location.hash),
+  };
 }
 
 export function App() {
-  const [auth, setAuth] = useState<AuthFromHash>(() => readAuth());
+  const [auth, setAuth] = useState(() => readAuth());
 
   // One WsClient per mount. Memoized so React StrictMode's double-invoke
   // in dev returns the same instance and we don't end up with two parallel
@@ -208,11 +221,34 @@ export function App() {
 
   const view = decideView(auth);
 
-  if (view === 'tokenPrompt') {
+  // M5 §G6 / D9 — tokenPrompt 由 App 层触发：未拿到 token (=
+  // tokenStorage.read() === null) → 渲染 `<TokenModal required>`，
+  // 不进 WsClientProvider 主树（保持既有 disconnect 语义：未认证
+  // 时不试图建立 WebSocket 连接）。`hashchange` 不触发
+  // `auth.token` 重新读取（hash 不再承载 token），仅在硬刷新 /
+  // `TokenModal required` 提交 → `window.location.reload()` 后
+  // 重新读 localStorage → 走正常 recovery 流程。
+  if (auth.token === null) {
+    // 旧书签检测：URL hash 仍携带非空 body（说明原 #<token>&work_dir=...
+    // 形态的旧书签被访问了）。提示文案明示“书签 token 已失效”——避免
+    // 用户误以为仅仅 lost-credentials。
+    const legacyBookmark = typeof window !== 'undefined'
+      && (window.location.hash.includes('work_dir=')
+        || window.location.hash.includes('session='));
     return (
-      <WsClientProvider client={client}>
-        <TokenPrompt />
-      </WsClientProvider>
+      <TokenModal
+        required
+        bannerHint={legacyBookmark
+          ? '旧书签中的 token 已不再生效，请重新粘贴新 token。'
+          : ''}
+        onSubmit={(value: string) => {
+          tokenStorage.write(value);
+          // 硬刷新触发 App 重新 readAuth → token !== null → App
+          // 走正常 recovery 流程（D10 required 模式提交 = write +
+          // reload）。
+          window.location.reload();
+        }}
+      />
     );
   }
 
@@ -222,7 +258,7 @@ export function App() {
         <main className="app-shell">
           <h1>RemotePi</h1>
           <StatusBar />
-          <ChoicePage level={1} token={auth.token!} />
+          <ChoicePage level={1} />
         </main>
       </WsClientProvider>
     );
@@ -234,7 +270,7 @@ export function App() {
         <main className="app-shell">
           <h1>RemotePi</h1>
           <StatusBar />
-          <ChoicePage level={2} token={auth.token!} workDir={auth.workDir!} />
+          <ChoicePage level={2} workDir={auth.workDir!} />
         </main>
       </WsClientProvider>
     );
@@ -265,7 +301,7 @@ export function App() {
         <h1>RemotePi</h1>
         <StatusBar />
         <RecoveryShell
-          token={auth.token!}
+          token={auth.token}
           session={sessionForGate}
           workDir={auth.workDir ?? ''}
           client={client}

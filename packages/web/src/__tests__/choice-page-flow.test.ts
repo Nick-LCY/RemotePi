@@ -243,11 +243,10 @@ describe('ChoicePage — navigation round-trips (hash + store)', () => {
 
   it('2.1 selecting work_dir → hash update + level=2 session_list query', () => {
     const { ws } = makeConnectedWs();
-    const token = 'tok';
-    // Simulate level=1 → level=2 navigation:
-    const newHash = selectWorkDirHash(token, '/home/me');
+    // Simulate level=1 → level=2 navigation (M5 §D9 — no token in
+    // hash anymore; the helper takes only workDir):
+    const newHash = selectWorkDirHash('/home/me');
     const nextAuth = readAuthFromHash(newHash);
-    expect(nextAuth.token).toBe(token);
     expect(nextAuth.workDir).toBe('/home/me');
     expect(nextAuth.session).toBeNull();
     // App.tsx's hashchange effect mirrors the work_dir into the store:
@@ -258,57 +257,59 @@ describe('ChoicePage — navigation round-trips (hash + store)', () => {
   });
 
   it('2.2 selecting session → hash update (recovery route)', () => {
-    const token = 'tok';
-    const newHash = selectSessionHash(token, '/home/me', 'sess-1');
+    const newHash = selectSessionHash('/home/me', 'sess-1');
     const nextAuth = readAuthFromHash(newHash);
     expect(nextAuth.session).toBe('sess-1');
     expect(nextAuth.workDir).toBe('/home/me');
   });
 
   it('2.3 退出会话 (exit session) → hash clears session, keeps work_dir', () => {
-    const token = 'tok';
-    const newHash = exitSessionHash(token, '/home/me');
+    const newHash = exitSessionHash('/home/me');
     const nextAuth = readAuthFromHash(newHash);
     expect(nextAuth.workDir).toBe('/home/me');
     expect(nextAuth.session).toBeNull();
   });
 
   it('2.4 更换目录 (change work_dir) → hash clears work_dir + session', () => {
-    const token = 'tok';
-    const newHash = changeWorkDirHash(token);
+    const newHash = changeWorkDirHash();
     const nextAuth = readAuthFromHash(newHash);
-    expect(nextAuth.token).toBe(token);
     expect(nextAuth.workDir).toBeNull();
     expect(nextAuth.session).toBeNull();
   });
 
   it('2.5 新建会话 → hash carries session=new (pending)', () => {
-    const token = 'tok';
-    const newHash = newSessionHash(token, '/home/me');
+    const newHash = newSessionHash('/home/me');
     const nextAuth = readAuthFromHash(newHash);
     expect(nextAuth.workDir).toBe('/home/me');
     expect(nextAuth.session).toBe('new');
   });
 
-  it('2.6 full navigation: M3 legacy → level=1 → level=2 → recovery → back to level=2', () => {
-    const token = 'tok';
-    // Step 1: legacy M3 link opens → choiceLevel1.
-    const step0 = readAuthFromHash('#' + token);
-    expect(step0.token).toBe(token);
+  it('2.6 full navigation: legacy → level=1 → level=2 → recovery → back to level=2', () => {
+    // M5 §D9 — the legacy `#<token>` shape silently drops the
+    // token (no field on the parsed model) and returns
+    // {workDir:null, session:null}, which routes to
+    // <TokenModal required> when read by App.tsx. This test
+    // covers the "user has already entered a token" branch —
+    // the navigation helpers operate purely on workDir /
+    // sessionKey.
+    // Step 1: user has token in localStorage + no hash → empty
+    // hash parses to {null, null} → choiceLevel1.
+    const step0 = readAuthFromHash('');
     expect(step0.workDir).toBeNull();
+    expect(step0.session).toBeNull();
 
     // Step 2: user selects /home/me → choiceLevel2.
-    const step1Hash = selectWorkDirHash(token, '/home/me');
+    const step1Hash = selectWorkDirHash('/home/me');
     const step1 = readAuthFromHash(step1Hash);
     expect(step1.workDir).toBe('/home/me');
 
     // Step 3: user picks a session → recovery (RecoveryView / ChatView).
-    const step2Hash = selectSessionHash(token, step1.workDir!, 'sess-1');
+    const step2Hash = selectSessionHash(step1.workDir!, 'sess-1');
     const step2 = readAuthFromHash(step2Hash);
     expect(step2.session).toBe('sess-1');
 
     // Step 4: user clicks "退出会话" in ChatView → back to choiceLevel2.
-    const step3Hash = exitSessionHash(token, step2.workDir!);
+    const step3Hash = exitSessionHash(step2.workDir!);
     const step3 = readAuthFromHash(step3Hash);
     expect(step3.workDir).toBe('/home/me');
     expect(step3.session).toBeNull();

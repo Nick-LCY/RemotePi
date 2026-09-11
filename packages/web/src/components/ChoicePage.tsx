@@ -73,7 +73,6 @@ import { DirectoryBrowser } from './DirectoryBrowser.js';
 
 interface ChoicePageProps {
   level: 1 | 2;
-  token: string;
   /** Required when `level === 2`. App.tsx only passes this when the
    *  hash has a `work_dir` component — `decideView()` already
    *  proved the field is present at the level=2 branch. */
@@ -82,23 +81,23 @@ interface ChoicePageProps {
 
 export function ChoicePage(props: ChoicePageProps) {
   if (props.level === 1) {
-    return <ChoiceLevel1 token={props.token} />;
+    return <ChoiceLevel1 />;
   }
   // props.workDir is non-null at the level=2 dispatch branch (App's
   // `decideView()` already proved the hash has a work_dir), but we
   // narrow defensively so a stale render after a hash change doesn't
   // crash.
   if (props.workDir === undefined) {
-    return <ChoiceLevel1 token={props.token} />;
+    return <ChoiceLevel1 />;
   }
-  return <ChoiceLevel2 token={props.token} workDir={props.workDir} />;
+  return <ChoiceLevel2 workDir={props.workDir} />;
 }
 
 // ---------------------------------------------------------------------------
 // ChoiceLevel1 — work directory selection
 // ---------------------------------------------------------------------------
 
-function ChoiceLevel1({ token }: { token: string }) {
+function ChoiceLevel1(): JSX.Element {
   const client = useWsClient();
   const connState = useConnState();
   const workDirs = useWorkDirs();
@@ -159,9 +158,9 @@ function ChoiceLevel1({ token }: { token: string }) {
       // ChoicePage level=2. We do NOT call any outbound command
       // here (the directory is already in `workDirs`, which means
       // the bridge has it).
-      window.location.hash = selectWorkDirHash(token, path);
+      window.location.hash = selectWorkDirHash(path);
     },
-    [token],
+    [],
   );
 
   const handleRemove = useCallback(
@@ -209,11 +208,11 @@ function ChoiceLevel1({ token }: { token: string }) {
         // 无 work_dir 字段；但保留原逻辑以防御 stale render），
         // 跳回 level=1；非当前选中则 mirror 不动。
         if (currentWorkDir === path) {
-          window.location.hash = changeWorkDirHash(token);
+          window.location.hash = changeWorkDirHash();
         }
       });
     },
-    [client, currentWorkDir, token],
+    [client, currentWorkDir],
   );
 
   const handleBrowseAdded = useCallback(
@@ -221,9 +220,9 @@ function ChoiceLevel1({ token }: { token: string }) {
       // DirectoryBrowser "选择" succeeded — write the hash, which
       // triggers App's hashchange listener → re-dispatch to level=2.
       setBrowsing(false);
-      window.location.hash = selectWorkDirHash(token, path);
+      window.location.hash = selectWorkDirHash(path);
     },
-    [token],
+    [],
   );
 
   return (
@@ -303,11 +302,10 @@ function ChoiceLevel1({ token }: { token: string }) {
 // ---------------------------------------------------------------------------
 
 interface ChoiceLevel2Props {
-  token: string;
   workDir: string;
 }
 
-function ChoiceLevel2({ token, workDir }: ChoiceLevel2Props) {
+function ChoiceLevel2({ workDir }: ChoiceLevel2Props): JSX.Element {
   const client = useWsClient();
   const connState = useConnState();
   const sessionList = useSessionList();
@@ -373,9 +371,9 @@ function ChoiceLevel2({ token, workDir }: ChoiceLevel2Props) {
 
   const handleSelectSession = useCallback(
     (sessionKey: string) => {
-      window.location.hash = selectSessionHash(token, workDir, sessionKey);
+      window.location.hash = selectSessionHash(workDir, sessionKey);
     },
-    [token, workDir],
+    [workDir],
   );
 
   const handleNewSession = useCallback(() => {
@@ -383,13 +381,13 @@ function ChoiceLevel2({ token, workDir }: ChoiceLevel2Props) {
     // pending（bridge 收到 session:'new' + work_dir 启动 pending
     // 键控）。本任务先把 hash 写对 + 进恢复链；pending 完整行为
     // （包括 stem 回填事件回写 hash）落到任务 08。
-    window.location.hash = newSessionHash(token, workDir);
-  }, [token, workDir]);
+    window.location.hash = newSessionHash(workDir);
+  }, [workDir]);
 
   const handleChangeWorkDir = useCallback(() => {
     // 钉子 6 更换目录：清 work_dir + session，回 level=1。
-    window.location.hash = changeWorkDirHash(token);
-  }, [token]);
+    window.location.hash = changeWorkDirHash();
+  }, []);
 
   return (
     <section className="card choice-page choice-level-2" data-testid="choice-page" data-level="2">

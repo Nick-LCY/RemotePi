@@ -56,6 +56,7 @@
 import { test, expect, type Page, type Browser, type BrowserContext } from '@playwright/test';
 
 import { readRunState } from '../helpers/global-setup.js';
+import { seedToken, seedTokenForHash } from '../helpers/seed-token.js';
 import { injectScript } from '../helpers/llm-script.js';
 import {
   sseMessageStart,
@@ -98,7 +99,10 @@ async function openChatOnContext(
   // §补注 3）的语义在 R3 仪式带 session 出站下保持——bridge 按
   // session 路由 extension_ui_response 到该 manager，广播
   // session_state 给所有 web（同 session）。
-  await page.goto(`${baseUrl}/#${token}`);
+  // M5 §G6 / D9 — token seeded into localStorage (NOT in URL hash);
+  // subsequent spec body is unchanged because the post-bootstrap
+  // DOM is identical (ChoicePage level=1 → click work_dir → level=2).
+  await seedToken(page, baseUrl, token);
   const level1 = page.locator('[data-testid="choice-page"][data-level="1"]');
   await level1.waitFor({ state: 'visible', timeout: 30_000 });
   const workDirRow = page.locator(
@@ -136,14 +140,23 @@ async function openChatOnContext(
  *  reach both sides (per ADR-0004 §补注 3 + 多端先答者胜). */
 async function openChatOnExistingContext(
   browser: Browser,
+  baseUrl: string,
+  token: string,
   fullHash: string,
 ): Promise<DialogContext> {
   const context = await browser.newContext();
   const page = await context.newPage();
-  // Direct navigation to the refilled M4 hash — bridge receives
-  // pi/get_messages + control/get_state with session=<stem>
-  // (R3 仪式带 session 出站) and recovers the same manager.
-  await page.goto(fullHash);
+  // M5 §G6 / D9 — the token is seeded into localStorage (NOT in
+  // the URL hash); the hash carries only the navigation state
+  // (work_dir + session). The `fullHash` passed in here is the
+  // current `window.location.href` of context A — we strip the
+  // leading `${baseUrl}` to isolate the hash fragment, then seed
+  // the token + navigate via `seedTokenForHash` which composes
+  // `${baseUrl}${hash}` back together.
+  const hashFragment = fullHash.startsWith(baseUrl)
+    ? fullHash.slice(baseUrl.length)
+    : fullHash;
+  await seedTokenForHash(page, baseUrl, token, hashFragment);
   await page.locator('[data-testid="chat-view"]').waitFor({ state: 'visible', timeout: 30_000 });
   return { context, page };
 }
@@ -273,7 +286,7 @@ test.describe('scenario (c) — multi-tab first-responder wins', () => {
       .not.toBeNull();
     const refilledHashOnA = await ctxA.page.evaluate(() => window.location.href);
     // B opens the same session via the full refilled M4 hash.
-    ctxB = await openChatOnExistingContext(browser, refilledHashOnA);
+    ctxB = await openChatOnExistingContext(browser, baseUrl, token, refilledHashOnA);
     expect(ctxB).toBeDefined();
 
     // Step 4: both sides see the dialog. We use a short wait

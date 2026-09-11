@@ -47,6 +47,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import { readRunState } from '../helpers/global-setup.js';
+import { seedToken } from '../helpers/seed-token.js';
 import { injectScript } from '../helpers/llm-script.js';
 import {
   sseContentBlockDelta,
@@ -108,7 +109,9 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
     // / 调试场景，但 e2e 全 M4 化后该路径仅在外部访问旧链接
     // 时才被触发。
 
-    // Step 1: load M3 legacy URL → land on ChoicePage level=1.
+    // Step 1: seed token into localStorage + load → land on
+    // ChoicePage level=1. (M5 §G6 / D9 — token is no longer in the
+    // URL hash; it's stored in `localStorage['remotepi.token']`.)
     page.on('pageerror', (err) => {
       // Fail loudly if there's a JS error — common cause of React mount failure.
       throw new Error(`[browser pageerror] ${err.message}\n${err.stack ?? ''}`);
@@ -118,7 +121,7 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
         process.stdout.write(`[browser ${msg.type()}] ${msg.text()}\n`);
       }
     });
-    await page.goto(`${baseUrl}/#${token}`);
+    await seedToken(page, baseUrl, token);
     const level1 = page.locator('[data-testid="choice-page"][data-level="1"]');
     await level1.waitFor({ state: 'visible', timeout: 30_000 });
 

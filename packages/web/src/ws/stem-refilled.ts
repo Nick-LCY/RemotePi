@@ -71,7 +71,7 @@
 //
 // ## Side effects（执行顺序固定）
 //
-//   1. `window.location.hash = selectSessionHash(token, workDir, stem)`
+//   1. `window.location.hash = selectSessionHash(workDir, stem)`
 //      → 触发 App.tsx 的 `hashchange` 监听器 → 重新派生 auth。
 //      另外同步调用 `wsClient.setCurrentSessionKey(stem)`，先于查询
 //      出站，确保查询 envelope.session 已是 stem。
@@ -134,8 +134,14 @@ export interface WatchStemRefilledOptions {
   /** URL hash's work_dir component (used to compose the new hash
    *  via `selectSessionHash` and as the `session_list` query arg). */
   workDir: string;
-  /** URL hash's token component. Required — the watcher no-ops
-   *  without it. */
+  /** M5 §G6 / D9 — the token is no longer part of the hash. We
+   *  keep this option for the watcher's internal gate (so the
+   *  watcher can short-circuit when the user has explicitly
+   *  cleared the token via the settings button before the
+   *  stem refill lands) but the field is unused for hash
+   *  composition — the new hash is `work_dir + session` only.
+   *  Required for symmetry with the test surface (the
+   *  test-injection path asserts on the option shape). */
   token: string;
   /** Override the side-effect writer — production uses the default
    *  (writes `window.location.hash = ...`); tests inject a recorder
@@ -336,7 +342,7 @@ export function watchStemRefilled(
     // truth — see hash.ts). `writeHash` is injectable so the
     // test surface (no jsdom) can record the would-be write
     // without touching `window.location`.
-    writeHash(selectSessionHash(token, workDir, newSession));
+    writeHash(selectSessionHash(workDir, newSession));
     // Side effect 3: WsClient mirror update.
     //
     // CRITICAL ORDERING (e2e 修复 2026-09-09): we must update the

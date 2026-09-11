@@ -29,6 +29,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import { readRunState } from '../helpers/global-setup.js';
+import { seedToken } from '../helpers/seed-token.js';
 import { injectScript } from '../helpers/llm-script.js';
 import {
   sseMessageStart,
@@ -84,7 +85,7 @@ test('scenario (g): removing a work directory does not kill its live chat', asyn
   // Step 1: add a NEW work_dir via DirectoryBrowser (the test owns
   // this work_dir for its lifetime — we add it, we remove it, we
   // never touch the bridge-configured workDir).
-  await chatPage.goto(`${s.baseUrl}/#${s.token}`);
+  await seedToken(chatPage, s.baseUrl, s.token);
   await chatPage.locator('[data-testid="choice-page"][data-level="1"]').waitFor();
   await chatPage.locator('[data-testid="work-dir-browse"]').click();
   const dirBrowser = chatPage.locator('[data-testid="directory-browser"]');
@@ -129,7 +130,7 @@ test('scenario (g): removing a work directory does not kill its live chat', asyn
   // the "still interactive" invariant without unmount/remount
   // noise.
   const removePage = await ctx.newPage();
-  await removePage.goto(`${s.baseUrl}/#${s.token}`);
+  await seedToken(removePage, s.baseUrl, s.token);
   await removePage.locator('[data-testid="choice-page"][data-level="1"]').waitFor();
   await removePage
     .locator('[data-testid="work-dir-remove"][data-path="' + newWorkDir + '"]')

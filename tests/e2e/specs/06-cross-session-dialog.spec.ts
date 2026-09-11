@@ -57,13 +57,14 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import { readRunState, type RunState } from '../helpers/global-setup.js';
+import { seedToken } from '../helpers/seed-token.js';
 import { injectScript } from '../helpers/llm-script.js';
 import { toolUseReply } from '../../integration/helpers/fake-llm-server.js';
 
 /** Open a chat-view on a specific workDir (M4 flow:
  *  level=1 → level=2 → session-new). */
 async function openChatOnWorkDir(page: Page, state: RunState, workDir: string): Promise<void> {
-  await page.goto(`${state.baseUrl}/#${state.token}`);
+  await seedToken(page, state.baseUrl, state.token);
   await page.locator('[data-testid="choice-page"][data-level="1"]').waitFor({ timeout: 30_000 });
   await page.locator('[data-testid="work-dir-select"][data-path="' + workDir + '"]').click();
   await page.locator('[data-testid="choice-page"][data-level="2"]').waitFor({ timeout: 30_000 });
@@ -101,7 +102,7 @@ async function waitForStemRefilled(page: Page, timeoutMs = 30_000): Promise<void
  *  add to state.json. Returns the absolute path of the added
  *  directory (first $HOME subdirectory, alphabetically). */
 async function addNewWorkDir(page: Page, state: RunState): Promise<string> {
-  await page.goto(`${state.baseUrl}/#${state.token}`);
+  await seedToken(page, state.baseUrl, state.token);
   await page.locator('[data-testid="choice-page"][data-level="1"]').waitFor({ timeout: 30_000 });
   await page.locator('[data-testid="work-dir-browse"]').click();
   const dirBrowser = page.locator('[data-testid="directory-browser"]');
