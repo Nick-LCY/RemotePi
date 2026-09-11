@@ -41,6 +41,7 @@ import { describe, expect, it } from 'vitest';
 import {
   mergeToolResults,
   ORPHAN_MARKER_KEY,
+  extractMergedResult,
   type MergedToolResult,
 } from '../components/toolResultMerge.js';
 
@@ -144,6 +145,52 @@ describe('mergeToolResults — multi-toolCall match by id', () => {
     expect(out).toHaveLength(1);
     const block = (out[0] as { content: Record<string, unknown>[] }).content[0]!;
     expect(block.result).toEqual<MergedToolResult>({ text: 'second', isError: false });
+  });
+
+  it('2.3 cross-assistant same-id toolCall — the LATER assistant wins (last-wins, W3)', () => {
+    // M5 review W3 — defensive pin: when two DIFFERENT assistant
+    // messages carry a toolCall with the SAME id (shouldn't
+    // happen in well-formed pi output, but a defensive guard
+    // against id-collision regressions), only the later assistant
+    // receives the attached result. The pre-scan uses a single
+    // Map keyed by id; the second `.set(id, …)` overwrites the
+    // first, so the matching target for both toolResults ends
+    // up at the LATER assistant. Both results write to the same
+    // blockIndex on that later assistant — the second toolResult
+    // is also last-wins via `perMessage.set(blockIndex, merged)`
+    // overwriting the first within the same per-message map.
+    //
+    // Fixture: a1 with toolCall 't1', a2 with toolCall 't1',
+    // r1('t1','x'), r2('t1','y') → a1 has NO result (the
+    // unmatched assistant survives intact), a2 has result='y'.
+    // The assertion is that a1's toolCall block has no `result`
+    // field AT ALL (passes through by reference, no allocation)
+    // and a2's toolCall block carries the merged result.
+    const a1 = assistant(toolCall('t1', 'bash', { cmd: 'first' }));
+    const a2 = assistant(toolCall('t1', 'bash', { cmd: 'second' }));
+    const r1 = toolResult('t1', 'x');
+    const r2 = toolResult('t1', 'y');
+    const out = mergeToolResults([a1, a2, r1, r2]);
+    // Both toolResults are consumed into a2 (matched), so the
+    // output keeps a1 (unchanged) + a2 (rebuilt with result).
+    expect(out).toHaveLength(2);
+    // a1: unchanged by reference (no allocation, no result
+    // field attached).
+    expect(out[0]).toBe(a1);
+    const a1Block = (a1 as { content: Record<string, unknown>[] }).content[0]!;
+    expect(a1Block.result).toBeUndefined();
+    // a2: reconstructed; carries the merged result. The
+    // LAST toolResult wins (r2 overwrites r1 within the same
+    // perMessage map for blockIndex 0).
+    expect(out[1]).not.toBe(a2);
+    const a2Block = (out[1] as { content: Record<string, unknown>[] }).content[0]!;
+    expect(a2Block.result).toEqual<MergedToolResult>({ text: 'y', isError: false });
+    // The later assistant's toolCall block identity is preserved
+    // by id (just `result` is additive) — same id, same
+    // arguments, same name.
+    expect(a2Block.id).toBe('t1');
+    expect(a2Block.name).toBe('bash');
+    expect(a2Block.arguments).toEqual({ cmd: 'second' });
   });
 });
 
@@ -261,6 +308,50 @@ describe('mergeToolResults — content tolerance', () => {
     const out = mergeToolResults([a, r]);
     const block = (out[0] as { content: Record<string, unknown>[] }).content[0]!;
     expect(block.result).toEqual<MergedToolResult>({ text: '', isError: false });
+  });
+
+  it('5.4 multi-text-block join semantics are unified (W1): merge path + orphan path agree', () => {
+    // M5 review W1 — the merge path (`extractMergedResult`) and
+    // the orphan path (previously `extractTextFromMessage` →
+    // `extractText` which inserted `\n` separators + `trimEnd`)
+    // produced DIFFERENT joined text for the same wire payload.
+    // Both paths now share `extractMergedResult`. This test pins
+    // the deterministic join result (NO separator; the wire
+    // doesn't insert one between blocks — adding one would invent
+    // content) and asserts the orphan path's extracted text
+    // EXACTLY matches the merge path's `MergedToolResult.text`
+    // for the same payload, so the renderer can never disagree
+    // on what to show.
+    //
+    // Fixture chosen because it's the exact minimal reproducer
+    // from the W1 review: two adjacent text blocks with no
+    // trailing/leading whitespace. The pre-fix behaviour would
+    // yield 'line1\nline2' on the orphan path vs 'line1line2' on
+    // the merge path; the post-fix behaviour is 'line1line2' on
+    // BOTH paths.
+    const r = toolResult('t1', '', {
+      content: [
+        { type: 'text', text: 'line1' },
+        { type: 'text', text: 'line2' },
+      ],
+    });
+    // Path A: merge path → attach to a matching toolCall block.
+    const a = assistant(toolCall('t1'));
+    const merged = mergeToolResults([a, r]);
+    const mergedBlock = (merged[0] as { content: Record<string, unknown>[] }).content[0]!;
+    const mergedText = (mergedBlock.result as MergedToolResult).text;
+    // Path B: orphan path → no matching toolCall, fall through
+    // to `extractMergedResult` (the shared helper ChatView's
+    // `OrphanToolResultBody` uses to render the folded body).
+    const orphanExtracted = extractMergedResult(r).text;
+    // The single deterministic join result for this payload is
+    // 'line1line2' (NO separator — wire-level invariant).
+    expect(mergedText).toBe('line1line2');
+    // Both paths must agree, character for character. A future
+    // regression that re-introduces a separator in either path
+    // trips this assertion loudly.
+    expect(orphanExtracted).toBe(mergedText);
+    expect(orphanExtracted).toBe('line1line2');
   });
 });
 

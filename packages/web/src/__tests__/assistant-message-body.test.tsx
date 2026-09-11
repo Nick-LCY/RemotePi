@@ -285,6 +285,55 @@ describe('AssistantMessageBody — folded segments', () => {
     expect(textIdx).toBeGreaterThan(thinkIdx);
     expect(toolIdx).toBeGreaterThan(textIdx);
   });
+
+  it('3.5 toolCall with a STRING result (illegal shape) falls back to pending — does NOT render the string (S7)', () => {
+    // M5 review S7 — defensive pin: `mergeToolResults` is the
+    // single source of truth for `toolCall.result` shape
+    // (`MergedToolResult` = `{text, isError}`). If the result
+    // field is the wrong shape (e.g. a bare string from an
+    // older test fixture, or a wire-format drift), the renderer
+    // MUST fall back to the `pending…` hint rather than
+    // rendering the unexpected value — operators reading the
+    // UI should never see a stray string rendered as if it were
+    // a result. This prevents a future regression where, say, a
+    // helper accidentally stringifies a malformed result and
+    // the renderer trusts the string and displays it as the
+    // "result" body.
+    //
+    // Fixture: `result: 'some text'` (a string, not an object).
+    // `readMergedToolResult` rejects it (non-object → null) and
+    // the toolCall branch falls through to the pending state.
+    const html = render([
+      {
+        type: 'toolCall',
+        name: 'bash',
+        arguments: { cmd: 'echo hi' },
+        result: 'some text', // <-- illegal shape (string, not MergedToolResult)
+      },
+    ]);
+    // The pending hint renders.
+    expect(html).toContain('pending');
+    expect(html).toContain('message-tool-pending');
+    // The illegal string value must NOT appear anywhere in the
+    // rendered output (not as a result, not as JSON, not as a
+    // parameter — the parameters DO render, but only the
+    // stringifySafe(args) payload, which is the cmd/echo-hi
+    // object). The string 'some text' has nothing to do with
+    // the arguments so it must not leak through.
+    expect(html).not.toContain('some text');
+    // The 结果 header is also absent (the pending branch doesn't
+    // emit it).
+    expect(html).not.toContain('结果');
+    // No result-success or result-error testids.
+    expect(html).not.toContain('data-testid="assistant-tool-result"');
+    expect(html).not.toContain('data-testid="assistant-tool-result-error"');
+    // Arguments still render normally (the contract is that
+    // the result path falls back, not that the whole toolCall
+    // collapses).
+    expect(html).toContain('参数');
+    expect(html).toContain('cmd');
+    expect(html).toContain('echo hi');
+  });
 });
 
 // ---------------------------------------------------------------------------

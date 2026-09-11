@@ -51,7 +51,7 @@ import { useAutoResizeTextarea } from '../hooks/useAutoResizeTextarea.js';
 import { decideKeyDownAction } from './inputBarKeydown.js';
 import { DialogHost } from './dialogs/DialogHost.js';
 import type { StreamingSegment } from '../ws/WsClient.js';
-import { mergeToolResults } from './toolResultMerge.js';
+import { mergeToolResults, extractMergedResult } from './toolResultMerge.js';
 
 // M5 review W1 — `AssistantMessageBody` pulls in the entire
 // markdown pipeline (react-markdown + remark-gfm +
@@ -396,7 +396,27 @@ function TerminalMessageBody({ role, raw }: { role: string; raw: unknown }) {
  *  consistent. The `data-testid="message-tool-result-orphan"`
  *  distinguishes orphans for e2e targeting (non-orphan toolResults
  *  never reach the DOM — they're consumed by the merger into
- *  their matching toolCall block's `result` field). */
+ *  their matching toolCall block's `result` field).
+ *
+ *  M5 review W1 — text extraction goes through the SAME
+ *  `extractMergedResult` helper the merger uses, so an orphan
+ *  with `content:[{text:'line1'},{text:'line2'}]` renders
+ *  `'line1line2'` and a matching toolCall with the same wire
+ *  payload also renders `'line1line2'`. The previous code
+ *  routed through `extractTextFromMessage` → `extractText`,
+ *  which inserted separators + `trimEnd()` between blocks —
+ *  the two render paths diverged on the same data.
+ *
+ *  M5 review W2 — the summary line ALWAYS carries `(orphan)`,
+ *  regardless of whether `toolCallId` is present. The previous
+ *  conditional (`toolCallId.length > 0` → `(orphan)`, else
+ *  plain `· result`) created two visually distinct summary
+ *  shapes for the same orphan scenario — operators couldn't
+ *  tell at a glance whether an unfolded result was orphan or
+ *  matched. The marker now reflects the merge-layer's invariant
+ *  (everything reaching `OrphanToolResultBody` is by
+ *  definition an orphan — the marker is an identity, not a
+ *  conditional). */
 function OrphanToolResultBody({ raw }: { raw: unknown }) {
   // Narrow the shape defensively — the merge function only
   // preserves toolResult messages with `role === 'toolResult'` +
@@ -405,12 +425,21 @@ function OrphanToolResultBody({ raw }: { raw: unknown }) {
   // with a sensible fallback rather than crashing the render.
   const obj = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
   const toolName = obj !== null && typeof obj.toolName === 'string' ? obj.toolName : 'tool';
-  const toolCallId = obj !== null && typeof obj.toolCallId === 'string' ? obj.toolCallId : '';
-  const isError = obj !== null && typeof obj.isError === 'boolean' ? obj.isError : false;
+  // M5 review W2 — `toolCallId` is read for display but the
+  // summary marker no longer depends on its presence; we keep
+  // the field extraction in case a future revision wants to
+  // surface the id inline (and so test fixtures that include a
+  // non-empty id still parse cleanly).
+  const _toolCallId = obj !== null && typeof obj.toolCallId === 'string' ? obj.toolCallId : '';
   // Joined text — same extraction rule the merge function uses,
   // so the rendered orphan body matches what the matching
-  // toolCall would have shown.
-  const text = extractTextFromMessage(raw);
+  // toolCall would have shown. `extractMergedResult` is the
+  // single source of truth (W1) — see
+  // `components/toolResultMerge.ts` for the join semantics
+  // (no separator; non-text blocks skipped).
+  const merged = extractMergedResult(raw);
+  const text = merged.text;
+  const isError = merged.isError;
   return (
     <details
       className="message-tool-details message-tool-result-orphan"
@@ -418,11 +447,7 @@ function OrphanToolResultBody({ raw }: { raw: unknown }) {
     >
       <summary className="message-tool-pill">
         <span aria-hidden="true">🔧</span> {toolName}
-        {toolCallId.length > 0 ? (
-          <span className="message-tool-orphan-id"> · result (orphan)</span>
-        ) : (
-          <span className="message-tool-orphan-id"> · result</span>
-        )}
+        <span className="message-tool-orphan-id"> · result (orphan)</span>
       </summary>
       <pre
         className={

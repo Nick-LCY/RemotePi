@@ -265,8 +265,29 @@ function readToolCallBlocks(value: unknown): readonly { id: string; block: Recor
 /** Build a `MergedToolResult` from a toolResult message. Joins
  *  `content[].text` blocks (the only content kind the wire carries
  *  in practice; non-text blocks are silently skipped at extraction
- *  time — image / binary blocks would simply not contribute). */
-function extractMergedResult(value: unknown): MergedToolResult {
+ *  time — image / binary blocks would simply not contribute).
+ *
+ *  **Exported** (M5 review W1) so the orphan-renderer
+ *  (`ChatView.tsx` `OrphanToolResultBody`) and the merger
+ *  (`mergeToolResults`) share one source of truth for the
+ *  joined-text semantics. Prior to this export, the orphan
+ *  path went through `extractTextFromMessage` →
+ *  `extractText(obj.content)` which uses a `\n` separator
+ *  between content blocks and `trimEnd()` — so the SAME wire
+ *  payload `content:[{text:'line1'},{text:'line2'}]` rendered
+ *  as `'line1\nline2'` when orphaned vs `'line1line2'` when
+ *  matched. The discrepancy confused operators and made the two
+ *  render paths impossible to reason about. Both now go
+ *  through `extractMergedResult`, which joins text blocks with
+ *  NO separator (each block's text is the model's emitted chunk
+ *  verbatim; the wire never inserts a delimiter between
+ *  blocks — adding one would invent content).
+ *
+ *  Contract: the joined text is purely the concatenation of
+ *  `content[].text` fields. Non-text blocks are skipped. The
+ *  `isError` flag is read defensively (defaults to `false`
+ *  when missing or non-boolean). */
+export function extractMergedResult(value: unknown): MergedToolResult {
   let text = '';
   let isError = false;
   if (value !== null && typeof value === 'object') {
