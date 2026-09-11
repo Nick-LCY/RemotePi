@@ -344,4 +344,21 @@ describe('AssistantMessageBody — link safety + custom renderers', () => {
     // Inside the <pre> there should be a <code class="markdown-code …">
     expect(html).toMatch(/<code class="markdown-code/);
   });
+
+  it('5.3 mailto: links do NOT carry target="_blank" / rel="noreferrer" (S3)', () => {
+    // M5 review S3 — opening a mailto: in a new tab is
+    // pointless (the browser hands off to the OS mail client,
+    // not a tab handle) and produces a useless blank tab the
+    // user has to close. The default in-tab behaviour is what
+    // we want for mailto:; http(s):// still get the hardening.
+    const html = render([{ type: 'text', text: '[email me](mailto:a@example.com)' }]);
+    const aMatch = html.match(/<a [^>]*href="mailto:a@example\.com"[^>]*>/);
+    expect(aMatch).not.toBeNull();
+    const anchor = aMatch![0];
+    expect(anchor).not.toContain('target="_blank"');
+    expect(anchor).not.toContain('rel="noreferrer"');
+    // The href is preserved so the browser's default mailto
+    // handling kicks in.
+    expect(anchor).toContain('href="mailto:a@example.com"');
+  });
 });

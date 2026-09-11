@@ -36,7 +36,7 @@
 // the protocol) — the only React state local to this subtree is
 // the controlled-input value in InputBar.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
 
 import {
@@ -48,8 +48,45 @@ import {
   useWsClient,
 } from '../ws/WsClientContext.js';
 import { DialogHost } from './dialogs/DialogHost.js';
-import { AssistantMessageBody } from './AssistantMessageBody.js';
 import type { StreamingSegment } from '../ws/WsClient.js';
+
+// M5 review W1 — `AssistantMessageBody` pulls in the entire
+// markdown pipeline (react-markdown + remark-gfm +
+// rehype-sanitize + micromark + mdast/hast/unist transitives,
+// ~170 KB raw / ~52 KB gzip). To stay under the 350 KB first-
+// load budget we lazy-load it: the main bundle never imports it
+// directly. The component is only needed for TERMINAL assistant
+// messages (the streaming-time path uses the lightweight
+// `StreamingDraftBody` below, which renders plain text / folded
+// `<details>` / tool pills — no markdown). The terminal branch
+// fires the dynamic import on first render.
+//
+// Lazy import reference: kept as a module-level constant so the
+// `prewarmMarkdownChunk` effect below can fire the SAME dynamic
+// import() on ChatView mount — Vite dedupes by URL, so this is
+// free at the network level. The chunk lands in the browser's
+// HTTP cache during the warm-up; the first real terminal
+// assistant message resolves the same `import()` Promise
+// instantly (no visible loading gap).
+const AssistantMessageBody = lazy(() =>
+  import('./AssistantMessageBody.js').then((m) => ({ default: m.AssistantMessageBody })),
+);
+
+/** Kick off the markdown chunk download in the background. Fire-
+ *  and-forget: we don't `await` it (ChatView mount shouldn't
+ *  block on a chunk it doesn't need yet) and we don't surface
+ *  the rejection (a failed preload only means the first terminal
+ *  message takes the normal React.lazy load path, which has its
+ *  own `<Suspense>` fallback). The catch is intentionally empty
+ *  — there's nothing useful to do with a preload failure here,
+ *  and logging would just spam the dev console for offline /
+ *  slow-network cases.
+ */
+function prewarmMarkdownChunk(): void {
+  void import('./AssistantMessageBody.js').catch(() => {
+    // intentional no-op — see comment above.
+  });
+}
 
 // ---------------------------------------------------------------------------
 // ChatView
@@ -60,8 +97,23 @@ import type { StreamingSegment } from '../ws/WsClient.js';
  *  `useXxxFor(session)`. `workDir` is plumbed through so the
  *  InputBar's `session: 'new'` prompt auto-fill can include
  *  `payload.work_dir` (裁定 A 方案 A — only the new-session
- *  prompt carries the work_dir field). */
+ *  prompt carries the work_dir field).
+ *
+ *  M5 review W1 — ChatView mounts the markdown chunk on
+ *  first paint (prewarm) so the user-visible first-load
+ *  doesn't carry the 170 KB chunk. The chunk only becomes
+ *  load-bearing when a terminal assistant message renders —
+ *  the streaming draft path renders plain text and never
+ *  touches `<AssistantMessageBody>`. */
 export function ChatView({ session, workDir }: { session: string; workDir: string }) {
+  useEffect(() => {
+    // Fire-and-forget preload of the markdown chunk. Runs once
+    // per ChatView mount; Vite caches the resolved module so
+    // the actual `React.lazy` import resolves synchronously
+    // (or near-instantly) when the first terminal assistant
+    // message lands.
+    prewarmMarkdownChunk();
+  }, []);
   return (
     <div className="chat-view" data-testid="chat-view" data-session={session}>
       <PhaseIndicator session={session} />
@@ -257,13 +309,30 @@ function StreamingDraftBody({ segments }: { segments: readonly StreamingSegment[
  *  `<AssistantMessageBody>` (markdown / folded thinking / tool
  *  pill final state); everything else goes through the existing
  *  `messageToItem` + `extractText` plain-text path unchanged (D6
- *  — user / toolResult stay plain). */
+ *  — user / toolResult stay plain).
+ *
+ *  M5 review W1 — `<AssistantMessageBody>` is lazy-loaded; we
+ *  wrap it in `<Suspense>` so React has a fallback during the
+ *  chunk fetch. The fallback is an empty `<span>` (not a
+ *  spinner / "loading…" text) because:
+ *    - The prewarm effect in `ChatView` typically lands the
+ *      chunk before the user reaches the first terminal
+ *      assistant message — the fallback almost never paints.
+ *    - When it does paint (cold cache, slow network), an empty
+ *      span keeps `.message-body`'s layout stable (no spinner
+ *      height jump); the assistant text just appears a frame
+ *      later. The user perceives "the message is here, content
+ *      coming in" rather than "the UI re-layed out". */
 function TerminalMessageBody({ role, raw }: { role: string; raw: unknown }) {
   if (role === 'assistant' && raw !== null && typeof raw === 'object') {
     const obj = raw as Record<string, unknown>;
     const content = obj.content;
     if (Array.isArray(content)) {
-      return <AssistantMessageBody content={content} />;
+      return (
+        <Suspense fallback={<span />}>
+          <AssistantMessageBody content={content} />
+        </Suspense>
+      );
     }
   }
   // Non-assistant (user / toolResult) or string content — old

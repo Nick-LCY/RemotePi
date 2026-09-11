@@ -1987,29 +1987,70 @@ export class WsClient {
    *  always the LAST tool segment gets the delta, and we open a
    *  fresh tool segment when no tool segment exists yet (defensive
    *  against out-of-order events where a `toolcall_delta` lands
-   *  before the matching `toolcall_start`). */
+   *  before the matching `toolcall_start`).
+   *
+   *  **Reference contract (M5 review C1)**: every mutation here
+   *  produces a fresh `streamingDraft` object AND a fresh
+   *  `segments` array AND exactly ONE `emitStateChange()` call.
+   *  `useSyncExternalStore` compares snapshots with `Object.is`,
+   *  so an in-place mutation (`draft.segments.push(…)` or
+   *  `draft.segments[idx] = …` with the same `draft` reference)
+   *  would silently skip the React re-render — the streaming tool
+   *  args would never visibly grow in the UI. The orphan path
+   *  (no draft / no tool segment yet) used to call
+   *  `openToolSegment` (which emits) and then keep mutating,
+   *  producing TWO emits and a half-applied state — also a
+   *  re-render hazard. This implementation collapses to a single
+   *  new-reference + single emit per delta. */
   private appendToolArgs(bucket: SessionBucket, data: unknown): void {
     const delta = extractToolDeltaText(data);
     if (delta === null) return;
     const existing = bucket.streamingDraft;
-    if (existing === null) {
-      // No draft yet — open one with an empty-named tool segment.
-      this.openToolSegment(bucket, data);
-    }
-    const draft = bucket.streamingDraft;
-    if (draft === null) return;
-    const idx = lastToolSegmentIndex(draft.segments);
+    // Build the next segments array off `existing` (or empty when
+    // there is no draft yet). Every code path here produces a NEW
+    // array so the consumer (`useSyncExternalStore`) observes a
+    // fresh snapshot identity.
+    const baseSegments: readonly StreamingSegment[] = existing !== null ? existing.segments : [];
+    const nextSegments = baseSegments.slice();
+    const idx = lastToolSegmentIndex(nextSegments);
     if (idx === -1) {
-      // Defensive — a delta for a type we never opened. Push a
-      // synthetic segment so the args aren't silently dropped
-      // (the user would otherwise see no tool activity at all).
-      draft.segments.push({ type: 'tool', name: '', args: delta });
-      this.emitStateChange();
-      return;
+      // No tool segment yet (either no draft at all, or a draft
+      // with only text/thinking segments) — open a synthetic
+      // tool segment so the args aren't silently dropped. Empty
+      // name reflects "we never saw a toolcall_start".
+      nextSegments.push({ type: 'tool', name: '', args: delta });
+    } else {
+      const tail = nextSegments[idx]!;
+      if (tail.type !== 'tool') return; // type-narrowing paranoia
+      // Replace — DO NOT mutate. The slice above already gave us
+      // a fresh array; replacing the slot here leaves the old
+      // array intact for any consumer holding the previous ref.
+      nextSegments[idx] = { ...tail, args: tail.args + delta };
     }
-    const tail = draft.segments[idx]!;
-    if (tail.type !== 'tool') return; // type-narrowing paranoia
-    draft.segments[idx] = { ...tail, args: tail.args + delta };
+    // Inherit id / role from the prior draft (when present) so
+    // the `message_end` → `clearStreamingDraft(messageId)` match
+    // still works on an orphan-opened draft. `extractMessageId`
+    // / `extractRole` are reused from the streaming path so the
+    // keys line up exactly.
+    const id = extractMessageId(data);
+    const role = extractRole(data);
+    bucket.streamingDraft = {
+      ...(existing !== null && existing.messageId !== undefined
+        ? { messageId: existing.messageId }
+        : id !== undefined
+          ? { messageId: id }
+          : {}),
+      ...(existing !== null && existing.role !== undefined
+        ? { role: existing.role }
+        : role !== undefined
+          ? { role }
+          : {}),
+      segments: nextSegments,
+    };
+    // Single emit per delta — matches `appendStreamingDraft` /
+    // `openToolSegment`'s contract. `_draftHasDelta` is NOT armed
+    // here (tool segments carry no duplicate-`*_end` risk; see
+    // `openToolSegment` comment for the rationale).
     this.emitStateChange();
   }
 
@@ -2162,15 +2203,16 @@ export class WsClient {
     // M5 §3 (D3 路线 B) — `streamingDraft` is now a segment list
     // (M3 single `text` → M5 `segments[]`); the empty-check
     // adapts from `=== null` (no draft at all) to
-    // `segments.length === 0` (no draft OR a draft with no
-    // accumulated content). Both shapes imply "nothing to lose"
-    // — the draft was either absent or trivially empty. Same
-    // semantic as the original M3 check.
+    // `streamingDraftIsEmpty(...)` (no draft OR a draft whose
+    // segments carry no content — equivalent to the M3
+    // `text === ''` contract, restored after the W3 review
+    // found that `segments.length === 0` would treat a draft
+    // produced by an empty `text_delta` as non-empty).
     const pendingIsEmpty =
       pending.messages.length === 0 &&
       pending.queue.steering.length === 0 &&
       pending.queue.followUp.length === 0 &&
-      (pending.streamingDraft === null || pending.streamingDraft.segments.length === 0) &&
+      streamingDraftIsEmpty(pending.streamingDraft) &&
       pending.sessionPhase === null &&
       pending.blockedOn.length === 0;
     const stemHasState =
@@ -2179,7 +2221,7 @@ export class WsClient {
         existing.messages.length > 0 ||
         existing.queue.steering.length > 0 ||
         existing.queue.followUp.length > 0 ||
-        (existing.streamingDraft !== null && existing.streamingDraft.segments.length > 0) ||
+        !streamingDraftIsEmpty(existing.streamingDraft) ||
         existing.blockedOn.length > 0 ||
         existing.sessionList !== null);
     if (stemHasState) {
@@ -2636,6 +2678,39 @@ function lastToolSegmentIndex(segments: readonly StreamingSegment[]): number {
     if (segments[i]!.type === 'tool') return i;
   }
   return -1;
+}
+
+/** True when the draft carries no meaningful content — i.e.
+ *  every text / thinking segment has `text === ''` AND every
+ *  tool segment has `args === ''` (tool `name` is metadata and
+ *  does NOT count as content; we only care about whether the
+ *  user-facing payload is empty).
+ *
+ *  M5 review W3 — `migratePendingBucket`'s M5-first-cut
+ *  judgment was `segments.length === 0`, which dropped the M3
+ *  "draft present but empty" semantic: an empty text_delta
+ *  produced `[{type:'text', text:''}]` (length 1, no content).
+ *  Under M3, that draft was `text === ''` → empty. Under M5
+ *  pre-fix, it was length-1 → non-empty. Two extremes of
+ *  semantic drift (M5 said "has content" while the user saw
+ *  nothing). This helper restores the M3 contract by checking
+ *  each segment's content field instead of the array length.
+ *  An empty draft is safe to migrate (or drop) — there's
+ *  nothing the user could lose. */
+function streamingDraftIsEmpty(draft: StreamingDraft | null): boolean {
+  if (draft === null) return true;
+  const segs = draft.segments;
+  if (segs.length === 0) return true;
+  for (let i = 0; i < segs.length; i += 1) {
+    const seg = segs[i]!;
+    if (seg.type === 'text' || seg.type === 'thinking') {
+      if (seg.text !== '') return false;
+    } else {
+      // tool segment — only `args` counts as content.
+      if (seg.args !== '') return false;
+    }
+  }
+  return true;
 }
 
 /** Pluck a queue_update payload. Shape is

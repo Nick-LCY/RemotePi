@@ -189,11 +189,28 @@ function AssistantSegment({ piece }: AssistantSegmentProps): ReactNode {
 // strict `Components` type without needing to model the full
 // hast Element shape.
 const markdownComponents: Record<string, unknown> = {
-  a: ({ href, children }: { href?: string; children?: ReactNode }) => (
-    <a href={href ?? '#'} target="_blank" rel="noreferrer">
-      {children}
-    </a>
-  ),
+  a: ({ href, children }: { href?: string; children?: ReactNode }) => {
+    // M5 review S3 — `mailto:` links should NOT open in a new
+    // tab. The browser routes them to the OS mail client
+    // (which a tab/window handle can't reach anyway), and
+    // forcing `target="_blank"` would spawn a useless blank
+    // tab the user has to close. Same idea for any other
+    // protocol the browser doesn't open inline — we let the
+    // browser follow its default behaviour. The
+    // `target="_blank" rel="noreferrer"` hardening is only
+    // applied to http(s):// URLs, which are the actually-
+    // navigable targets where referrer leakage + tab-jacking
+    // are real risks.
+    const isExternal = href !== undefined && /^(https?:)/i.test(href);
+    return (
+      <a
+        href={href ?? '#'}
+        {...(isExternal ? { target: '_blank', rel: 'noreferrer' } : {})}
+      >
+        {children}
+      </a>
+    );
+  },
   code: ({
     node,
     className,

@@ -1078,9 +1078,12 @@ td code {
   background: var(--surface-2);
 }
 .message-thinking-details.assistant-thinking {
-  /* terminal-state variant — slightly more pronounced to
-   * distinguish from the streaming-time fold. */
-  border-style: solid;
+  /* terminal-state variant — currently shares the base border
+   * (the rule is kept as a hook for future visual divergence
+   * between streaming-time and terminal-time folds). The
+   * explicit `border-style: solid` that used to live here was
+   * redundant — the shorthand `border: 1px solid var(--border)`
+   * above already pins the style to `solid`. */
 }
 
 .thinking-summary {
@@ -1123,8 +1126,12 @@ td code {
   background: var(--surface-2);
 }
 .message-tool-details.assistant-tool-call {
-  /* terminal-state variant — slightly more pronounced. */
-  border-style: solid;
+  /* terminal-state variant — currently shares the base border
+   * (the rule is kept as a hook for future visual divergence
+   * between streaming-time and terminal-time folds). The
+   * explicit `border-style: solid` that used to live here was
+   * redundant — the shorthand `border: 1px solid var(--border)`
+   * above already pins the style to `solid`. */
 }
 
 .message-tool-pill {

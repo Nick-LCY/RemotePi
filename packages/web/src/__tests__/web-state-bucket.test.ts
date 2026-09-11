@@ -1356,5 +1356,141 @@ describe('WsClient M5 §3 — streaming draft segment accumulation', () => {
     );
     expect(ws.streamingDraft).toBeNull();
   });
+
+  it('8.15 consecutive toolcall_delta emits produce fresh streamingDraft refs (Object.is inequality) AND args accumulate monotonically', () => {
+    // M5 review C1 — `appendToolArgs` must produce a fresh
+    // `streamingDraft` object (and fresh `segments` array) on
+    // every delta so `useSyncExternalStore`'s `Object.is`
+    // equality check observes the change and triggers a React
+    // re-render. The pre-fix implementation mutated
+    // `draft.segments[idx] = …` in place with the same
+    // `streamingDraft` reference — `Object.is` would return
+    // `true` and React would skip the re-render, so the
+    // streaming tool args would never visibly grow in the UI.
+    const { ws, fake } = makeConnectedWs();
+    // Open a tool segment first (the realistic ordering — a
+    // `toolcall_start` is always followed by `toolcall_delta`s).
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_start', toolName: 'bash', id: 'tc-ref' },
+      }),
+      fake,
+    );
+    const refAfterStart = ws.streamingDraft;
+    const segmentsRefAfterStart = ws.streamingDraft!.segments;
+    expect(refAfterStart).not.toBeNull();
+    // First delta.
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_delta', delta: '{"cmd":' },
+      }),
+      fake,
+    );
+    const refAfterDelta1 = ws.streamingDraft;
+    const segmentsRefAfterDelta1 = ws.streamingDraft!.segments;
+    // The draft REFERENCE itself must differ from the pre-delta
+    // reference (this is the C1 contract — `Object.is` on the
+    // snapshot).
+    expect(Object.is(refAfterDelta1, refAfterStart)).toBe(false);
+    // The segments ARRAY must also be a fresh slice (so any
+    // consumer holding the previous array reference observes
+    // identity change).
+    expect(Object.is(segmentsRefAfterDelta1, segmentsRefAfterStart)).toBe(false);
+    // Args accumulate monotonically.
+    expect(ws.streamingDraft!.segments[0]).toEqual({
+      type: 'tool',
+      toolCallId: 'tc-ref',
+      name: 'bash',
+      args: '{"cmd":',
+    });
+    // Second delta.
+    simulateInbound(
+      ws,
+      event(undefined, 'message_update', {
+        assistantMessageEvent: { type: 'toolcall_delta', delta: '"ls"}' },
+      }),
+      fake,
+    );
+    const refAfterDelta2 = ws.streamingDraft;
+    const segmentsRefAfterDelta2 = ws.streamingDraft!.segments;
+    // Each delta produces a fresh draft ref + fresh segments
+    // array — pin both transitions.
+    expect(Object.is(refAfterDelta2, refAfterDelta1)).toBe(false);
+    expect(Object.is(segmentsRefAfterDelta2, segmentsRefAfterDelta1)).toBe(false);
+    // Args continue to accumulate.
+    expect(ws.streamingDraft!.segments[0]).toEqual({
+      type: 'tool',
+      toolCallId: 'tc-ref',
+      name: 'bash',
+      args: '{"cmd":"ls"}',
+    });
+  });
+
+  it('8.16 orphan toolcall_delta (no prior toolcall_start) still migrates an empty text_delta draft (W3 — empty-by-segment semantic)', () => {
+    // M5 review W3 — `migratePendingBucket` judges a draft as
+    // "empty" by `segments.length === 0`. The M3 contract was
+    // `text === ''` (a draft that exists but carries no content
+    // is still empty). With the new segment shape, an empty
+    // text_delta produces `[{type:'text', text:''}]` — a
+    // non-empty segments array but with no segment carrying
+    // real content. The fix: a draft is empty iff every
+    // text/thinking segment has `text === ''` AND every tool
+    // segment has `args === ''` (i.e. nothing meaningful has
+    // accumulated). This test pins the W3 semantic by
+    // setting up the migration's "destination bucket already
+    // exists with state" path — the migration evaluates
+    // `pendingIsEmpty` and would refuse to overwrite if
+    // `streamingDraftIsEmpty` returned false on an empty
+    // segment list. Pre-fix the migration would refuse; with
+    // the W3 helper it proceeds (drops the pending bucket and
+    // keeps the populated stem bucket).
+    const { ws, fake } = makeConnectedWs();
+    ws.setCurrentSessionKey('new');
+    // Pre-populate the stem bucket with state — this is the
+    // "destination already has state" branch in
+    // `migratePendingBucket`. session_state carries the stem
+    // session key, so the 'realStem-w3' bucket exists with
+    // sessionPhase='ready' and workDir='/h'.
+    simulateInbound(ws, sessionState('realStem-w3', 'ready', [], '/h'), fake);
+    // Now build a 'new' bucket whose streamingDraft holds only
+    // an empty text segment (the W3 extreme: a draft exists
+    // but carries no content). We deliberately do NOT call
+    // `sessionState('new', ...)` here — that would set
+    // sessionPhase to 'spawning' and make `pendingIsEmpty`
+    // false regardless of the W3 helper. Instead we let the
+    // 'new' bucket be created lazily by the message_update
+    // handler (sessionPhase stays null, queue / blockedOn
+    // stay empty).
+    simulateInbound(
+      ws,
+      event('new', 'message_update', {
+        assistantMessageEvent: { type: 'text_delta', delta: '' },
+      }),
+      fake,
+    );
+    // Confirm the W3 orphan shape: the 'new' bucket holds a
+    // draft with one empty text segment — `segments.length === 1`
+    // (the M5 pre-fix check would call this non-empty) but no
+    // segment carries any content (the M3-equivalent check).
+    const pendingDraft = ws.bucketFor('new').streamingDraft;
+    expect(pendingDraft).not.toBeNull();
+    expect(pendingDraft!.segments).toEqual([{ type: 'text', text: '' }]);
+    // session_state{session:<stem>} triggers migration. With
+    // the W3 `streamingDraftIsEmpty` helper, the pending
+    // bucket is judged empty (segments exist but carry no
+    // content) and is dropped — the populated stem bucket is
+    // preserved.
+    simulateInbound(ws, sessionState('realStem-w3', 'ready', [], '/h'), fake);
+    // Stem bucket still has its original state (migration
+    // did NOT refuse-and-merge, did NOT clobber).
+    expect(ws.bucketFor('realStem-w3').sessionPhase).toBe('ready');
+    expect(ws.bucketFor('realStem-w3').streamingDraft).toBeNull();
+    // 'new' bucket dropped (lazy-rebuild returns empty).
+    expect(ws.bucketFor('new').messages).toEqual([]);
+    expect(ws.bucketFor('new').streamingDraft).toBeNull();
+    expect(ws.bucketFor('new').queue).toEqual({ steering: [], followUp: [] });
+  });
 });
 
