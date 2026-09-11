@@ -194,12 +194,20 @@ describe('AssistantMessageBody — folded segments', () => {
   });
 
   it('3.2 toolCall segment renders a folded pill with name + JSON args + result', () => {
+    // M5 验收期 gap — the `result` shape is now `MergedToolResult`
+    // (`{text, isError}`) attached by `mergeToolResults` in the
+    // rendering layer; see `components/toolResultMerge.ts`. The
+    // pre-fix test used an arbitrary object (`{stdout, code}`)
+    // which stringifySafe would have rendered as JSON; the new
+    // shape renders `result.text` as plain text with isError
+    // styling. We pin the new shape here so a future drift in
+    // the merge contract trips this test loudly.
     const html = render([
       {
         type: 'toolCall',
         name: 'bash',
         arguments: { cmd: 'ls' },
-        result: { stdout: 'file.txt', code: 0 },
+        result: { text: 'stdout: file.txt\ncode: 0', isError: false },
       },
     ]);
     // Pill summary with the tool name + emoji.
@@ -209,18 +217,44 @@ describe('AssistantMessageBody — folded segments', () => {
     expect(html).toContain('message-tool-pill');
     expect(html).toContain('🔧');
     expect(html).toContain('bash');
-    // Args + result as JSON (D4 — untruncated). `renderToStaticMarkup`
-    // HTML-escapes `"` to `"`, so we assert on the escaped form.
+    // Args + result (D4 — untruncated). `renderToStaticMarkup`
+    // HTML-escapes `"` to `&quot;`, so we assert on substrings
+    // that survive escaping.
     expect(html).toContain('参数');
     expect(html).toContain('结果');
+    // Arguments still serialised via stringifySafe.
     expect(html).toContain('cmd');
     expect(html).toContain('ls');
-    expect(html).toContain('stdout');
-    expect(html).toContain('file.txt');
-    expect(html).toContain('code');
-    expect(html).toContain('0');
+    // Result rendered as plain text from `result.text`.
+    expect(html).toContain('stdout: file.txt');
+    expect(html).toContain('code: 0');
+    // Success path does NOT carry the error styling.
+    expect(html).toContain('class="message-tool-result"');
+    expect(html).not.toContain('message-tool-result-error');
+    expect(html).not.toContain('data-testid="assistant-tool-result-error"');
     // Not open by default.
     expect(html).not.toMatch(/<details[^>]*\bopen\b/);
+  });
+
+  it('3.2b toolCall with isError: true result applies the error styling', () => {
+    // M5 验收期 gap — error results carry the
+    // `.message-tool-result-error` class so the CSS border /
+    // background flags the failure. The data-testid also flips
+    // to `assistant-tool-result-error` for e2e targeting.
+    const html = render([
+      {
+        type: 'toolCall',
+        name: 'bash',
+        arguments: { cmd: 'rm /missing' },
+        result: { text: 'rm: cannot remove /missing: No such file or directory', isError: true },
+      },
+    ]);
+    expect(html).toContain('结果');
+    expect(html).toContain('class="message-tool-result message-tool-result-error"');
+    expect(html).toContain('data-testid="assistant-tool-result-error"');
+    expect(html).toContain('cannot remove /missing');
+    // Success-variant testids are absent.
+    expect(html).not.toContain('data-testid="assistant-tool-result"');
   });
 
   it('3.3 toolCall without result shows the "pending…" hint', () => {

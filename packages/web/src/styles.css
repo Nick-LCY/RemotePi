@@ -1236,6 +1236,41 @@ td code {
   max-height: 20rem;
   overflow: auto;
 }
+
+/* M5 验收期 gap fix — tool result error styling. Applied to the
+   `<pre class="message-tool-result">` when `result.isError === true`
+   (the MergedToolResult shape from `mergeToolResults`). Visual
+   treatment: red-tinted background + red border + red text, so the
+   user spots a failed tool call at a glance. Uses the same
+   `--state-offline` CSS variable family as `.input-bar-error` /
+   `.dialog-error` / `.dialog-host-toast` so the operator learns one
+   "red = something failed" signal across all surfaces. */
+.message-tool-result.message-tool-result-error {
+  background: rgba(192, 57, 43, 0.08);
+  border: 1px solid rgba(192, 57, 43, 0.45);
+  color: var(--state-offline);
+}
+
+/* M5 验收期 gap fix — orphan toolResult folded details. Applied
+   when `mergeToolResults` couldn't match a toolResult to any
+   prior assistant toolCall (typical: MESSAGES_CAP truncated the
+   assistant message but the toolResult survived). The wrapper
+   uses the existing `.message-tool-details` chrome (folded
+   summary, default-folded `<details>`) and the `.message-tool-
+   pill` summary, but adds the `.message-tool-result-orphan`
+   modifier so the `(orphan)` suffix can use the muted colour and
+   the orphan-id span can sit inline without changing the
+   terminal pill's typography. */
+.message-tool-details.message-tool-result-orphan {
+  border-color: rgba(154, 154, 166, 0.55);
+}
+.message-tool-details.message-tool-result-orphan .message-tool-orphan-id {
+  font-size: 0.78em;
+  color: var(--muted);
+  margin-left: 0.2rem;
+  letter-spacing: 0.02em;
+}
+
 .message-tool-pending {
   margin: 0;
   font-size: 0.82rem;

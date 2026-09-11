@@ -11,8 +11,10 @@
 //       - `text` → ReactMarkdown (GFM + sanitize)
 //       - `thinking` → `<details>` default folded, plain-text body
 //       - `toolCall` → folded pill (summary = 🔧 + name; body =
-//         JSON.stringify(arguments, null, 2) + result JSON when
-//         present; D4 裁定 keeps the result untruncated)
+//         参数 (stringifySafe(arguments)) + 结果 (`result.text` 当
+//         有 MergedToolResult; D4 裁定 keeps the result
+//         untruncated); `result.isError === true` 时结果区加
+//         `.message-tool-result-error` 样式)
 //       - 未知 type → 纯文本 fallback (extractText path)
 //   - `null` / `undefined` → empty container (the user sees no
 //     body — this matches the M3 "missing content" fallback and
@@ -30,6 +32,14 @@
 // the suite intentionally avoids pulling in a jsdom / happy-dom
 // runtime (project policy, see `choice-page-flow.test.ts` header
 // + ADR-0009 §决策 4).
+//
+// M5 验收期 gap — toolResult 渲染层归并：
+//   - `toolCall.result` 形状从过去的任意对象收紧为 `MergedToolResult`
+//     （`{text: string, isError: boolean}`），由 `mergeToolResults`
+//     在 ChatView 层挂到 toolCall 块上；本组件只读取它，不做任何
+//     推断或回退。
+//   - `result` 未到（assistant 刚落地、toolResult 还在路上）→ 保留
+//     现有 `pending…` 提示（此为精确的瞬态语义，不是缺陷）。
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -127,6 +137,15 @@ function AssistantSegment({ piece }: AssistantSegmentProps): ReactNode {
       const name = typeof obj.name === 'string' ? obj.name : 'tool';
       const args = obj.arguments;
       const result = obj.result;
+      // M5 验收期 gap fix — `result` shape is the `MergedToolResult`
+      // attached by `mergeToolResults` (see
+      // `components/toolResultMerge.ts`): `{text, isError}`.
+      // Anything else (older test fixtures that pass an arbitrary
+      // object, drift in the wire shape) falls through to the
+      // `pending…` hint rather than rendering an unexpected
+      // structure — the merge function is the single source of
+      // truth for `result` shape today.
+      const mergedResult = readMergedToolResult(result);
       return (
         <details
           className="message-tool-details assistant-tool-call"
@@ -138,10 +157,19 @@ function AssistantSegment({ piece }: AssistantSegmentProps): ReactNode {
           <div className="message-tool-body">
             <strong>参数</strong>
             <pre className="message-tool-args">{stringifySafe(args ?? {})}</pre>
-            {result !== undefined ? (
+            {mergedResult !== null ? (
               <>
                 <strong>结果</strong>
-                <pre className="message-tool-result">{stringifySafe(result)}</pre>
+                <pre
+                  className={
+                    mergedResult.isError
+                      ? 'message-tool-result message-tool-result-error'
+                      : 'message-tool-result'
+                  }
+                  data-testid={mergedResult.isError ? 'assistant-tool-result-error' : 'assistant-tool-result'}
+                >
+                  {mergedResult.text}
+                </pre>
               </>
             ) : (
               <p className="message-tool-pending">pending…</p>
@@ -253,4 +281,34 @@ function stringifySafe(value: unknown): string {
   } catch {
     return '[unserializable]';
   }
+}
+
+/** Narrow a `toolCall.result` value to the `MergedToolResult`
+ *  shape that `mergeToolResults` attaches. Returns `null` for
+ *  any shape that doesn't match — the caller falls back to the
+ *  `pending…` hint, which is the correct user-visible state for
+ *  "no result yet" (and also for "result arrived in an
+ *  unexpected shape", which is a wire-format drift we don't want
+ *  to render in a way that misleads the operator).
+ *
+ *  Contract:
+ *    - `result` must be an object (not a string, number, etc.)
+ *    - `text` must be a string (the joined toolResult content)
+ *    - `isError` is optional; defaults to `false` when missing.
+ *
+ *  Pure function; no side effects; cheap enough to call inline
+ *  per toolCall block (each assistant message carries at most a
+ *  handful). The shape is exported from `toolResultMerge.ts` so
+ *  this helper is the only spot in the web package that does the
+ *  narrowing — future changes to the result shape ripple through
+ *  here + the merge function (one source of truth for the wire
+ *  side, one source of truth for the render side). */
+function readMergedToolResult(value: unknown): { text: string; isError: boolean } | null {
+  if (value === null || typeof value !== 'object') return null;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.text !== 'string') return null;
+  return {
+    text: obj.text,
+    isError: typeof obj.isError === 'boolean' ? obj.isError : false,
+  };
 }

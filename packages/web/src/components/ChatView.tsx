@@ -51,6 +51,7 @@ import { useAutoResizeTextarea } from '../hooks/useAutoResizeTextarea.js';
 import { decideKeyDownAction } from './inputBarKeydown.js';
 import { DialogHost } from './dialogs/DialogHost.js';
 import type { StreamingSegment } from '../ws/WsClient.js';
+import { mergeToolResults } from './toolResultMerge.js';
 
 // M5 review W1 — `AssistantMessageBody` pulls in the entire
 // markdown pipeline (react-markdown + remark-gfm +
@@ -198,6 +199,21 @@ function MessageList({ session }: { session: string }) {
   const messages = useMessagesFor(session);
   const draft = useStreamingDraftFor(session);
 
+  // M5 验收期 gap fix — tool result 渲染层归并。`mergeToolResults`
+  // walks the per-session bucket's `messages` array, consumes
+  // toolResult messages whose `toolCallId` matches a prior
+  // assistant message's toolCall block, and attaches the
+  // normalised `{text, isError}` payload to that block
+  // (immutably, via shallow-copy). Orphan toolResults (no
+  // matching toolCall — e.g. MESSAGES_CAP truncated the
+  // assistant message) are preserved with `__mergedOrphan: true`
+  // and rendered as folded `<details>` by `TerminalMessageBody`'s
+  // toolResult branch. Pure function; never mutates the input;
+  // runs cheaply on every render (assistant turns carry ≤ a
+  // handful of toolCalls; toolResult count is bounded by
+  // `MESSAGES_CAP` at 1k).
+  const mergedMessages = useMemo(() => mergeToolResults(messages), [messages]);
+
   // No virtualization for now — the MESSAGES_CAP of 1k keeps the DOM
   // small enough that simple flex layout outperforms virtualized lists
   // (which add runtime + accessibility complexity we don't need yet).
@@ -205,8 +221,8 @@ function MessageList({ session }: { session: string }) {
   // shape below (item = role + text) is the right abstraction.
   const items = useMemo(() => {
     const list: MessageItem[] = [];
-    for (let i = 0; i < messages.length; i += 1) {
-      list.push(messageToItem(messages[i], i));
+    for (let i = 0; i < mergedMessages.length; i += 1) {
+      list.push(messageToItem(mergedMessages[i], i));
     }
     if (draft !== null && draft.segments.length > 0) {
       list.push({
@@ -217,7 +233,7 @@ function MessageList({ session }: { session: string }) {
       });
     }
     return list;
-  }, [messages, draft]);
+  }, [mergedMessages, draft]);
 
   return (
     <section className="card message-list" aria-label="Conversation" data-testid="message-list">
@@ -309,9 +325,12 @@ function StreamingDraftBody({ segments }: { segments: readonly StreamingSegment[
 /** Render a terminal message body inside `.message-body`. Assistant
  *  messages with an array `content` delegate to
  *  `<AssistantMessageBody>` (markdown / folded thinking / tool
- *  pill final state); everything else goes through the existing
+ *  pill final state); orphan toolResult messages go through
+ *  `<OrphanToolResultBody>` (folded `<details>` summary so a
+ *  truncated-by-MESSAGES_CAP result never paints raw on
+ *  screen); everything else goes through the existing
  *  `messageToItem` + `extractText` plain-text path unchanged (D6
- *  — user / toolResult stay plain).
+ *  — user / plain assistant content stay plain).
  *
  *  M5 review W1 — `<AssistantMessageBody>` is lazy-loaded; we
  *  wrap it in `<Suspense>` so React has a fallback during the
@@ -324,7 +343,16 @@ function StreamingDraftBody({ segments }: { segments: readonly StreamingSegment[
  *      span keeps `.message-body`'s layout stable (no spinner
  *      height jump); the assistant text just appears a frame
  *      later. The user perceives "the message is here, content
- *      coming in" rather than "the UI re-layed out". */
+ *      coming in" rather than "the UI re-layed out".
+ *
+ *  M5 验收期 gap fix — toolResult 分支从纯文本路径切换为折叠
+ *  details。`mergeToolResults` 已经把「能归并到 assistant toolCall
+ *  块的」toolResult 消费掉了；走到这条分支的是「孤儿」toolResult
+ *  （找不到匹配 toolCall——典型场景是 MESSAGES_CAP 截断后丢了
+ *  上面 assistant 的 toolCall，但 toolResult 还在 1k 窗口内）。
+ *  折作为 `<details>` 摘要 + `pre` 内容，避免 29k 字符的 result
+ *  裸文本刷屏；isError 为真时加 `.message-tool-result-error`
+ *  样式。 */
 function TerminalMessageBody({ role, raw }: { role: string; raw: unknown }) {
   if (role === 'assistant' && raw !== null && typeof raw === 'object') {
     const obj = raw as Record<string, unknown>;
@@ -337,7 +365,10 @@ function TerminalMessageBody({ role, raw }: { role: string; raw: unknown }) {
       );
     }
   }
-  // Non-assistant (user / toolResult) or string content — old
+  if (role === 'toolResult') {
+    return <OrphanToolResultBody raw={raw} />;
+  }
+  // Non-assistant (user / plain assistant string content) — old
   // plain-text path. Preserves e2e spec testid / className anchors.
   const text = extractTextFromMessage(raw);
   return (
@@ -349,6 +380,60 @@ function TerminalMessageBody({ role, raw }: { role: string; raw: unknown }) {
         </span>
       ))}
     </>
+  );
+}
+
+/** Render an orphan toolResult as a folded `<details>`. Survives
+ *  `mergeToolResults` only when no matching toolCall was found in
+ *  the prior assistant messages (typical: MESSAGES_CAP truncated
+ *  the assistant message). Folding is mandatory: a single
+ *  toolResult payload can be ~29k chars, and rendering it as raw
+ *  text would dominate the scroll area uncollapsed (the exact
+ *  bug this fix is closing).
+ *
+ *  Style: shares `.message-tool-details` / `.message-tool-result`
+ *  with the terminal toolCall pill so the visual treatment is
+ *  consistent. The `data-testid="message-tool-result-orphan"`
+ *  distinguishes orphans for e2e targeting (non-orphan toolResults
+ *  never reach the DOM — they're consumed by the merger into
+ *  their matching toolCall block's `result` field). */
+function OrphanToolResultBody({ raw }: { raw: unknown }) {
+  // Narrow the shape defensively — the merge function only
+  // preserves toolResult messages with `role === 'toolResult'` +
+  // string `toolCallId`. We re-extract the same fields here so
+  // a future drift in either layer surfaces a folded details
+  // with a sensible fallback rather than crashing the render.
+  const obj = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+  const toolName = obj !== null && typeof obj.toolName === 'string' ? obj.toolName : 'tool';
+  const toolCallId = obj !== null && typeof obj.toolCallId === 'string' ? obj.toolCallId : '';
+  const isError = obj !== null && typeof obj.isError === 'boolean' ? obj.isError : false;
+  // Joined text — same extraction rule the merge function uses,
+  // so the rendered orphan body matches what the matching
+  // toolCall would have shown.
+  const text = extractTextFromMessage(raw);
+  return (
+    <details
+      className="message-tool-details message-tool-result-orphan"
+      data-testid="message-tool-result-orphan"
+    >
+      <summary className="message-tool-pill">
+        <span aria-hidden="true">🔧</span> {toolName}
+        {toolCallId.length > 0 ? (
+          <span className="message-tool-orphan-id"> · result (orphan)</span>
+        ) : (
+          <span className="message-tool-orphan-id"> · result</span>
+        )}
+      </summary>
+      <pre
+        className={
+          isError
+            ? 'message-tool-result message-tool-result-error'
+            : 'message-tool-result'
+        }
+      >
+        {text}
+      </pre>
+    </details>
   );
 }
 
