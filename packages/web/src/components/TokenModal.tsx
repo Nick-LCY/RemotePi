@@ -58,8 +58,12 @@
 //
 // 任务 07 才实现完整 `useFocusTrap` + `useFocusOnClose` + 焦点
 // 归还。本任务只 `autoFocus` 输入框（required 模式 mount 即聚
-// 焦；closable 模式 mount 即聚焦，便于用户立即键入）。Esc 键关闭
-// 已经在 closable 模式下实现（keydown 监听器）。
+// 焦；closable 模式 mount 即聚焦，便于用户立即键入）。
+//
+// M5 task 08 review W2 — Escape 关闭路径走 `useFocusTrap` 的
+// `onEscape` 回调（closable 模式唯一 Escape 入口）。本组件不再
+// 挂额外的 `window keydown Escape` listener（避免双重触发
+// onClose——双触发 bug 已修复，见 W2 注释）。
 //
 // ## Migration note (D9)
 //
@@ -162,24 +166,16 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
   // double-mount case where the autofocus attribute can be
   // consumed by the first mount and the effect fires after the
   // second mount, ensuring focus lands on the visible input.
+  //
+  // M5 task 08 review W2 — Escape 关闭路径：上一版这里还有一个
+  // 显式 `window.addEventListener('keydown', ...)` effect，
+  // 与上方 `useFocusTrap` 的 `onEscape` 形成双重触发（同一按键
+  // 触发 onClose 两次）。`useFocusTrap` 已在 closable 模式下挂
+  // document keydown listener 处理 Escape——是 Escape 的唯一
+  // 入口。该 useEffect 已删除（清理死代码 / 双触发路径）。
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
-
-  // Closable-mode close handler — bound to Esc keydown on the
-  // modal root. Required mode ignores Esc entirely (D10).
-  useEffect(() => {
-    if (required) return undefined;
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        onClose?.();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [required, onClose]);
 
   const handleSubmit = useCallback(
     (event: React.FormEvent<HTMLFormElement>): void => {

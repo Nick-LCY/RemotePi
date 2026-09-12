@@ -203,6 +203,59 @@ function readAuth(): { token: string | null; workDir: string | null; session: st
  *  handlers set the same message via `setStorageError(true)`. */
 const STORAGE_ERROR_COPY = '浏览器禁用了本地存储，无法保存 token';
 
+/** Pure handlers for opening the two App-level modals (Settings
+ *  → TokenModal closable + Sidebar WorkDirs tab → DirectoryBrowser)
+ *  with the **mobile drawer auto-close** side effect — M5 task 08
+ *  review W1 焦点陷阱互斥 (focus trap mutual exclusion).
+ *
+ *  ## Why both modals close the drawer
+ *
+ *  PRD §D12 specifies the z-index stack `toast(100) < sidebar(200)
+ *  < dialog-host(300) < token-modal(400)` — modals therefore
+ *  visually overlay the drawer on mobile. But z-index alone doesn't
+ *  solve the focus-trap conflict: both AppShell's drawer (sidebar
+ *  drawer when `sidebarOpen=true` on mobile) AND the modal
+ *  component (TokenModal closable / DirectoryBrowser) install
+ *  document-level `keydown` listeners via `useFocusTrap`. With
+ *  both `active=true` at once, a single Escape key fires
+ *  `onClose`/`onCancel` on BOTH layers (modal closes AND drawer
+ *  closes), and Tab keys are intercepted twice (preventDefault +
+ *  focus jumps from each listener, doubling the move).
+ *
+ *  The simplest contract that eliminates the conflict is
+ *  **modal-over-drawer exclusive**: opening any modal forces
+ *  the drawer closed first, so only ONE focus trap is active
+ *  at any moment. This matches the visual stacking (modal covers
+ *  drawer) and aligns with the user's mental model ("opening a
+ *  dialog should hide the thing behind it"). The alternative —
+ *  App-level modalCount coordination of trap `active` flags — adds
+ *  plumbing for no UX gain (the user never wants both visible).
+ *
+ *  Pure helpers extracted for unit testing (`app-modal-sidebar-mutex.test.ts`).
+ *  The inline `useCallback` wrappers in `<App />` (`handleSettingsClick`
+ *  / `handleBrowseWorkDirsClick`) close over the React setters,
+ *  which have stable identity across renders — so the resulting
+ *  handler identity is stable (no spurious effect re-runs in
+ *  `useFocusTrap` / `useEffect([onCloseSidebar])`). */
+export function openSettingsAndCloseDrawer(args: {
+  setSettingsOpen: (open: boolean) => void;
+  setSidebarOpen: (open: boolean) => void;
+}): void {
+  args.setSettingsOpen(true);
+  // W1 — 焦点陷阱互斥：modal 打开前先收抽屉，保证 document 上
+  // 至多一个 useFocusTrap keydown listener。
+  args.setSidebarOpen(false);
+}
+
+export function openBrowserAndCloseDrawer(args: {
+  setBrowserOpen: (open: boolean) => void;
+  setSidebarOpen: (open: boolean) => void;
+}): void {
+  args.setBrowserOpen(true);
+  // W1 — 同上（DirectoryBrowser 也是 trap 全开，详见组件 header）。
+  args.setSidebarOpen(false);
+}
+
 /** Pure handler for the closable-mode TokenModal flow (M5 task 05
  *  D10 + task 06 review W2). Extracted out of `<App />` so the
  *  W2 single-connect invariant can be unit-tested without
@@ -420,10 +473,14 @@ export function App() {
   // WorkDirsTab 「浏览添加」 button dispatches `setBrowserOpen(true)`
   // via the `onBrowseWorkDirsClick` callback.
   const handleSettingsClick = useCallback(() => {
-    setSettingsOpen(true);
+    // W1 — 焦点陷阱互斥：开 modal 前先收抽屉。openSettingsAndCloseDrawer
+    // 是纯函数 helper（见文件 header 注释），React setter identity
+    // 稳定（useState 返回值）所以 useCallback deps 为空即可。
+    openSettingsAndCloseDrawer({ setSettingsOpen, setSidebarOpen });
   }, []);
   const handleBrowseWorkDirsClick = useCallback(() => {
-    setBrowserOpen(true);
+    // W1 — 同上（DirectoryBrowser trap 全开，开之前先收抽屉）。
+    openBrowserAndCloseDrawer({ setBrowserOpen, setSidebarOpen });
   }, []);
   const handleCloseSettings = useCallback(() => {
     setSettingsOpen(false);

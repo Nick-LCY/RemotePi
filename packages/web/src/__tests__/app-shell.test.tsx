@@ -35,7 +35,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AppShell } from '../components/AppShell.js';
+import { AppShell, computeInert } from '../components/AppShell.js';
 import { MobileTopBar } from '../components/MobileTopBar.js';
 import { SessionStatusBar } from '../components/SessionStatusBar.js';
 import { MOBILE_QUERY } from '../hooks/useIsMobile.js';
@@ -541,5 +541,37 @@ describe('AppShell — M5 task 07 gap fix: 汉堡按钮覆盖全部移动端视�
   // Restore matchMedia stub after each test in this describe.
   afterEach(() => {
     uninstallMatchMediaStub();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. M5 task 08 review W1 — AppShell.computeInert (mobile 收起 inert
+//     逻辑 pure helper)
+//
+// `computeInert(isMobile, sidebarOpen)` 是 inert property 赋值的
+// pure 函数抽出（见 AppShell.tsx header）。React 18.3.1 不识别
+// `inert` JSX attribute（序列化为 `inert="true"`，HTML spec 非法），
+// 故 useEffect 通过 ref property 赋值；本测试仅覆盖 pure 函数逻辑，
+// DOM property 实际生效由 e2e 09 spec §断言 4 W1 钉桩验证。
+// ---------------------------------------------------------------------------
+
+describe('AppShell — M5 task 08 review W1: computeInert pure helper', () => {
+  it('10a. 桌面端 (isMobile=false) 任意 sidebarOpen → inert=false (sidebar 常驻可 Tab 进入)', () => {
+    expect(computeInert(false, true)).toBe(false);
+    expect(computeInert(false, false)).toBe(false);
+  });
+
+  it('10b. 移动端收起 (isMobile=true && sidebarOpen=false) → inert=true (拦截 Tab 进入屏外 sidebar)', () => {
+    expect(computeInert(true, false)).toBe(true);
+  });
+
+  it('10c. 移动端展开 (isMobile=true && sidebarOpen=true) → inert=false (抽屉展开可 Tab 进去)', () => {
+    expect(computeInert(true, true)).toBe(false);
+  });
+
+  it('10d. computeInert 是纯函数：相同输入必返回相同输出（无副作用）', () => {
+    expect(computeInert(true, false)).toBe(computeInert(true, false));
+    expect(computeInert(true, true)).toBe(computeInert(true, true));
+    expect(computeInert(false, false)).toBe(computeInert(false, false));
   });
 });

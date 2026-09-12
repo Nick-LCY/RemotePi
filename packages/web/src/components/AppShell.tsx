@@ -53,7 +53,7 @@
 // z-index 栈：D12 — `toast(100) < sidebar(200) < dialog-host(300) < token-modal(400)`。
 // backdrop 位于 sidebar 之下：`z-[199]`。
 //
-// ## 移动端装配要点（任务 07 brief §c）
+// ## 移动端装配要点（任务 07 brief §c + 任务 08 review W1）
 //
 //   - **汉堡按钮** ——位于 `SessionStatusBar` 行左侧（仅移动端
 //     渲染；aria-label + aria-expanded + aria-controls）。
@@ -66,6 +66,15 @@
 //     归还 `returnFocusRef`（汉堡按钮 ref）。
 //   - **桌面端不受影响** ——isMobile false 时 backdrop 不渲染、汉堡
 //     不渲染、sidebar 常驻。
+//   - **inert attribute（任务 08 review W1）**——移动端收起态
+//     `<aside>` 挂 `inert` 属性（property 方式赋值——见下方
+//     effect）。inert 是 HTML 布尔属性，浏览器解析为「子树不可
+//     交互（鼠标 / 键盘 / 读屏）」，拦截屏外 sidebar 按钮接收
+//     Tab 焦点（e2e 09 spec §断言 4 W1 钉桩）。React 18.3.1 未
+//     把 `inert` 列入 known boolean 属性列表，传 `inert={true}`
+//     会序列化为 `inert="true"`（HTML 布尔属性 spec 非法值，
+//     浏览器容忍但 Safari / 旧 Chrome 可能不识别），故用 ref
+//     property 赋值保证跨浏览器一致。
 //
 // ## Why AppShell is purely a layout container
 //
@@ -112,6 +121,28 @@ import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { Sidebar } from './Sidebar.js';
 import { useFocusTrap } from '../hooks/useFocusTrap.js';
 import { useIsMobile } from '../hooks/useIsMobile.js';
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+/** 任务 08 review W1 inert 计算——pure helper，便于无 jsdom 单测。
+ *
+ *  行为：
+ *   - `isMobile === false`（桌面端）→ `false`（不挂 inert）——桌面
+ *     sidebar 常驻 grid 槽位，用户理应能 Tab 进入。
+ *   - `isMobile === true && sidebarOpen === false`（移动收起）→
+ *     `true`（挂 inert）——sidebar 屏外，拦截 Tab 焦点进入。
+ *   - `isMobile === true && sidebarOpen === true`（移动展开）→
+ *     `false`（不挂 inert）——抽屉展开用户应能 Tab 进 sidebar。
+ *
+ *  抽为 pure 函数：renderToStaticMarkup 路径下 useEffect 不跑，
+ *  单元测试需在 SSR HTML 里验证逻辑而非真挂 DOM 属性。e2e 09
+ *  spec §断言 4 W1 钉桩走真浏览器读 `el.inert` property 验证。
+ */
+export function computeInert(isMobile: boolean, sidebarOpen: boolean): boolean {
+  return isMobile && !sidebarOpen;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -197,10 +228,48 @@ export function AppShell(props: AppShellProps): JSX.Element {
     };
   }, [isMobile, onCloseSidebar]);
 
+  // -------- inert attribute（任务 08 review W1）--------
+  // 移动端收起态 `<aside>` 设 inert=true（property 方式赋值——
+  // 见文件 header §移动端装配要点）。React 18.3.1 已知 boolean
+  // 属性列表不含 inert（源码 cjs/react-dom.development.js
+  // setValueForProperty: known properties branch + generic
+  // `setAttribute(name, '' + value)` branch），故传 `inert={true}`
+  // 会序列化为 `inert="true"`，spec 非法（HTML 布尔属性仅接受
+  // 空串 / canonical name），Chrome 当前容忍但 Safari 不识别。
+  // 用 ref property 赋值跨浏览器一致。effect deps `[isMobile,
+  // sidebarOpen]` 保证两态翻转同步。桌面端 isMobile === false
+  // → effect 内 inert = false（即使初始 HTML 序列化已写
+  // `inert="false"`，property false 显式复位）。
+  //
+  // **Effect 顺序约束**：此 effect 必须**早于**下方 `useFocusTrap`
+  // 的 focusFirstIn effect 触发——抽屉展开（sidebarOpen false→true）
+  // 时，前一帧 inert=true 状态会保留到当前帧 effect 跑完才被改写；
+  // 若 inert=true 时 focusFirstIn 调 `first.focus()`，按 HTML spec
+  // inert 子树不可接收 focus（包括程序化 focus），焦点实际不
+  // 移动（activeElement 仍为 hamburger）。先清 inert 再调
+  // focusFirstIn 才能正常进 sidebar。React useEffect 触发顺序按
+  // 声明顺序——故 inert effect 必须在 useFocusTrap 之前声明。
+  //
+  // `computeInert` 抽为 pure helper（详见函数定义）——便于无
+  // jsdom 单测（`renderToStaticMarkup` 不跑 effect；e2e 09 spec
+  // 走真浏览器钉 property 生效）。
+  useEffect(() => {
+    const el = sidebarRef.current;
+    if (el === null) return;
+    el.inert = computeInert(isMobile, sidebarOpen);
+  }, [isMobile, sidebarOpen]);
+
   // -------- 焦点陷阱（任务 07 §c）--------
   // 移动端 + 抽屉展开 → active；Escape 触发 onCloseSidebar。
   // 关闭时（active true→false）useFocusTrap 自动归还焦点到
   // hamburgerRef（汉堡按钮）——见 useFocusTrap header。
+  //
+  // **Effect 顺序约束**（配合上方 inert effect）：active 翻转
+  // false→true 时 useFocusTrap 调 `focusFirstIn(sidebarRef)`。
+  // inert 属性若此时仍 true（因 inert effect 还未跑），focus()
+  // 对 inert 子树无效（spec：「If the new focus target is in
+  // an inert subtree, do nothing else」）。故 inert effect 必须
+  // 先于本 hook 跑——见上方 inert effect 注释。
   useFocusTrap({
     active: isMobile && sidebarOpen,
     containerRef: sidebarRef,
@@ -236,6 +305,12 @@ export function AppShell(props: AppShellProps): JSX.Element {
     >
       {/* Sidebar — 桌面网格槽位；移动端 fixed 抽屉。
           M5 task 07 — `id="app-sidebar"` 供汉堡按钮 aria-controls 引用。
+          M5 task 08 review W1 — `inert` 由上方的 `useEffect`（ref
+          property 方式）动态设置；不在此处写 JSX attribute（理由：
+          React 18.3.1 不识别 inert 布尔属性，写 `inert={true}` 会
+          序列化为 `inert="true"` spec 非法）。e2e 09 spec 通过
+          `document.querySelector(...).inert` 读 property 钉桩
+          （见 spec §断言 4 W1 钉桩）。
           注意：外层 <aside> **不**挂 `data-testid="sidebar"`——该 testid
           由内部 Sidebar 组件挂载（既有约束「testid 零增零删」），外层
           重复挂载会破坏 e2e 锚点单元素定位。 */}
