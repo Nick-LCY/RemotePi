@@ -29,7 +29,7 @@ status: todo        # todo | doing | done | blocked
 
 ## 任务索引
 
-按里程碑分组，每行一个任务文件 wikilink + 短标题。**M1–M5 第一块共 37 个任务，全部 `done`**（M5 第一块 2026-09-11 实施收官，3/3 done，待用户 push + 线上手测验收）；**M5 第二块（侧边栏 + 手机适配）待另立批次**。里程碑汇总见 [[current-state.md]]。
+按里程碑分组，每行一个任务文件 wikilink + 短标题。**M1–M5 共 42 个任务，全部 `done`**（M5 第一块 2026-09-11 实施收官 3/3 done 待 push 手测；M5 第二块 2026-09-12 实施收官 5/5 done，10 个 web commit + 用户并行 ADR-0013 bridge 修复，待 push + 新形态全量手测验收）。里程碑汇总见 [[current-state.md]]。
 
 ### M1 — 基建（5/5 done）
 
@@ -77,8 +77,18 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/m4/09-docs-sync.md|09 — docs 同步（envelope/control/pi 四文档 + ADR-0003 补注裁定 C + 钉子 4 + ADR-0007 关闭占用检测 + ADR-0010 校对 + current-state + getting-started「URL hash 三字段示例」）+ RECOVERY_TIMEOUT_MS 漂移更正（6 处文档常量名统一更正，grep 实证零残留）]]
 - [[tasks/m4/10-e2e-and-validation.md|10 — E2E 场景 (d) 目录浏览 + (e) 多端各看各的 + (f) 跨会话 blocked_on 隔离 + (g) 钉子 3 work_dir_remove 活会话 + (h) 钉子 2 pending 键控 + 既有 (a)(b)(c) retry 容错断言简化 + 三端联调手测清单]]
 
-### M5 — UIUX 优化轮第一块（3/3 done，2026-09-11 待用户 push + 线上手测验收）
+### M5 — UIUX 优化轮（第一块 3/3 done + 第二块 5/5 done，2026-09-12 全部实施收官，待 push + 线上手测验收）
+
+#### 第一块（3/3 done，2026-09-11 实施收官，待用户 push + 线上手测验收）
 
 - [[tasks/m5/01-web-markdown-render.md|01 — web 渲染层结构化 + markdown 渲染 + thinking/tool 可折叠（含流式分段存储）]] ✅ done
 - [[tasks/m5/02-web-input-textarea.md|02 — InputBar textarea 升级（换行 + 自动增高 + IME 守卫）]] ✅ done
 - [[tasks/m5/03-e2e-and-validation.md|03 — E2E × 2 + 全量验证 + 文档收尾]] ✅ done
+
+#### 第二块（5/5 done，2026-09-12 实施收官，待用户 push + 新形态全量手测验收）
+
+- [[tasks/m5/04-tailwind-v4-intro.md|04 — Tailwind v4 引入（preflight 全开 + `@layer components` 包裹存量 CSS）]] ✅ done
+- [[tasks/m5/05-token-storage.md|05 — tokenStorage + TokenModal + hash 模型收缩（彻底删除 token 维度）]] ✅ done
+- [[tasks/m5/06-app-shell-sidebar.md|06 — AppShell 双栏 + Sidebar + SessionStatusBar + DirectoryBrowser modal 化 + ChoicePage 收口]] ✅ done（依赖 04 / 05）
+- [[tasks/m5/07-mobile-drawer.md|07 — 手机适配：抽屉 + 汉堡 + 焦点陷阱 + 滚动锁 + modal 全屏化]] ✅ done（依赖 04 / 05 / 06）
+- [[tasks/m5/08-e2e-and-validation.md|08 — e2e 改写（localStorage seeding）+ 移动端新 spec + 全量验证 + 文档收尾]] ✅ done（依赖 04 / 05 / 06 / 07）
