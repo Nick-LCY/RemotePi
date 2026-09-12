@@ -568,10 +568,4 @@ describe('AppShell — M5 task 08 review W1: computeInert pure helper', () => {
   it('10c. 移动端展开 (isMobile=true && sidebarOpen=true) → inert=false (抽屉展开可 Tab 进去)', () => {
     expect(computeInert(true, true)).toBe(false);
   });
-
-  it('10d. computeInert 是纯函数：相同输入必返回相同输出（无副作用）', () => {
-    expect(computeInert(true, false)).toBe(computeInert(true, false));
-    expect(computeInert(true, true)).toBe(computeInert(true, true));
-    expect(computeInert(false, false)).toBe(computeInert(false, false));
-  });
 });

@@ -241,19 +241,21 @@ export function openSettingsAndCloseDrawer(args: {
   setSettingsOpen: (open: boolean) => void;
   setSidebarOpen: (open: boolean) => void;
 }): void {
-  args.setSettingsOpen(true);
   // W1 — 焦点陷阱互斥：modal 打开前先收抽屉，保证 document 上
-  // 至多一个 useFocusTrap keydown listener。
+  // 至多一个 useFocusTrap keydown listener。React batch 一帧内
+  // 落定（无需 setTimeout）——drawer 收起与 modal 展开在同一 commit
+  // 落定，下一帧 useFocusTrap 已感知 drawer=false + modal=true 互斥。
   args.setSidebarOpen(false);
+  args.setSettingsOpen(true);
 }
 
 export function openBrowserAndCloseDrawer(args: {
   setBrowserOpen: (open: boolean) => void;
   setSidebarOpen: (open: boolean) => void;
 }): void {
-  args.setBrowserOpen(true);
   // W1 — 同上（DirectoryBrowser 也是 trap 全开，详见组件 header）。
   args.setSidebarOpen(false);
+  args.setBrowserOpen(true);
 }
 
 /** Pure handler for the closable-mode TokenModal flow (M5 task 05

@@ -238,8 +238,9 @@ export function AppShell(props: AppShellProps): JSX.Element {
   // 空串 / canonical name），Chrome 当前容忍但 Safari 不识别。
   // 用 ref property 赋值跨浏览器一致。effect deps `[isMobile,
   // sidebarOpen]` 保证两态翻转同步。桌面端 isMobile === false
-  // → effect 内 inert = false（即使初始 HTML 序列化已写
-  // `inert="false"`，property false 显式复位）。
+  // → effect 内 inert = false（property 显式复位为 false，保证
+  // 跨浏览器一致——SSR 初始 HTML 不含 inert 属性，浏览器默认
+  // inert=false）。
   //
   // **Effect 顺序约束**：此 effect 必须**早于**下方 `useFocusTrap`
   // 的 focusFirstIn effect 触发——抽屉展开（sidebarOpen false→true）

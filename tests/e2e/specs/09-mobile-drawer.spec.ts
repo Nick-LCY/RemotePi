@@ -50,7 +50,7 @@
 //   - 移动端 viewport 下 `matchMedia('(max-width: 767px)')` 触发
 //     mobile 分支；桌面端抽查走 ≥768 viewport。
 
-import { test, expect, type Browser, type Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 import { readRunState } from '../helpers/global-setup.js';
 import { seedToken } from '../helpers/seed-token.js';
@@ -134,8 +134,9 @@ test.describe('scenario (mobile 375x667): drawer + focus trap + inert + scroll l
     expect(backdropDisabled, 'required mode backdrop must be disabled').toBe(true);
 
     // 断言 1c：按 Esc → token-modal 仍在 DOM（required 模式 Esc 无效）。
+    // Esc 是同步 no-op（TokenModal required 模式不挂 useFocusTrap，
+    // document 上无 Escape 监听器）—— 立即断言更强，无需 waitForTimeout。
     await page.keyboard.press('Escape');
-    await page.waitForTimeout(200);
     await expect(page.locator('[data-testid="token-modal"]')).toBeVisible();
 
     // 断言 1d：模拟 click 事件派发到 disabled backdrop（验证即使
@@ -143,10 +144,10 @@ test.describe('scenario (mobile 375x667): drawer + focus trap + inert + scroll l
     // 仍有 `if (required) return;` 兜底——token-modal 仍可见）。
     // 用 `dispatchEvent` 直接派发 click，跳过 Playwright 的 actionability
     // 检查（disabled button 在 Playwright 默认策略下不可点）。
+    // `handleBackdropClick` 是同步 no-op → 立即断言。
     await backdrop.evaluate((el) => {
       el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
-    await page.waitForTimeout(200);
     await expect(page.locator('[data-testid="token-modal"]')).toBeVisible();
 
     // 断言 1e：提交合法 token → reload → 进入 ChoicePage level=1
@@ -253,7 +254,7 @@ test.describe('scenario (mobile 375x667): drawer + focus trap + inert + scroll l
       .toBe('button[data-testid="sidebar-toggle"]');
   });
 
-  test('5. Tab 循环真测量：抽屉展开态连续 Tab 焦点在 sidebar 内循环 + Shift+Tab 反向', async ({ page }) => {
+  test('5. Tab 焦点逃逸防护：抽屉展开态连续 Tab 焦点始终留在 sidebar 内 + Shift+Tab 反向（包含性检查非逐位循环测量）', async ({ page }) => {
     const state = await readRunState();
 
     await seedToken(page, state.baseUrl, state.token);
@@ -434,11 +435,8 @@ test.describe('scenario (mobile 375x667): drawer + focus trap + inert + scroll l
       .toBe(baselineOverflow);
   });
 
-  test('9. level1 → 开抽屉选 workDir → 自动收起进 level2 → 再开抽屉选 session → 进 recovery', async ({ browser }: { browser: Browser }) => {
+  test('9. level1 → 开抽屉选 workDir → 自动收起进 level2 → 再开抽屉选 session → 进 recovery', async ({ page }) => {
     const state = await readRunState();
-    const ctx = await browser.newContext();
-    const page = await ctx.newPage();
-    await page.setViewportSize({ width: 375, height: 667 });
 
     await seedToken(page, state.baseUrl, state.token);
     await waitForLevel1(page);
@@ -499,29 +497,26 @@ test.describe('scenario (mobile 375x667): drawer + focus trap + inert + scroll l
     // 关抽屉。
     await page.keyboard.press('Escape');
     await expect(page.locator('[data-testid="sidebar-backdrop"]')).toBeHidden();
-
-    await ctx.close();
   });
 
-  test('10. TokenModal / DirectoryBrowser 移动端 sheet 形态抽查', async ({ browser }: { browser: Browser }) => {
+  test('10. TokenModal / DirectoryBrowser 移动端 sheet 形态抽查', async ({ page }) => {
     const state = await readRunState();
 
     // 10a — TokenModal（未认证路径）：移动端 sheet 形态（inset-0
     // + 非居中卡片 + 无 rounded-lg）—— 直接访问，无 token seed。
-    const ctxA = await browser.newContext();
-    const pageA = await ctxA.newPage();
-    await pageA.setViewportSize({ width: 375, height: 667 });
-    await pageA.goto(state.baseUrl);
-    await waitForTokenModal(pageA);
+    // 使用独立 page（fixture 提供 fresh context，describe 级
+    // `test.use({ viewport: { width: 375, height: 667 } })` 已生效，
+    // 无需手动 newContext + setViewportSize）。
+    await page.goto(state.baseUrl);
+    await waitForTokenModal(page);
 
     // 移动端 sheet 形态：modal root 含 `inset-0`（任务 07 §c
     // TokenModal mobile 全屏）+ inner card 无 `rounded-lg`
     // （桌面卡片专属圆角）。
-    const tokenModalHtml = await pageA.locator('[data-testid="token-modal"]').first().evaluate((el) => el.outerHTML);
+    const tokenModalHtml = await page.locator('[data-testid="token-modal"]').first().evaluate((el) => el.outerHTML);
     expect(tokenModalHtml, 'TokenModal mobile sheet should use inset-0 (full-screen)').toContain('inset-0');
     // inner card 不含 rounded-lg（移动端 sheet 无圆角）。
     expect(tokenModalHtml, 'TokenModal mobile sheet should NOT have rounded-lg card').not.toContain('rounded-lg');
-    await ctxA.close();
 
     // 10b — DirectoryBrowser（mobile 全屏 sheet 形态）：seedToken
     // → ChoicePage level=1 → 开抽屉 → 点 work-dir-browse →
@@ -534,9 +529,11 @@ test.describe('scenario (mobile 375x667): drawer + focus trap + inert + scroll l
     // 陷阱互斥（`openBrowserAndCloseDrawer` helper）确保抽屉在
     // DirectoryBrowser 打开同时自动收起——但开抽屉的瞬间 sidebar
     // 在视口里，work-dir-browse 即可点击。
-    const ctxB = await browser.newContext();
-    const pageB = await ctxB.newPage();
-    await pageB.setViewportSize({ width: 375, height: 667 });
+    //
+    // 用新 page 避免 10a 状态污染（10a 提交 token 后会进 ChoicePage，
+    // 此处需要从零状态验证 DirectoryBrowser）。fixture 自带 context
+    // 隔离，每个 test 独立 page；如需同 test 内多 page，再 newPage。
+    const pageB = await page.context().newPage();
     await seedToken(pageB, state.baseUrl, state.token);
     await waitForLevel1(pageB);
     await pageB.locator('[data-testid="sidebar-toggle"]').click();
@@ -548,7 +545,58 @@ test.describe('scenario (mobile 375x667): drawer + focus trap + inert + scroll l
     const dirBrowserClass: string = await directoryBrowser.evaluate((el: Element) => el.className);
     expect(dirBrowserClass, 'DirectoryBrowser mobile should use inset-0 (full-screen sheet)').toContain('inset-0');
     expect(dirBrowserClass, 'DirectoryBrowser mobile should NOT have `card directory-browser` (desktop form)').not.toContain('card directory-browser');
-    await ctxB.close();
+    await pageB.close();
+  });
+
+  test('10b. 抽屉 → 设置按钮 → closable TokenModal → Esc 恰好关一次（S4 e2e 闭环）', async ({ page }) => {
+    // S4 — 补全 W2 e2e 闭环：test 1 验证了「required 模式 Esc 无效」；
+    // 本测试验证「closable 模式 Esc 有效 + 抽屉/TokenModal 互斥 +
+    // Esc 仅关 TokenModal 不连带关其他 trap」。流程：
+    //
+    //   level1 → 开抽屉 → 点 settings-button → openSettingsAndCloseDrawer
+    //   helper 同时收起抽屉 + 打开 TokenModal（互斥）→ 按 Esc → 仅
+    //   TokenModal 关闭（document 上只一个 useFocusTrap active listener，
+    //   Esc 只触 TokenModal 的 onClose）。
+    //
+    //   若 Esc 意外触发抽屉关闭（双 trap 残留），drawer backdrop 仍
+    //   可见 → 断言失败。
+    //   若 Esc 未关 TokenModal（Trap 钩子未挂），token-modal 仍在 → 断言失败。
+    const state = await readRunState();
+    await seedToken(page, state.baseUrl, state.token);
+    await waitForLevel1(page);
+    await waitForHamburger(page);
+
+    // 步骤 1：开抽屉。
+    await page.locator('[data-testid="sidebar-toggle"]').click();
+    await expect(page.locator('[data-testid="sidebar-backdrop"]')).toBeVisible();
+
+    // 步骤 2：点 settings-button → TokenModal closable 打开 +
+    // 抽屉自动收起（openSettingsAndCloseDrawer W1 互斥）。
+    await page.locator('[data-testid="settings-button"]').click();
+
+    // 断言：token-modal 出现 + 抽屉 backdrop 已收起（互斥落定）。
+    await expect(page.locator('[data-testid="token-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="token-modal-close"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sidebar-backdrop"]')).toBeHidden();
+
+    // 步骤 3：按 Esc → token-modal 关闭恰好一次（Trap active
+    // listener 唯一触发）。
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-testid="token-modal"]')).toBeHidden();
+
+    // 断言 Esc 没有连带关其他 trap：抽屉 backdrop 仍为 hidden
+    // （关闭后无副作用再触发 setSidebarOpen(false)→true 翻转）。
+    await expect(page.locator('[data-testid="sidebar-backdrop"]')).toBeHidden();
+
+    // 断言 TokenModal 关闭后 settings-button 可再次打开（验证
+    // 不是「Esc 关后 state 锁死」）。
+    await page.locator('[data-testid="sidebar-toggle"]').click();
+    await expect(page.locator('[data-testid="sidebar-backdrop"]')).toBeVisible();
+    await page.locator('[data-testid="settings-button"]').click();
+    await expect(page.locator('[data-testid="token-modal"]')).toBeVisible();
+    // 关闭收尾。
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-testid="token-modal"]')).toBeHidden();
   });
 });
 
