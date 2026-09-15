@@ -6,20 +6,14 @@
 //
 // ## File contents
 //
-// Every control-family payload schema and its envelope wrapper live here:
-//   - 5 carried-over payloads (Handshake / Ping / Pong / BridgeStatus /
-//     Error) — previously in `envelope.ts`; moved here in M3 to free the
-//     top-level `envelope.ts` for envelope-only cross-cutting state.
-//   - 3 new payloads (SessionState / Result / GetState) added in M3 to
-//     support web-side session-state queries and the unified `result`
-//     reply shape, plus the `session_state.blocked_on` field.
-//   - 4 new payloads (ListDirectories / WorkDirList / WorkDirAdd /
-//     WorkDirRemove) added in M4 — see ADR-0010. Request payload schemas
-//     are re-exported from `./work-dirs.js`; only the envelope wrappers
-//     live here. Result-data revalidation schemas live in
-//     `./session-list.js` (`SessionListEntrySchema`) and
-//     `./work-dirs.js` (`ListDirectoriesResultSchema` /
-//     `WorkDirListResultSchema`).
+// Every control-family payload schema and its envelope wrapper live here.
+// Per-schema payloads live alongside; the M3 split re-homed 5 payloads
+// here that used to live in `envelope.ts`. The 4 M4 work-directory
+// request payload schemas are re-exported from `./work-dirs.js`; only
+// the envelope wrappers live here. Result-data revalidation schemas
+// live in `./session-list.js` (`SessionListEntrySchema`) and
+// `./work-dirs.js` (`ListDirectoriesResultSchema` /
+// `WorkDirListResultSchema`).
 //
 // ## M4 envelope (a) field additions (ADR-0010 §决策.2)
 //
@@ -35,12 +29,6 @@
 //     ignore it. The schema is in `pi.ts`; see ADR-0010 §决策.2.
 //
 // All three are additive optional fields — no lock bump.
-//
-// The 13 envelope schemas (`HandshakeEnvelope` … `WorkDirRemoveEnvelope`)
-// form a `discriminatedUnion('type', …)` exported as `ControlBranch`
-// and consumed by `envelope.ts` to build the top-level `Envelope`. This
-// file owns the per-schema definitions; `envelope.ts` owns the union that
-// ties `ControlBranch` / `PiBranch` / `Envelope` together.
 //
 // Naming contract (M1): envelope Zod schema + derived type share the
 // same name (XxxEnvelope); payload Zod schema uses the `Schema` suffix
@@ -85,10 +73,10 @@ export type PongPayload = z.infer<typeof PongPayloadSchema>;
  *  The schema accepts any sub-second precision — including the millisecond
  *  form `2026-09-05T10:00:00.123Z` that `Date.prototype.toISOString()`
  *  always emits — but stays UTC-only (offsets like `+00:00` are rejected).
- *  We pass `{ precision: null }` explicitly so the contract is unambiguous
- *  to readers and survives any future zod default-precision changes; the
- *  current zod default already accepts any precision, but spelling it out
- *  documents intent. Offset forms are out of v1 scope. */
+ *  `{ precision: null }` is passed explicitly so the contract is
+ *  unambiguous to readers and survives any future zod default-precision
+ *  changes; the current zod default already accepts any precision, but
+ *  spelling it out documents intent. Offset forms are out of v1 scope. */
 export const BridgeStatusPayloadSchema = z.object({
   online: z.boolean(),
   changed_at: z.string().datetime({ precision: null }),
@@ -109,20 +97,19 @@ export type ErrorPayload = z.infer<typeof ErrorPayloadSchema>;
 // SessionList payload (carried over from M2; session_state was renamed in M3)
 // ---------------------------------------------------------------------------
 
-/** SessionList payload — currently `{ work_dir?: string }` (M4 unlock,
- *  see ADR-0010 §演进规则 (a)). `work_dir` is the **M4 操作惯例必带**
- *  field that scopes the session scan to one directory; absence is
- *  equivalent to "scan all directories" and is preserved as the M3
- *  compatibility path. M4 web UI never sends the bare `{}` shape
- *  (裁定 A: forced two-level choice — web must first pick a `work_dir`
- *  before listing sessions). */
+/** SessionList payload — `{ work_dir?: string }` (M4 unlock,
+ *  see ADR-0010 §演进规则 (a)). `work_dir` scopes the session scan to one
+ *  directory; absence is equivalent to "scan all directories" and is
+ *  preserved as the M3 compatibility path. M4 web UI never sends the bare
+ *  `{}` shape (裁定 A: forced two-level choice — web must first pick a
+ *  `work_dir` before listing sessions). */
 export const SessionListPayloadSchema = z.object({
   work_dir: z.string().optional(),
 });
 export type SessionListPayload = z.infer<typeof SessionListPayloadSchema>;
 
 // ---------------------------------------------------------------------------
-// M3 control payloads (new in this milestone)
+// M3 control payloads
 // ---------------------------------------------------------------------------
 
 /** SessionState payload — pi subprocess lifecycle phase plus optional
@@ -132,8 +119,7 @@ export type SessionListPayload = z.infer<typeof SessionListPayloadSchema>;
  *  `phase` enumerates the 5 lock-versioned states (see
  *  [[architecture/protocol/control.md#5-session_state]] and
  *  `SESSION_PHASES` in `literals.ts`): spawning / ready / running /
- *  idle / exited. No new phases are added in M3 — the 5-value enum is
- *  carried over verbatim from the v1 lock.
+ *  idle / exited.
  *
  *  `blocked_on` is an additive optional array (envelope evolution
  *  rule (a)): absence is equivalent to an empty array. Each element is
@@ -246,12 +232,11 @@ export type SessionStateEnvelope = z.infer<typeof SessionStateEnvelope>;
 /** SessionList envelope — web → bridge query, reply comes back as
  *  `result` (see `ResultEnvelope`). Payload is `{ work_dir? }` as of
  *  M4 (envelope evolution rule (a) — see ADR-0010 §决策.2);
- *  `work_dir` is the **M4 操作惯例必带** field that scopes the
- *  session scan to one directory, and the M4 ChoicePage (任务 07)
- *  always sets it. Absence is the M3 compatibility path
- *  ("scan all directories"); new M4 web UI never sends bare `{}`.
- *  Future filter fields will be added as further optional fields
- *  under envelope evolution rule (a). */
+ *  `work_dir` scopes the session scan to one directory, and the M4
+ *  ChoicePage (任务 07) always sets it. Absence is the M3
+ *  compatibility path ("scan all directories"); new M4 web UI never
+ *  sends bare `{}`. Future filter fields will be added as further
+ *  optional fields under envelope evolution rule (a). */
 export const SessionListEnvelope = z.object({
   ...EnvelopeBaseControl,
   type: z.literal('session_list'),
@@ -297,10 +282,10 @@ export type ErrorEnvelope = z.infer<typeof ErrorEnvelope>;
 // The four new control types (`list_directories` / `work_dir_list` /
 // `work_dir_add` / `work_dir_remove`) are request-only from the web's
 // point of view — replies always go through the existing `result`
-// envelope (`ResultEnvelope` above) carrying a request-specific
-// `data` shape. The payload schemas live in `./work-dirs.js` and are
-// re-imported here so the envelope wrappers can spread them into the
-// discriminated union without forming a separate module.
+// envelope carrying a request-specific `data` shape. The payload schemas
+// live in `./work-dirs.js` and are re-imported here so the envelope
+// wrappers can spread them into the discriminated union without forming
+// a separate module.
 // ---------------------------------------------------------------------------
 
 /** `list_directories` envelope — web → bridge. Payload `{ path?: string }`;

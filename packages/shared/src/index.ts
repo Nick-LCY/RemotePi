@@ -6,10 +6,10 @@
 //
 //   - `./protocol/envelope.js`    — top-level `Envelope` + all enum literals
 //                                   (re-exported from `./protocol/literals.js`);
-//   - `./protocol/control.js`     — 13 control envelopes + their payload schemas
-//                                   + `ControlBranch` (9 → 13 unlock per
-//                                   ADR-0010);
-//   - `./protocol/pi.js`          — 9 pi envelopes + their payload schemas +
+//   - `./protocol/control.js`     — control envelopes + their payload schemas
+//                                   + `ControlBranch` (M3 unlocked `get_state`;
+//                                   M4 added four work-directory types);
+//   - `./protocol/pi.js`          — pi envelopes + their payload schemas +
 //                                   `PiBranch` (no new types added in M4;
 //                                   envelope (a) extends `prompt.payload.work_dir`
 //                                   for `session:'new'`);
@@ -28,14 +28,12 @@
 //                                   revalidation schemas (`SessionListEntrySchema`
 //                                   carries the new `status` 5-enum field).
 //
-// The split mirrors the M3 family split — each family owns its own
-// envelope schemas, and the top-level `Envelope` union lives in
-// `envelope.ts`. To add a new control-family message: from M4 onward, keep
-// the payload shape and any result revalidation schema in a dedicated
-// submodule (for example, `protocol/work-dirs.ts` /
-// `protocol/session-list.ts`) so `control.ts` stays compact; keep the
-// envelope wrapper and `ControlBranch` registration in `./protocol/control.ts`.
-// For pi additions: same pattern in `./protocol/pi.ts` / `PiBranch`.
+// To add a new control-family message: keep the payload shape and any
+// result revalidation schema in a dedicated submodule (for example,
+// `protocol/work-dirs.ts` / `protocol/session-list.ts`) so `control.ts`
+// stays compact; keep the envelope wrapper and `ControlBranch`
+// registration in `./protocol/control.ts`. For pi additions: same
+// pattern in `./protocol/pi.ts` / `PiBranch`.
 export * from './protocol/envelope.js';
 export * from './protocol/control.js';
 export * from './protocol/pi.js';

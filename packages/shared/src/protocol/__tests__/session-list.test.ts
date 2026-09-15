@@ -112,10 +112,10 @@ describe('SessionListEntry (M4 PRD §9.1 — 5 enum + illegal-status + M3 fields
 
   it('5. parses a SessionListEntry with `status: "unknown"` ("no manager in map" sentinel)', () => {
     // `unknown` is the deliberate "we don't know" sentinel for sessions
-    // that exist on disk but the bridge has never spawned — clicking such
-    // a row in `ChoicePage` triggers a fresh spawn through the recovery
-    // ritual. The schema must accept it so the bridge can serialise the
-    // honest answer rather than coercing to `exited`.
+    // that exist on disk but the bridge has never spawned — clicking
+    // such a row in `ChoicePage` triggers a fresh spawn through the
+    // recovery ritual. The schema must accept it so the bridge can
+    // serialise the honest answer rather than coercing to `exited`.
     const result = SessionListEntrySchema.safeParse(makeEntry('unknown'));
     expect(result.success).toBe(true);
     if (!result.success) return;
@@ -125,10 +125,11 @@ describe('SessionListEntry (M4 PRD §9.1 — 5 enum + illegal-status + M3 fields
   // ----- illegal status (case 6) -----
 
   it('6. rejects a SessionListEntry whose `status` is not in the 5-value enum', () => {
-    // 5-value enum is lock-versioned — `ready` (M2 phase) is NOT a valid
-    // session-list status (the entry-level status is the user-facing
-    // surface that maps `ready` away; see session-list.ts JSDoc).
-    // Strings that look similar but aren't in the enum must be refused.
+    // 5-value enum is lock-versioned — `ready` (M2 phase) is NOT a
+    // valid session-list status (the entry-level status is the
+    // user-facing surface that maps `ready` away; see session-list.ts
+    // JSDoc). Strings that look similar but aren't in the enum must
+    // be refused.
     for (const status of ['ready', 'paused', 'disconnected', '', 'EXITED']) {
       const result = SessionListEntrySchema.safeParse(makeEntry(status as never));
       expect(result.success, `status=${JSON.stringify(status)} should be rejected`).toBe(false);
@@ -138,11 +139,11 @@ describe('SessionListEntry (M4 PRD §9.1 — 5 enum + illegal-status + M3 fields
   // ----- M3 field set preservation (case 7) -----
 
   it('7. carries the full M3 field set (id / name / cwd / created / modified / message_count / first_message / running) + status', () => {
-    // The M4 unlock adds `status` to the entry shape but does NOT remove
-    // any M3 field. Every legacy consumer that reads `id` / `name` /
-    // `cwd` / `created` / `modified` / `message_count` / `first_message`
-    // / `running` continues to work; new M4 consumers can additionally
-    // read `status`.
+    // The M4 unlock adds `status` to the entry shape but does NOT
+    // remove any M3 field. Every legacy consumer that reads `id` /
+    // `name` / `cwd` / `created` / `modified` / `message_count` /
+    // `first_message` / `running` continues to work; new M4 consumers
+    // can additionally read `status`.
     const fixture = makeEntry('running');
     const result = SessionListEntrySchema.safeParse(fixture);
     expect(result.success).toBe(true);
@@ -165,8 +166,8 @@ describe('SessionListEntry (M4 PRD §9.1 — 5 enum + illegal-status + M3 fields
     // The M4 unlock deliberately preserves the M3 `running` boolean
     // alongside the new `status` field — `running === true` is roughly
     // equivalent to `status ∈ { 'idle', 'running', 'spawning', 'ready' }`
-    // but does NOT capture the phase detail that `status` carries. Both
-    // fields round-trip together.
+    // but does NOT capture the phase detail that `status` carries.
+    // Both fields round-trip together.
     const result = SessionListEntrySchema.safeParse(makeEntry('exited'));
     expect(result.success).toBe(true);
     if (!result.success) return;
@@ -177,9 +178,9 @@ describe('SessionListEntry (M4 PRD §9.1 — 5 enum + illegal-status + M3 fields
   // ----- missing M3 field (case 9) -----
 
   it('9. rejects a SessionListEntry missing one of the required M3 fields', () => {
-    // The M3 contract was that all 8 fields are required; the M4 unlock
-    // adds `status` alongside, not in place of, the M3 surface. Sweep
-    // every required field by deleting it from the fixture and
+    // The M3 contract was that all 8 fields are required; the M4
+    // unlock adds `status` alongside, not in place of, the M3 surface.
+    // Sweep every required field by deleting it from the fixture and
     // confirming the schema refuses.
     const required = [
       'id',
@@ -201,13 +202,14 @@ describe('SessionListEntry (M4 PRD §9.1 — 5 enum + illegal-status + M3 fields
     }
 
     // Nullable-contract pin — `name` and `first_message` are typed
-    // `z.string().nullable()` so a literal `null` value is legal (pi may
-    // not have assigned a name / written a first message yet — see
-    // `session-list.ts` JSDoc). Missing (undefined) fields remain
+    // `z.string().nullable()` so a literal `null` value is legal (pi
+    // may not have assigned a name / written a first message yet —
+    // see `session-list.ts` JSDoc). Missing (undefined) fields remain
     // rejected under the existing required-field contract above; this
     // pins the distinct null-OK / undefined-fail leg of the nullable
-    // contract so a future tightening (e.g. switching to `z.string()`)
-    // surfaces as a deliberate schema change rather than silent drift.
+    // contract so a future tightening (e.g. switching to
+    // `z.string()`) surfaces as a deliberate schema change rather
+    // than silent drift.
     const withNullName = { ...makeEntry('running'), name: null };
     expect(
       SessionListEntrySchema.safeParse(withNullName).success,
@@ -228,9 +230,9 @@ describe('SessionListResult + envelope round-trip (M4 PRD §9.1 — 2 cases)', (
   it('10. parses a `result` envelope replying `{ ok: true, data: { sessions: [...] } }` with the new `status` field', () => {
     // The outer envelope parses because `ResultPayloadSchema.data` is
     // `z.unknown()` — the web narrows on `reply_to` and revalidates
-    // `data` against `SessionListResultSchema` before reading entries.
-    // This case proves the full round-trip: outer envelope + inner
-    // schema + per-entry `status` field all line up.
+    // `data` against `SessionListResultSchema` before reading
+    // entries. This case proves the full round-trip: outer envelope +
+    // inner schema + per-entry `status` field all line up.
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',
@@ -271,10 +273,11 @@ describe('SessionListResult + envelope round-trip (M4 PRD §9.1 — 2 cases)', (
   // ----- illegal status → revalidation rejects (case 11) -----
 
   it('11. rejects a `result` envelope whose `data.sessions[]` contains an illegal `status`', () => {
-    // Outer envelope parses (data is `z.unknown()`). Inner revalidation
-    // fires on the illegal status — the per-entry schema's enum guard
-    // is the gate that refuses the frame before the web reads any field.
-    // Mirrors the get-state.test.ts case 5 pattern.
+    // Outer envelope parses (data is `z.unknown()`). Inner
+    // revalidation fires on the illegal status — the per-entry
+    // schema's enum guard is the gate that refuses the frame before
+    // the web reads any field. Mirrors the get-state.test.ts case 5
+    // pattern.
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',
@@ -340,7 +343,8 @@ describe('SessionList envelope work_dir (M4 envelope (a) extension — 3 cases)'
   it('A. accepts a `session_list` envelope that omits `work_dir` (M3 compatibility — scan all directories)', () => {
     // M3 single-session mode never set `work_dir`. Absence is the
     // "scan all directories" form under envelope evolution rule (a)
-    // and must parse through both the envelope and the payload schema.
+    // and must parse through both the envelope and the payload
+    // schema.
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',
@@ -354,7 +358,6 @@ describe('SessionList envelope work_dir (M4 envelope (a) extension — 3 cases)'
     expect(env.type).toBe('session_list');
     expect(env.payload.work_dir).toBeUndefined();
 
-    // Schema-level spot check — same outcome.
     expect(SessionListPayloadSchema.safeParse({}).success).toBe(true);
   });
 
@@ -374,7 +377,6 @@ describe('SessionList envelope work_dir (M4 envelope (a) extension — 3 cases)'
     const env = narrow<SessionListEnvelope>(result.data, 'session_list');
     expect(env.payload.work_dir).toBe('/home/user/proj');
 
-    // Schema-level spot check — same outcome in isolation.
     expect(SessionListPayloadSchema.safeParse({ work_dir: '/home/user/proj' }).success).toBe(true);
   });
 

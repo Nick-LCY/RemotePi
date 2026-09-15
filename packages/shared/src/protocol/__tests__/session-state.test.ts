@@ -127,10 +127,11 @@ describe('SessionState envelopes (M3 PRD §6.1 — 11 cases)', () => {
   // ----- blocked_on shape (cases 6–11) -----
 
   it('6. accepts a `session_state` envelope that omits `blocked_on` (default empty)', () => {
-    // Envelope evolution rule (a) — absence is equivalent to an empty array.
-    // The bridge always sends `blocked_on: []` in practice, but a state
-    // frame with no field at all must still parse (older broadcasts, or
-    // future phases where blocked_on is meaningless e.g. spawning).
+    // Envelope evolution rule (a) — absence is equivalent to an empty
+    // array. The bridge always sends `blocked_on: []` in practice,
+    // but a state frame with no field at all must still parse (older
+    // broadcasts, or future phases where blocked_on is meaningless
+    // e.g. spawning).
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',
@@ -143,7 +144,6 @@ describe('SessionState envelopes (M3 PRD §6.1 — 11 cases)', () => {
     const env = narrow<SessionStateEnvelope>(result.data, 'session_state');
     expect(env.payload.blocked_on).toBeUndefined();
 
-    // Schema-level spot check — same outcome.
     expect(SessionStatePayloadSchema.safeParse({ phase: 'ready' }).success).toBe(true);
   });
 
@@ -162,10 +162,11 @@ describe('SessionState envelopes (M3 PRD §6.1 — 11 cases)', () => {
   });
 
   it('8. accepts a `session_state` envelope whose `blocked_on` covers all 4 blocking methods', () => {
-    // Pin the on-the-wire shape with one entry per blocking method. Each
-    // entry must satisfy the discriminated union member that matches its
-    // `method` literal. The 4 methods are exercised end-to-end through
-    // the envelope parse + a per-element schema spot check.
+    // Pin the on-the-wire shape with one entry per blocking method.
+    // Each entry must satisfy the discriminated union member that
+    // matches its `method` literal. The 4 methods are exercised
+    // end-to-end through the envelope parse + a per-element schema
+    // spot check.
     const blocked_on = [
       {
         method: 'select' as const,
@@ -207,8 +208,8 @@ describe('SessionState envelopes (M3 PRD §6.1 — 11 cases)', () => {
   });
 
   it('9. rejects a `session_state` envelope whose `blocked_on` element is missing `id`', () => {
-    // Correlation key is required per element — see block-on.test.ts case 9.
-    // A single missing-id entry poisons the whole array.
+    // Correlation key is required per element — see block-on.test.ts
+    // case 9. A single missing-id entry poisons the whole array.
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',
@@ -226,8 +227,8 @@ describe('SessionState envelopes (M3 PRD §6.1 — 11 cases)', () => {
 
   it('10. rejects a `session_state` envelope whose `blocked_on` contains a fire-and-forget method', () => {
     // The 4-method discriminated union refuses any non-union `method`
-    // discriminator. Pick `notify` here — same outcome for the other 4
-    // (sweep covered by block-on.test.ts case 10).
+    // discriminator. Pick `notify` here — same outcome for the other
+    // 4 (sweep covered by block-on.test.ts case 10).
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',
@@ -252,7 +253,6 @@ describe('SessionState envelopes (M3 PRD §6.1 — 11 cases)', () => {
     });
     expect(result.success).toBe(false);
 
-    // Schema-level spot check — same outcome.
     expect(SessionStatePayloadSchema.safeParse({ phase: 'foo' }).success).toBe(false);
   });
 });
@@ -286,14 +286,13 @@ describe('SessionState envelopes (M4 work_dir envelope (a) extension — 3 cases
     expect(env.payload.phase).toBe('ready');
     expect(env.payload.work_dir).toBeUndefined();
 
-    // Schema-level spot check — same outcome.
     expect(SessionStatePayloadSchema.safeParse({ phase: 'ready' }).success).toBe(true);
   });
 
   it('13. accepts a `session_state` envelope with explicit `work_dir` (M4 multi-session mode)', () => {
     // M4 broadcasts always carry their session's work_dir so the web
-    // `ChoicePage level=2` can render work_dir per row without an extra
-    // `session_list` query. Presence must round-trip verbatim.
+    // `ChoicePage level=2` can render work_dir per row without an
+    // extra `session_list` query. Presence must round-trip verbatim.
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',
@@ -307,7 +306,6 @@ describe('SessionState envelopes (M4 work_dir envelope (a) extension — 3 cases
     expect(env.payload.phase).toBe('running');
     expect(env.payload.work_dir).toBe('/home/user/proj');
 
-    // Schema-level spot check — same outcome in isolation.
     expect(
       SessionStatePayloadSchema.safeParse({
         phase: 'running',

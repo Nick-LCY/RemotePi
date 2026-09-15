@@ -4,8 +4,6 @@
 // Wire layout (see docs/architecture/protocol/control.md §6.5–§6.8):
 //   { v: 1, kind: "control", type, id, payload }
 //
-// ## File contents
-//
 // Four control-family request payload schemas and two result-shape schemas
 // for the M4 unlock (ADR-0010):
 //
@@ -27,13 +25,8 @@
 // in `control.ts` so the `ControlBranch` discriminated union stays in one
 // file — this module owns payload + result shapes only.
 //
-// ## Why request payloads live in this module (not control.ts)
-//
 // Each request shares the same minimal wire footprint as a typical
-// control-family message (`{ path?: string }` or `{}`). Splitting them
-// into a dedicated module mirrors the M3 split pattern (`block-on.ts`
-// owns the discriminated union for `blocked_on[]` and the web wire shape
-// for `extension_ui_response`; control.ts re-uses them). Future M4+ work
+// control-family message (`{ path?: string }` or `{}`). Future M4+ work
 // dir additions (e.g. a `work_dir_rename`) belong in this file too.
 //
 // Naming contract (M1): payload Zod schema uses the `Schema` suffix;

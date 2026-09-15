@@ -5,8 +5,6 @@
 //   { v: 1, kind: "control", type: "result", id, reply_to, payload }
 //   payload.data = SessionListResult
 //
-// ## File contents
-//
 // Two schemas that revalidate the `result.data` payload for a `session_list`
 // reply:
 //

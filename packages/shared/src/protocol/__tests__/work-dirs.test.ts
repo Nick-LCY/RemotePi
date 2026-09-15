@@ -78,9 +78,9 @@ describe('Work-dir request payloads (M4 PRD §9.1 — 11 cases)', () => {
   });
 
   it('2. parses a legal `list_directories` payload with `path` omitted (bridge falls back to $HOME)', () => {
-    // control.md §6.5: absent `path` is the "list home" form — the bridge
-    // resolves to `$HOME` server-side. Schema must allow `{}` and surface
-    // `path` as `undefined`.
+    // control.md §6.5: absent `path` is the "list home" form — the
+    // bridge resolves to `$HOME` server-side. Schema must allow `{}`
+    // and surface `path` as `undefined`.
     const result = ListDirectoriesPayloadSchema.safeParse({});
     expect(result.success).toBe(true);
     if (!result.success) return;
@@ -89,9 +89,9 @@ describe('Work-dir request payloads (M4 PRD §9.1 — 11 cases)', () => {
     // Schema-level spot check — same outcome.
     expect(ListDirectoriesPayloadSchema.safeParse({}).success).toBe(true);
 
-    // Envelope-level: a `list_directories` envelope with an empty payload
-    // parses through the full Envelope union and narrows on the new
-    // control type (ADR-0010).
+    // Envelope-level: a `list_directories` envelope with an empty
+    // payload parses through the full Envelope union and narrows on
+    // the new control type (ADR-0010).
     const env = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',
@@ -103,9 +103,10 @@ describe('Work-dir request payloads (M4 PRD §9.1 — 11 cases)', () => {
   });
 
   it('3. rejects a `list_directories` payload whose `path` is not a string', () => {
-    // Path must be a string when present; numbers / objects / booleans
-    // are outside the schema. The schema declares `path: z.string().optional()`
-    // so any non-string value trips the type guard.
+    // Path must be a string when present; numbers / objects /
+    // booleans are outside the schema. The schema declares
+    // `path: z.string().optional()` so any non-string value trips the
+    // type guard.
     for (const path of [42, true, { nested: 'x' }, ['/home/user']]) {
       const result = ListDirectoriesPayloadSchema.safeParse({ path });
       expect(result.success, `path=${JSON.stringify(path)} should be rejected`).toBe(false);
@@ -136,10 +137,11 @@ describe('Work-dir request payloads (M4 PRD §9.1 — 11 cases)', () => {
 
   it('5. rejects a `work_dir_list` payload whose root is not an object', () => {
     // The schema is `z.object({})` — a non-object root (`null`, string,
-    // number, array) must be refused at the boundary. zod's default object
-    // parser rejects `null` and primitives; arrays of length 0 happen to
-    // parse as `{}` only in strict mode (here they do NOT — `[]` is not
-    // an object literal). Sweep the four outright non-object roots.
+    // number, array) must be refused at the boundary. zod's default
+    // object parser rejects `null` and primitives; arrays of length 0
+    // happen to parse as `{}` only in strict mode (here they do NOT
+    // — `[]` is not an object literal). Sweep the four outright
+    // non-object roots.
     for (const root of [null, 'string', 42, true]) {
       const result = WorkDirListPayloadSchema.safeParse(root);
       expect(result.success, `root=${JSON.stringify(root)} should be rejected`).toBe(false);
@@ -147,10 +149,10 @@ describe('Work-dir request payloads (M4 PRD §9.1 — 11 cases)', () => {
 
     // Strip-contract pin — `WorkDirListPayloadSchema` is `z.object({})`;
     // zod's default object policy strips unknown keys (mirrors the
-    // `AbortPayload` case 16 precedent in `pi.test.ts`). A `{ extra: 'x' }`
-    // input parses successfully and the resulting `data` is exactly `{}`,
-    // pinning the contract that unknown keys never leak through this
-    // payload surface.
+    // `AbortPayload` case 16 precedent in `pi.test.ts`). A
+    // `{ extra: 'x' }` input parses successfully and the resulting
+    // `data` is exactly `{}`, pinning the contract that unknown keys
+    // never leak through this payload surface.
     const stripped = WorkDirListPayloadSchema.safeParse({ extra: 'x' });
     expect(stripped.success).toBe(true);
     if (!stripped.success) return;
@@ -165,7 +167,6 @@ describe('Work-dir request payloads (M4 PRD §9.1 — 11 cases)', () => {
     if (!result.success) return;
     expect(result.data.path).toBe('/home/user/proj');
 
-    // Envelope-level — round-trip through `Envelope.safeParse`.
     const env = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',
@@ -177,16 +178,10 @@ describe('Work-dir request payloads (M4 PRD §9.1 — 11 cases)', () => {
   });
 
   it('7. rejects a `work_dir_add` payload missing `path`', () => {
-    // `path` is required by control.md §6.7 — the bridge must reject any
-    // add request that does not specify a directory to add.
+    // `path` is required by control.md §6.7 — the bridge must reject
+    // any add request that does not specify a directory to add.
     const result = WorkDirAddPayloadSchema.safeParse({});
     expect(result.success).toBe(false);
-
-    // Schema-level spot check with empty string also fails since the
-    // schema declares `path: z.string()` (no `min(1)` on this field, but
-    // empty strings are still strings — the test is structural).
-    // The key contract here is "missing", so case 8 covers the
-    // non-string-type branch.
   });
 
   it('8. rejects a `work_dir_add` payload whose `path` is not a string', () => {
@@ -206,7 +201,6 @@ describe('Work-dir request payloads (M4 PRD §9.1 — 11 cases)', () => {
     if (!result.success) return;
     expect(result.data.path).toBe('/tmp/old-proj');
 
-    // Envelope-level — round-trip through `Envelope.safeParse`.
     const env = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',
@@ -254,7 +248,8 @@ describe('Work-dir result schemas (M4 PRD §9.1 — 6 cases)', () => {
   it('13. accepts a `list_directories` result with an empty `entries: []`', () => {
     // An empty directory listing is a legitimate result (e.g. an empty
     // home directory or a directory with only hidden files that the
-    // bridge chooses to omit). The schema's `z.array(...)` accepts `[]`.
+    // bridge chooses to omit). The schema's `z.array(...)` accepts
+    // `[]`.
     const result = ListDirectoriesResultSchema.safeParse({ entries: [] });
     expect(result.success).toBe(true);
     if (!result.success) return;
@@ -273,10 +268,10 @@ describe('Work-dir result schemas (M4 PRD §9.1 — 6 cases)', () => {
     // omits either field is malformed and must be refused so the web
     // never reads `undefined`.
     for (const entries of [
-      [{ name: 'only-name' }], // missing `path`
-      [{ path: '/only/path' }], // missing `name`
-      [{}], // missing both
-      [{ name: 'p', path: '/x', extra: 'ok' }], // legal — extras stripped by zod default
+      [{ name: 'only-name' }],
+      [{ path: '/only/path' }],
+      [{}],
+      [{ name: 'p', path: '/x', extra: 'ok' }],
     ]) {
       const result = ListDirectoriesResultSchema.safeParse({ entries });
       if (entries[0] && 'extra' in (entries[0] as Record<string, unknown>)) {
@@ -317,14 +312,14 @@ describe('pi/prompt.payload.work_dir (M4 PRD §9.1 — 2 cases)', () => {
 
   it('18. parses a legal `pi/prompt` payload with `work_dir` set (the `session:"new"` path)', () => {
     // Wire contract (ADR-0010 §决策.2 + pi.ts JSDoc): `work_dir` MUST
-    // only be carried by prompts whose envelope `session === 'new'`. The
-    // shared schema enforces ONLY the optional-side of the contract
-    // (presence is allowed; absence is allowed) — the "new only" rule is
-    // a bridge-side convention that the web is responsible for honouring.
-    // This case asserts the presence-legality half of that contract;
-    // absence is covered by the existing `pi.test.ts` cases 1 + 11
-    // (legal payload without work_dir / rejected payload missing
-    // content).
+    // only be carried by prompts whose envelope `session === 'new'`.
+    // The shared schema enforces ONLY the optional-side of the
+    // contract (presence is allowed; absence is allowed) — the "new
+    // only" rule is a bridge-side convention that the web is
+    // responsible for honouring. This case asserts the
+    // presence-legality half of that contract; absence is covered by
+    // the existing `pi.test.ts` cases 1 + 11 (legal payload without
+    // work_dir / rejected payload missing content).
     const result = PromptPayloadSchema.safeParse({
       content: 'start a new session here',
       work_dir: '/home/user/proj-new',
@@ -336,7 +331,8 @@ describe('pi/prompt.payload.work_dir (M4 PRD §9.1 — 2 cases)', () => {
 
     // Envelope-level — round-trip through `Envelope.safeParse` with a
     // `session: 'new'` envelope to demonstrate the canonical M4 wire
-    // frame the web emits at ChoicePage (level=2 → "start new session").
+    // frame the web emits at ChoicePage (level=2 → "start new
+    // session").
     const env = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'pi',
@@ -353,8 +349,9 @@ describe('pi/prompt.payload.work_dir (M4 PRD §9.1 — 2 cases)', () => {
 
   it('19. rejects a `pi/prompt` payload whose `work_dir` is not a string', () => {
     // Optional but typed — non-string values trip the type guard. The
-    // `content` field is also required (existing behaviour), so a bare
-    // `{ content }` parses fine; a non-string `work_dir` does not.
+    // `content` field is also required (existing behaviour), so a
+    // bare `{ content }` parses fine; a non-string `work_dir` does
+    // not.
     for (const work_dir of [42, true, { absolute: true }, ['/x']]) {
       const result = PromptPayloadSchema.safeParse({
         content: 'hi',

@@ -4,6 +4,10 @@
 // block is numbered to match the PRD list — keep them in lock-step if the PRD
 // ever reorganises.
 //
+// Cases 18–19 were added during the v1 review to pin the `changed_at`
+// precision contract (see `BridgeStatusPayloadSchema` JSDoc). Cases
+// 20–25 are the M4 lock-version guard + envelope round-trip sweeps.
+//
 // Style: every assertion goes through `Envelope.safeParse(...)` and inspects
 // `.success`. We avoid `.toThrow(ZodError)` because `.safeParse` gives richer
 // error context for failure cases (and a single `expect(...).toBe(true|false)`
@@ -33,16 +37,16 @@ import {
 // ----- helpers -----
 
 /** Run `Envelope.parse` on an unknown shape and assert the outcome.
- *  Centralises the parse-then-narrow dance so each case stays focused on the
- *  payload it cares about. */
+ *  Centralises the parse-then-narrow dance so each case stays focused
+ *  on the payload it cares about. */
 function parseEnvelope(value: unknown) {
   return Envelope.safeParse(value);
 }
 
 /** Narrow `result.data` to a specific envelope variant by its `type`
- *  discriminator. Throws if the parse succeeded but with an unexpected type —
- *  that would mean a test bug (we constructed a frame we thought was type X
- *  but got Y back). */
+ *  discriminator. Throws if the parse succeeded but with an unexpected
+ *  type — that would mean a test bug (we constructed a frame we thought
+ *  was type X but got Y back). */
 function narrow<T extends { type: string; payload: unknown }>(
   data: { type: string; payload: unknown },
   type: T['type'],
@@ -66,10 +70,6 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
 
-    // Discriminator narrowing — the inner `discriminatedUnion('type', ...)` on
-    // ControlBranch collapses Envelope down to HandshakeEnvelope (kind stays
-    // 'control' since pi is the always-reject placeholder), which lets us
-    // access handshake-only payload fields without further casts.
     const handshake = narrow<HandshakeEnvelope>(result.data, 'handshake');
     expect(handshake.kind).toBe('control');
     expect(handshake.type).toBe('handshake');
@@ -89,7 +89,6 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
     });
     expect(result.success).toBe(false);
 
-    // Independent payload-schema check — same expectation, narrower surface.
     expect(HandshakePayloadSchema.safeParse({ token: 't0k' }).success).toBe(false);
   });
 
@@ -154,15 +153,14 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
       expect(env.payload.nonce).toBeUndefined();
     }
 
-    // Payload-schema spot check — same outcome.
     expect(PingPayloadSchema.safeParse({ nonce: 'a1b2' }).success).toBe(true);
     expect(PingPayloadSchema.safeParse({}).success).toBe(true);
   });
 
   // ----- pong (case 6) -----
   it('6. rejects a pong envelope whose payload omits the required `nonce`', () => {
-    // Pong's `nonce` is mandatory (control.md §3 — the nonce is the pairing
-    // key). A pong frame without it must be refused.
+    // Pong's `nonce` is mandatory (control.md §3 — the nonce is the
+    // pairing key). A pong frame without it must be refused.
     const result = parseEnvelope({
       v: 1,
       kind: 'control',
@@ -196,7 +194,6 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
       }
     }
 
-    // Schema-level spot check that all three reasons parse on their own.
     for (const reason of BRIDGE_STATUS_REASONS) {
       expect(
         BridgeStatusPayloadSchema.safeParse({
@@ -217,7 +214,7 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
       payload: {
         online: true,
         changed_at: '2026-09-05T10:00:00Z',
-        reason: 'foo', // not in BRIDGE_STATUS_REASONS
+        reason: 'foo',
       },
     });
     expect(result.success).toBe(false);
@@ -308,11 +305,10 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
   });
 
   it('13. rejects any envelope whose `kind` is `pi` but `type` is a control-family or arbitrary type', () => {
-    // From M3 onward `PiBranch` is a real `z.discriminatedUnion('type', [...9
-    // pi schemas...])` — see `pi.ts`. We sweep control-family types AND an
-    // arbitrary type, all with `kind: 'pi'`, and confirm each fails: the
-    // pi discriminator union only accepts the 9 pi types (`prompt`, `steer`,
-    // `follow_up`, `abort`, `get_messages`, `extension_ui_response`,
+    // From M3 onward `PiBranch` is a real `z.discriminatedUnion('type',
+    // [...9 pi schemas...])` — see `pi.ts`. The pi discriminator union
+    // only accepts the 9 pi types (`prompt`, `steer`, `follow_up`,
+    // `abort`, `get_messages`, `extension_ui_response`,
     // `command_result`, `snapshot`, `event`), so control-family and
     // arbitrary `type` values must be rejected at the boundary.
     for (const type of [...CONTROL_TYPES, 'something_arbitrary']) {
@@ -326,10 +322,10 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
       expect(result.success, `kind=pi, type=${type} must fail`).toBe(false);
     }
 
-    // Additional negative case: even a payload that is *legal* for the
-    // control kind (a real handshake payload) must still be refused when
-    // `kind` is `pi`. Proves the rejection happens on the kind / type gate
-    // (PiBranch only accepts the 9 pi types) and not on payload semantics.
+    // Even a payload that is *legal* for the control kind (a real
+    // handshake payload) must still be refused when `kind` is `pi`.
+    // Proves the rejection happens on the kind / type gate and not on
+    // payload semantics.
     const legalControlPayloadWithPiKind = parseEnvelope({
       v: 1,
       kind: 'pi',
@@ -386,15 +382,15 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      // `session` is intentionally not populated by any M2 message but stays
-      // on the schema surface for v1 lock-version (envelope.md §锁版承诺).
+      // `session` is intentionally not populated by any M2 message but
+      // stays on the schema surface for v1 lock-version
+      // (envelope.md §锁版承诺).
       expect(result.data.session).toBeUndefined();
     }
 
-    // Positive case: when `session` is provided, parsing still succeeds and
-    // the value is preserved verbatim. No M2 message populates it today, but
-    // the field is part of the v1 wire surface — consumers must round-trip
-    // it without dropping or renaming it.
+    // Positive case: when `session` is provided, parsing still succeeds
+    // and the value is preserved verbatim. The schema is round-trippable
+    // for both fields even though M2 has no emitter that sets them.
     const withSession = parseEnvelope({
       v: 1,
       kind: 'control',
@@ -424,9 +420,6 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
       expect(result.data.reply_to).toBeUndefined();
     }
 
-    // Positive case: when `reply_to` is provided, parsing still succeeds and
-    // the value is preserved verbatim. The schema is round-trippable for
-    // both fields even though M2 has no emitter that sets them.
     const withReplyTo = parseEnvelope({
       v: 1,
       kind: 'control',
@@ -442,14 +435,15 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
   });
 
   // ----- bridge_status `changed_at` precision (post-PRD additions) -----
-  // The M2 PRD §6 lists 17 cases; cases 18 / 19 below were added during the
-  // v1 review to pin down the `changed_at` precision contract — see
-  // BridgeStatusPayloadSchema JSDoc.
+  // The M2 PRD §6 lists 17 cases; cases 18 / 19 below were added during
+  // the v1 review to pin down the `changed_at` precision contract — see
+  // `BridgeStatusPayloadSchema` JSDoc.
 
   it('18. accepts a bridge_status envelope whose `changed_at` has millisecond precision (toISOString format)', () => {
-    // `new Date().toISOString()` always emits `.123Z`-style timestamps with
-    // three fractional digits. The schema must accept that or every bridge
-    // status emitted by JS runtimes would be refused at the boundary.
+    // `new Date().toISOString()` always emits `.123Z`-style timestamps
+    // with three fractional digits. The schema must accept that or
+    // every bridge status emitted by JS runtimes would be refused at
+    // the boundary.
     const result = parseEnvelope({
       v: 1,
       kind: 'control',
@@ -467,7 +461,6 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
       expect(env.payload.changed_at).toBe('2026-09-05T10:00:00.123Z');
     }
 
-    // Schema-level spot check — same outcome in isolation.
     expect(
       BridgeStatusPayloadSchema.safeParse({
         online: true,
@@ -479,8 +472,8 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
 
   it('19. accepts a bridge_status envelope whose `changed_at` is second-precision (no fractional part)', () => {
     // Tests, SDKs and humans frequently emit second-precision ISO strings
-    // without the `.000` suffix. The schema must accept those too — both
-    // precisions are legal under `datetime({ precision: null })`.
+    // without the `.000` suffix. The schema must accept those too —
+    // both precisions are legal under `datetime({ precision: null })`.
     const result = parseEnvelope({
       v: 1,
       kind: 'control',
@@ -517,9 +510,9 @@ describe('Envelope (v1 — 17 cases per M2 PRD §6)', () => {
 // gating, 15 for `id: min(1)`) must continue to pass unchanged.
 //
 // Cases 20 / 21 lock the `session` lockdown contract. Case 16 already
-// proves `session` is optional for a control `handshake`; cases 20 / 21
-// sweep one M3 + one M4 envelope variant to confirm the M4 unlock did
-// not silently make `session` required on any family member.
+// proves `session` is optional for a control `handshake`; cases 20 /
+// 21 sweep one M3 + one M4 envelope variant to confirm the M4 unlock
+// did not silently make `session` required on any family member.
 
 describe('Envelope session lock-version guard (M4 PRD §9.1 — 2 cases)', () => {
   it('20. M3 `session_list` envelope still parses whether `session` is present or omitted', () => {
@@ -529,7 +522,7 @@ describe('Envelope session lock-version guard (M4 PRD §9.1 — 2 cases)', () =>
     // M4 unlock (multi-session mode under envelope evolution rule (b)
     // populates it, single-session mode does not; the schema does not
     // flip the wire contract).
-    //
+
     // M3 compatibility — `session` omitted:
     const omitted = parseEnvelope({
       v: PROTOCOL_VERSION,
@@ -669,10 +662,10 @@ describe('M4 new control envelopes round-trip (4 cases)', () => {
   });
 });
 
-// Sanity sweep: every legal role / reason / error code parses at the payload
-// schema level. These are not numbered PRD cases but guard against future enum
-// drift between CONTROL_TYPES / ROLES / BRIDGE_STATUS_REASONS / ERROR_CODES and
-// the payload schemas that consume them.
+// Sanity sweep — every legal role / reason / error code parses at the
+// payload schema level. Guards against future enum drift between
+// CONTROL_TYPES / ROLES / BRIDGE_STATUS_REASONS / ERROR_CODES and the
+// payload schemas that consume them.
 describe('Enum literals ↔ payload schemas (sanity)', () => {
   it('every legal role parses HandshakePayloadSchema', () => {
     for (const role of ROLES) {

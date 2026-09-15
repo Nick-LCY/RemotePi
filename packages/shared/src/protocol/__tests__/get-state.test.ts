@@ -109,9 +109,6 @@ describe('get_state request + result reply (M3 PRD §6.1 — 9 cases)', () => {
     expect(env.payload.ok).toBe(true);
     expect(env.payload.data).toEqual({ phase: 'ready' });
 
-    // The web is responsible for revalidating `data` against
-    // SessionStatePayloadSchema — confirm the inner revalidation also
-    // succeeds here.
     expect(
       SessionStatePayloadSchema.safeParse(env.payload.data).success,
     ).toBe(true);
@@ -132,7 +129,6 @@ describe('get_state request + result reply (M3 PRD §6.1 — 9 cases)', () => {
     if (!result.success) return;
     const env = narrow<ResultEnvelope>(result.data, 'result');
 
-    // Inner revalidation succeeds — `blocked_on` is optional.
     const inner = SessionStatePayloadSchema.safeParse(env.payload.data);
     expect(inner.success).toBe(true);
     if (inner.success) {
@@ -159,7 +155,6 @@ describe('get_state request + result reply (M3 PRD §6.1 — 9 cases)', () => {
     if (!result.success) return;
     const env = narrow<ResultEnvelope>(result.data, 'result');
 
-    // Inner revalidation succeeds with both elements preserved.
     const inner = SessionStatePayloadSchema.safeParse(env.payload.data);
     expect(inner.success).toBe(true);
     if (inner.success) {
@@ -173,9 +168,9 @@ describe('get_state request + result reply (M3 PRD §6.1 — 9 cases)', () => {
   it('5. rejects a `result` envelope replying with illegal `data.phase` (string `foo`)', () => {
     // The outer envelope parses (ResultPayloadSchema.data is
     // `z.unknown()`) — the gate that fires is the inner revalidation
-    // against SessionStatePayloadSchema. Mirrors the
-    // bridge.ts / web.ts contract where the consumer narrows and
-    // revalidates the inner shape.
+    // against SessionStatePayloadSchema. Mirrors the bridge.ts /
+    // web.ts contract where the consumer narrows and revalidates the
+    // inner shape.
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',
@@ -225,7 +220,6 @@ describe('get_state request + result reply (M3 PRD §6.1 — 9 cases)', () => {
     // Inner revalidation fails on the illegal `method` discriminator.
     const inner = SessionStatePayloadSchema.safeParse(env.payload.data);
     expect(inner.success).toBe(false);
-    // Schema-level spot check — same outcome on the per-element schema.
     expect(
       BlockedOnEntryPayloadSchema.safeParse({
         method: 'notify',
@@ -239,8 +233,8 @@ describe('get_state request + result reply (M3 PRD §6.1 — 9 cases)', () => {
 
   it('7. accepts a `result` envelope with `ok: false` + `error: { code, message }` (one legal code)', () => {
     // `error.code` is constrained to the 6-value lock-versioned
-    // ERROR_CODES set — pick `internal` here; the full sweep follows in
-    // case 8.
+    // ERROR_CODES set — pick `internal` here; the full sweep follows
+    // in case 8.
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'control',

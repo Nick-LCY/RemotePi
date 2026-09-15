@@ -7,30 +7,20 @@
 //   - `EnvelopeBasePi`     — for pi-family envelopes (`kind: 'pi'`).
 //
 // Both share `v` / `id` / `session` / `reply_to`; only the `kind` literal
-// differs. Splitting the two families into separate shapes (rather than
-// one `kind: z.union([z.literal('control'), z.literal('pi')])`) keeps each
-// envelope schema a discriminated union member — `EnvelopeBaseControl`
-// flows into every `XxxEnvelope` in `control.ts`, `EnvelopeBasePi` flows
-// into every `YyyEnvelope` in `pi.ts`.
+// differs.
 //
 // ## Why this lives in its own module
 //
-// The M3 split puts control-family and pi-family envelope schemas into
-// separate files (`control.ts` / `pi.ts`), and the top-level `Envelope`
-// union in `envelope.ts` references both via their `ControlBranch` /
-// `PiBranch` aliases. If `EnvelopeBase` lived in any of those three
-// modules, the other two would have to import from it — a cycle that
-// would surface as `EnvelopeBase === undefined` at module evaluation
-// time (see the `literals.ts` header for the same reasoning). Pulling
-// the base shape into a leaf module with no protocol-internal imports
-// breaks the cycle cleanly.
+// `control.ts` and `pi.ts` both spread these base shapes into their
+// per-envelope schemas, and `envelope.ts` references both via the
+// `ControlBranch` / `PiBranch` aliases. If `EnvelopeBase` lived in any
+// of those modules, the other two would have to import from it — a
+// cycle that would surface as `EnvelopeBase === undefined` at module
+// evaluation time. Pulling the base shape into a leaf module with no
+// protocol-internal imports breaks the cycle cleanly.
 //
-// ## Why we don't import `PROTOCOL_VERSION` from `literals.ts`
-//
-// We do — `VersionLiteral` is initialised from `PROTOCOL_VERSION` so the
-// numeric wire value stays single-sourced. The cycle-free path works
-// because `literals.ts` is itself a leaf (no protocol-internal imports),
-// so importing from it here is safe.
+// `literals.ts` is itself a leaf (no protocol-internal imports) and
+// provides `PROTOCOL_VERSION`; importing from it here is safe.
 import { z } from 'zod';
 import { PROTOCOL_VERSION } from './literals.js';
 
@@ -58,7 +48,7 @@ export const EnvelopeBaseControl = {
 };
 
 /** Base shape for pi-family envelopes (`kind: 'pi'`). Spread into each
- *  `XxxEnvelope` in `pi.ts`; the discriminator (`type`) is set by the
+ *  `YyyEnvelope` in `pi.ts`; the discriminator (`type`) is set by the
  *  per-envelope schema that consumes this base. */
 export const EnvelopeBasePi = {
   ...EnvelopeBaseCommon,

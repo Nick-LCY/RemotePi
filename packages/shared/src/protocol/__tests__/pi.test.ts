@@ -35,6 +35,8 @@
 //        the 9 pi types; control-family + arbitrary types are refused at the
 //        boundary)
 //
+// Cases 20–22 pin the M4 envelope (a) extension on `prompt.payload.work_dir`.
+//
 // Style: every assertion goes through `Envelope.safeParse(...)` and inspects
 // `.success`, mirroring the M2 envelope.test.ts pattern.
 
@@ -171,10 +173,10 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
   });
 
   it('7. parses a legal `extension_ui_response` envelope (web wire shape)', () => {
-    // Shape is owned by `block-on.ts`; the envelope simply wraps it. Use a
-    // `select`-style string value here so we exercise the string branch of
-    // the union — the boolean branch (confirm) is covered separately by the
-    // `block-on.test.ts` cases 16 / 17.
+    // Shape is owned by `block-on.ts`; the envelope simply wraps it.
+    // Use a `select`-style string value here so we exercise the string
+    // branch of the union — the boolean branch (confirm) is covered
+    // separately by the `block-on.test.ts` cases 16 / 17.
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'pi',
@@ -227,9 +229,9 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
   });
 
   it('10. parses a legal `event` envelope (bridge → web, `data` is `z.unknown()`)', () => {
-    // Event `data` is an open shape by design (envelope evolution rule (c);
-    // see M3 PRD §1.5). This case uses a plain object to lock the basic
-    // shape; cases 15 / 16 cover scalar and deeply nested data.
+    // Event `data` is an open shape by design (envelope evolution rule
+    // (c); see M3 PRD §1.5). This case uses a plain object to lock the
+    // basic shape; cases 15 / 16 cover scalar and deeply nested data.
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'pi',
@@ -305,11 +307,12 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
   // ----- behavioural coverage (cases 16–18) -----
 
   it('16. accepts an `abort` envelope with extra payload fields (zod strips unknowns)', () => {
-    // `AbortPayloadSchema` is `z.object({})`. zod's default policy strips
-    // unknown keys, so extras do not surface on the parsed result but the
-    // envelope still parses. This mirrors the M2 envelope.test.ts "abort
-    // with extra fields passes" precedent (see also envelope.test.ts cases
-    // 16 / 17 for the optional-field + unknown-key round-trip pattern).
+    // `AbortPayloadSchema` is `z.object({})`. zod's default policy
+    // strips unknown keys, so extras do not surface on the parsed
+    // result but the envelope still parses. Mirrors the M2
+    // envelope.test.ts "abort with extra fields passes" precedent
+    // (see also envelope.test.ts cases 16 / 17 for the
+    // optional-field + unknown-key round-trip pattern).
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'pi',
@@ -325,8 +328,9 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
   });
 
   it('17. accepts an `event` envelope with a scalar `data` value (number)', () => {
-    // `data: z.unknown()` accepts any JSON-serialisable value. Queue-length
-    // events and similar small payloads use a number — must round-trip.
+    // `data: z.unknown()` accepts any JSON-serialisable value.
+    // Queue-length events and similar small payloads use a number —
+    // must round-trip.
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'pi',
@@ -342,8 +346,9 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
   });
 
   it('18. accepts an `event` envelope with a deeply nested `data` object', () => {
-    // Mirrors `message_update` text_delta style payloads — anything that
-    // survives JSON serialisation must round-trip without schema interference.
+    // Mirrors `message_update` text_delta style payloads — anything
+    // that survives JSON serialisation must round-trip without schema
+    // interference.
     const nested = { delta: { text: 'hi', tokens: [{ t: 1 }, { t: 2 }] } };
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,
@@ -363,16 +368,16 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
 
   it('19. rejects a `kind: pi` envelope whose `type` is not in the 9 pi types', () => {
     // `PiBranch` is `z.discriminatedUnion('type', [...9 pi schemas...])`.
-    // Sweep control-family types + an arbitrary string + a typo — all must
-    // fail. This proves rejection happens on the type-discriminator gate, not
-    // on payload semantics.
+    // Sweep control-family types + an arbitrary string + a typo — all
+    // must fail. This proves rejection happens on the type-discriminator
+    // gate, not on payload semantics.
     for (const type of [
       'handshake',
       'result',
       'error',
       'get_state',
       'session_state',
-      'promptt', // typo — not a real type
+      'promptt',
     ]) {
       const result = parseEnvelope({
         v: PROTOCOL_VERSION,
@@ -419,13 +424,13 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
   });
 
   it('21. accepts a `prompt` envelope with `work_dir` set (the `session:"new"` path — schema does NOT enforce correlation)', () => {
-    // Wire contract (ADR-0010 §决策.2 + pi.ts JSDoc): `work_dir` MAY only
-    // be carried by prompts whose envelope `session === 'new'`. The
-    // shared schema enforces ONLY the optional-side of the contract
-    // (presence is allowed; absence is allowed). The "new only" rule is
-    // a bridge-side convention that the web is responsible for
-    // honouring — the schema deliberately stays silent on it so the
-    // schema stays small and forward-compatible.
+    // Wire contract (ADR-0010 §决策.2 + pi.ts JSDoc): `work_dir` MAY
+    // only be carried by prompts whose envelope `session === 'new'`.
+    // The shared schema enforces ONLY the optional-side of the
+    // contract (presence is allowed; absence is allowed). The "new
+    // only" rule is a bridge-side convention that the web is
+    // responsible for honouring — the schema deliberately stays
+    // silent on it so the schema stays small and forward-compatible.
     //
     // We assert presence-legality below by emitting the canonical M4
     // `session: 'new'` frame and confirming the schema round-trips it.
@@ -448,11 +453,11 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
     expect(env.payload.content).toBe('start a new session here');
 
     // Comment-mandated semantics check: the schema does NOT reject
-    // `work_dir` on a non-`new` session. A future bridge hardening pass
-    // could add that gate, but the schema intentionally stays silent.
-    // We assert the actual permissive behaviour here so a future
-    // tightening is a deliberate wire-breaking change, not a silent
-    // drift.
+    // `work_dir` on a non-`new` session. A future bridge hardening
+    // pass could add that gate, but the schema intentionally stays
+    // silent. We assert the actual permissive behaviour here so a
+    // future tightening is a deliberate wire-breaking change, not a
+    // silent drift.
     const nonNewWithWorkDir = parseEnvelope({
       v: PROTOCOL_VERSION,
       kind: 'pi',
@@ -476,8 +481,8 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
     // are mid-run inserts that already target an existing session —
     // the bridge translates `content` → `message` at the bridge→pi
     // boundary (see `translateToPiWire`). Adding `work_dir` to those
-    // payloads has no wire effect because their schemas do not declare
-    // the field; zod's default policy silently strips it.
+    // payloads has no wire effect because their schemas do not
+    // declare the field; zod's default policy silently strips it.
     //
     // This test pins that contract: an accidental future addition of
     // `work_dir?` to `SteerPayloadSchema` / `FollowUpPayloadSchema`
@@ -485,11 +490,11 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
     // below, not as a silent drift.
     for (const type of ['steer', 'follow_up'] as const) {
       // Build the candidate input as `Record<string, unknown>` so the
-      // extra `work_dir` doesn't trip the type checker — the type-level
-      // signature of `SteerPayload` / `FollowUpPayload` deliberately
-      // does not declare `work_dir` (that's the whole point of this
-      // test). The extra key would be stripped by zod's default policy
-      // at parse time; this test pins that contract.
+      // extra `work_dir` doesn't trip the type checker — the
+      // type-level signature of `SteerPayload` / `FollowUpPayload`
+      // deliberately does not declare `work_dir` (that's the whole
+      // point of this test). The extra key would be stripped by zod's
+      // default policy at parse time; this test pins that contract.
       const candidatePayload: Record<string, unknown> = {
         content: 'do this instead',
         work_dir: '/home/user/proj-irrelevant',
@@ -506,8 +511,8 @@ describe('Pi envelopes (M3 PRD §6.1 — 19 cases)', () => {
 
       // The stripped payload must NOT carry `work_dir` on the parsed
       // result. If a future schema adds the field, this assertion
-      // becomes the gate for that wire change. We cast through unknown
-      // because the per-type payload types (SteerPayload /
+      // becomes the gate for that wire change. We cast through
+      // unknown because the per-type payload types (SteerPayload /
       // FollowUpPayload) do NOT declare `work_dir` — that's the
       // invariant under test.
       const parsed = result.data as unknown as {

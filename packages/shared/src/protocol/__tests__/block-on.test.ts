@@ -50,9 +50,9 @@
 //    18. `value` neither string nor boolean (number)    → reject
 //    19. `value` neither string nor boolean (object)    → reject (sweep)
 //
-// Style: every assertion goes through `Envelope.safeParse(...)` (for the
-// envelope-level cases) and the payload schema directly (for the
-// shape/refine cases). The M2 envelope.test.ts pattern is mirrored
+// Style: every assertion goes through `Envelope.safeParse(...)` for the
+// envelope-level cases and the payload schema directly for the
+// shape/refine cases. The M2 envelope.test.ts pattern is mirrored
 // throughout.
 
 import { describe, expect, it } from 'vitest';
@@ -119,7 +119,6 @@ describe('BlockedOnEntry (M3 PRD §6.1 — 4 methods + boundaries)', () => {
   });
 
   it('3. parses a legal `input` BlockedOnEntry with and without `placeholder`', () => {
-    // With placeholder
     const withPlaceholder = BlockedOnEntryPayloadSchema.safeParse({
       method: 'input',
       id: 'req-3a',
@@ -131,7 +130,6 @@ describe('BlockedOnEntry (M3 PRD §6.1 — 4 methods + boundaries)', () => {
       expect(withPlaceholder.data.placeholder).toBe('e.g. feat/login');
     }
 
-    // Without placeholder — `placeholder` is optional; absence is legal.
     const withoutPlaceholder = BlockedOnEntryPayloadSchema.safeParse({
       method: 'input',
       id: 'req-3b',
@@ -144,9 +142,9 @@ describe('BlockedOnEntry (M3 PRD §6.1 — 4 methods + boundaries)', () => {
   });
 
   it('4. parses a legal `editor` BlockedOnEntry (no `timeout` per ADR-0004)', () => {
-    // Editor deliberately has no `timeout` field — it blocks indefinitely
-    // and the agent only emits `agent_settled` after the user submits.
-    // `prefill` is optional.
+    // Editor deliberately has no `timeout` field — it blocks
+    // indefinitely and the agent only emits `agent_settled` after the
+    // user submits.
     const result = BlockedOnEntryPayloadSchema.safeParse({
       method: 'editor',
       id: 'req-4',
@@ -157,7 +155,6 @@ describe('BlockedOnEntry (M3 PRD §6.1 — 4 methods + boundaries)', () => {
     if (!result.success) return;
     if (result.data.method === 'editor') {
       expect(result.data.prefill).toBe('Initial draft...');
-      // Editor has no `timeout` field on its schema.
       expect('timeout' in result.data).toBe(false);
     }
   });
@@ -221,9 +218,10 @@ describe('BlockedOnEntry (M3 PRD §6.1 — 4 methods + boundaries)', () => {
   });
 
   it('9. rejects a BlockedOnEntry missing the `id` correlation key', () => {
-    // `id` is the correlation key between `extension_ui_request` (forwarded
-    // to web) and the eventual `extension_ui_response`. Any entry without
-    // an `id` cannot be routed and must be refused at the schema boundary.
+    // `id` is the correlation key between `extension_ui_request`
+    // (forwarded to web) and the eventual `extension_ui_response`. Any
+    // entry without an `id` cannot be routed and must be refused at
+    // the schema boundary.
     for (const method of BLOCK_ON_METHODS) {
       const base: Record<string, unknown> = { method, title: 't' };
       if (method === 'select') base.options = ['a'];
@@ -235,10 +233,11 @@ describe('BlockedOnEntry (M3 PRD §6.1 — 4 methods + boundaries)', () => {
   });
 
   it('10. rejects fire-and-forget methods (notify / setStatus / setWidget / setTitle / set_editor_text)', () => {
-    // These 5 methods are pi's `extension_ui_request` non-blocking variants.
-    // They have no remote equivalent (TUI-only concepts); the bridge digests
-    // them locally and they must NOT enter `blocked_on`. The 4-method
-    // discriminated union refuses any non-union `method` discriminator.
+    // These 5 methods are pi's `extension_ui_request` non-blocking
+    // variants. They have no remote equivalent (TUI-only concepts);
+    // the bridge digests them locally and they must NOT enter
+    // `blocked_on`. The 4-method discriminated union refuses any
+    // non-union `method` discriminator.
     const fireAndForget = [
       'notify',
       'setStatus',
@@ -262,21 +261,22 @@ describe('BlockedOnEntry (M3 PRD §6.1 — 4 methods + boundaries)', () => {
   // ----- editor + timeout boundary (case 11) -----
 
   it('11. accepts an `editor` BlockedOnEntry that carries a `timeout` field (zod strips it)', () => {
-    // `editor` deliberately omits `timeout` per ADR-0004 (editor blocks
-    // indefinitely; only `agent_settled` after the user submits resolves
-    // it). The schema has no `.strict()` modifier, so zod's default
-    // policy silently strips any unknown `timeout` key rather than
-    // rejecting. PRD §1.3 enumerates `editor`'s fields as `id` /
-    // `title` / `prefill?` and never pins a "reject unknown keys"
-    // behaviour — so the permissive parse matches PRD as written.
-    // Tightening (e.g. adding `.strict()`) would be a wire breaking
-    // change requiring an envelope evolution rule (d) revision; this
-    // test asserts actual schema behaviour, which is permissive.
+    // `editor` deliberately omits `timeout` per ADR-0004 (editor
+    // blocks indefinitely; only `agent_settled` after the user
+    // submits resolves it). The schema has no `.strict()` modifier,
+    // so zod's default policy silently strips any unknown `timeout`
+    // key rather than rejecting. PRD §1.3 enumerates `editor`'s
+    // fields as `id` / `title` / `prefill?` and never pins a
+    // "reject unknown keys" behaviour — so the permissive parse
+    // matches PRD as written. Tightening (e.g. adding `.strict()`)
+    // would be a wire breaking change requiring an envelope
+    // evolution rule (d) revision; this test asserts actual schema
+    // behaviour, which is permissive.
     const result = BlockedOnEntryPayloadSchema.safeParse({
       method: 'editor',
       id: 'req-11',
       title: 'Edit',
-      timeout: 30000, // unexpected on editor — silently stripped
+      timeout: 30000,
     });
     expect(result.success).toBe(true);
     if (!result.success) return;
@@ -290,9 +290,10 @@ describe('ExtensionUIResponse (M3 PRD §6.1 — web wire shape, 8 cases)', () =>
   // ----- cancelled: true (case 12) -----
 
   it('12. accepts an ExtensionUIResponse with `cancelled: true` (no `value` attached)', () => {
-    // When the user dismisses the dialog, the web emits only `cancelled:
-    // true` and no `value` (the agent has no answer to act on). The
-    // refinement allows this: `cancelled === true || value !== undefined`.
+    // When the user dismisses the dialog, the web emits only
+    // `cancelled: true` and no `value` (the agent has no answer to act
+    // on). The refinement allows this:
+    // `cancelled === true || value !== undefined`.
     const result = ExtensionUIResponsePayloadSchema.safeParse({
       request_id: 'req-12',
       cancelled: true,
@@ -306,15 +307,15 @@ describe('ExtensionUIResponse (M3 PRD §6.1 — web wire shape, 8 cases)', () =>
   // ----- cancelled: false but no value (case 13) -----
 
   it('13. rejects an ExtensionUIResponse with `cancelled: false` and missing `value` (refine fires)', () => {
-    // The refine path emits a path-tagged error pointing at `value` so
-    // bridge diagnostics / test failures can localise the missing field.
+    // The refine path emits a path-tagged error pointing at `value`
+    // so bridge diagnostics / test failures can localise the missing
+    // field.
     const result = ExtensionUIResponsePayloadSchema.safeParse({
       request_id: 'req-13',
       cancelled: false,
     });
     expect(result.success).toBe(false);
     if (result.success) return;
-    // Path-tagged error — confirms the refinement is wired to `value`.
     const valuePath = result.error.issues.find(
       (i) => i.path.join('.') === 'value',
     );
@@ -338,8 +339,8 @@ describe('ExtensionUIResponse (M3 PRD §6.1 — web wire shape, 8 cases)', () =>
 
   it('15. accepts an ExtensionUIResponse with `cancelled: false` + boolean `value: true` (confirm "yes")', () => {
     // PRD §6.1 explicitly calls out the confirm boolean `value` as two
-    // independent cases (`true` and `false`) — `value: true` is confirm,
-    // `value: false` is the only way to express "no" on a confirm dialog.
+    // independent cases — `value: true` is confirm, `value: false` is
+    // the only way to express "no" on a confirm dialog.
     const result = ExtensionUIResponsePayloadSchema.safeParse({
       request_id: 'req-15',
       cancelled: false,
@@ -351,8 +352,8 @@ describe('ExtensionUIResponse (M3 PRD §6.1 — web wire shape, 8 cases)', () =>
   });
 
   it('16. accepts an ExtensionUIResponse with `cancelled: false` + boolean `value: false` (confirm "no")', () => {
-    // Independent case per PRD §6.1 — the web wire shape requires confirm
-    // answers to be boolean, with `false` meaning decline.
+    // Independent case per PRD §6.1 — the web wire shape requires
+    // confirm answers to be boolean, with `false` meaning decline.
     const result = ExtensionUIResponsePayloadSchema.safeParse({
       request_id: 'req-16',
       cancelled: false,
@@ -366,7 +367,6 @@ describe('ExtensionUIResponse (M3 PRD §6.1 — web wire shape, 8 cases)', () =>
   // ----- missing request_id (case 17) -----
 
   it('17. rejects an ExtensionUIResponse missing `request_id`', () => {
-    // `request_id` has `min(1)` — empty strings are also refused.
     const omitted = ExtensionUIResponsePayloadSchema.safeParse({
       cancelled: false,
       value: 'x',
@@ -384,10 +384,9 @@ describe('ExtensionUIResponse (M3 PRD §6.1 — web wire shape, 8 cases)', () =>
   // ----- value non-string non-boolean (case 18 / 19) -----
 
   it('18. rejects an ExtensionUIResponse whose `value` is a number', () => {
-    // `value` is constrained to `z.union([z.string(), z.boolean()]).optional()`.
-    // Numbers, arrays, objects, null all fall outside the union and must be
-    // refused. Refinement still has to be evaluated but fails first on the
-    // schema-level type check.
+    // `value` is constrained to `z.union([z.string(), z.boolean()])
+    // .optional()`. Numbers, arrays, objects, null all fall outside
+    // the union and must be refused.
     const result = ExtensionUIResponsePayloadSchema.safeParse({
       request_id: 'req-18',
       cancelled: false,
@@ -428,8 +427,6 @@ describe('BlockedOnEntry (sanity sweep)', () => {
     }
   });
 
-  // Round-trip the envelope through `Envelope.safeParse` to confirm the
-  // payload shape is correctly wired into `ExtensionUIResponseEnvelope`.
   it('ExtensionUIResponseEnvelope round-trips a `cancelled: true` ack through `Envelope`', () => {
     const result = parseEnvelope({
       v: PROTOCOL_VERSION,

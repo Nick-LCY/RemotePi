@@ -2,7 +2,7 @@
 //
 // All `as const` tuples and their derived union types live here, in their
 // own module with no imports. Extracting these to a leaf module breaks the
-// circular-import chain that the M3 split introduces:
+// circular-import chain:
 //
 //   envelope.ts  →  control.ts  →  envelope.ts   (cycle)
 //
@@ -13,16 +13,9 @@
 // the literals out lets every other protocol module import from this file
 // without forming a cycle.
 //
-// Naming contract (M1): literal arrays are `Xxx` / `XxxS` (no `Schema`
+// Naming contract: literal arrays are `Xxx` / `XxxS` (no `Schema`
 // suffix — they aren't Zod schemas, they're plain tuple sources for
 // `z.enum(...)` and `z.literal(...)`).
-//
-// Naming convention rationale (envelope / control / pi do not have `Schema`
-// suffix): they are not standalone Zod schemas, they are literal tuple
-// sources that feed the `z.enum` / `z.literal` schemas declared in the
-// owning module. Adding the `Schema` suffix here would conflict with the
-// existing pattern (`BridgeStatusPayloadSchema` is the schema, not the
-// `(connected|closed|stale)` tuple that feeds it).
 
 /** Single source of truth for the protocol version. Bumping it is a wire
  *  breaking change — every consumer must opt in (see envelope.md §版本化). */

@@ -14,8 +14,6 @@
 //        exactly once — guards against accidental insertion of an
 //        existing name during future unlocks)
 //
-// ## Background
-//
 // `CONTROL_TYPES` lives in [[protocol/literals.ts]] and is the single
 // source of truth for every legal control `type` value. The M4 unlock
 // appended four new work-directory / directory-browsing types
@@ -34,11 +32,6 @@ import { CONTROL_TYPES } from '../literals.js';
 
 describe('CONTROL_TYPES (M4 PRD §9.1 — 4 cases)', () => {
   it('1. CONTROL_TYPES has exactly 13 entries (M2 8 + M3 1 + M4 4)', () => {
-    // History (literals.ts JSDoc):
-    //   M2 lock: 8 types
-    //   M3 unlock: +1 (`get_state`) → 9
-    //   M4 unlock: +4 (list_directories, work_dir_list, work_dir_add,
-    //     work_dir_remove) → 13
     // Any future unlock MUST bump this test alongside the literal — the
     // test is intentionally hard-coded to 13 so a stale literal cannot
     // quietly drift.

@@ -3,58 +3,30 @@
 // Wire layout (see docs/architecture/protocol/envelope.md):
 //   { v: 1, kind: "control"|"pi", type, id, session?, reply_to?, payload }
 //
-// ## File contents (M3 split, M4 extension)
+// ## File contents
 //
-// M2 kept every control-family payload schema + envelope + the top-level
-// `Envelope` union in this one file. M3 splits it so each family owns its
-// own envelope / payload schemas:
+// This file is the assembly point: it re-exports the literal constants
+// (so `@remotepi/shared` consumers continue to import them from a
+// stable surface) and defines the top-level `Envelope = z.union([ControlBranch,
+// PiBranch])`. Per-family schemas live in:
 //
-//   - `./literals.ts`        — all enum literals (`KINDS`, `CONTROL_TYPES`
-//                              including `get_state`, `SESSION_PHASES`,
-//                              `ERROR_CODES`, …) and `PROTOCOL_VERSION`.
-//                              Leaf module with no protocol-internal
-//                              imports.
+//   - `./literals.ts`        — enum literals + `PROTOCOL_VERSION` (leaf module).
 //   - `./envelope-base.ts`   — `VersionLiteral` + `EnvelopeBaseControl` /
 //                              `EnvelopeBasePi` shared header shapes.
-//   - `./block-on.ts`        — `BLOCK_ON_METHODS` + `BlockedOnEntryPayload
-//                              Schema` (4-method discriminated union) +
-//                              `ExtensionUIResponsePayloadSchema` (web wire
-//                              shape).
-//   - `./work-dirs.ts`       — M4 work-dir-related request payloads
-//                              (`ListDirectoriesPayloadSchema` /
-//                              `WorkDirListPayloadSchema` /
-//                              `WorkDirAddPayloadSchema` /
-//                              `WorkDirRemovePayloadSchema`) + result-data
-//                              revalidation schemas (`ListDirectoriesResult
-//                              Schema` / `WorkDirListResultSchema`).
-//                              Note: the `pi/prompt.payload.work_dir?`
-//                              field lives directly on `PromptPayloadSchema`
-//                              in `./pi.ts` (carried only when envelope
-//                              `session === 'new'`; see ADR-0010 §决策.2).
-//   - `./session-list.ts`    — M4 `SessionListEntrySchema` (per-row,
-//                              includes the new `status` 5-enum field) +
-//                              `SessionListResultSchema` (whole
-//                              `data.sessions[]` revalidation).
-//   - `./control.ts`         — 13 control envelopes + their payload schemas
-//                              + `ControlBranch` discriminated union.
-//   - `./pi.ts`              — 9 pi envelopes + their payload schemas +
-//                              `PiBranch` discriminated union.
+//   - `./block-on.ts`        — `BLOCK_ON_METHODS` + `BlockedOnEntryPayloadSchema`
+//                              (4-method discriminated union) +
+//                              `ExtensionUIResponsePayloadSchema`.
+//   - `./work-dirs.ts`       — M4 work-dir-related request payloads +
+//                              result-data revalidation schemas.
+//   - `./session-list.ts`    — M4 `SessionListEntrySchema` + `SessionListResultSchema`.
+//   - `./control.ts`         — control envelopes + `ControlBranch` discriminated union.
+//   - `./pi.ts`              — pi envelopes + `PiBranch` discriminated union.
 //
-// This file (`envelope.ts`) is the assembly point: it re-exports the
-// literal constants (so `@remotepi/shared` consumers continue to import
-// them from a stable surface) and defines the top-level `Envelope = z
-// .union([ControlBranch, PiBranch])`.
+// ## Naming contract
 //
-// ## Naming contract (M1)
-//
-// Reiterated here so future maintainers find it at the top of the
-// package's defining file:
-//   - envelope Zod schema and derived type share the same name
-//     (XxxEnvelope — e.g. `HandshakeEnvelope`, `PromptEnvelope`);
-//   - payload Zod schema uses the `Schema` suffix (XxxPayloadSchema —
-//     e.g. `HandshakePayloadSchema`);
-//   - payload derived type has no suffix (XxxPayload — e.g.
-//     `HandshakePayload`).
+//   - envelope Zod schema and derived type share the same name (XxxEnvelope);
+//   - payload Zod schema uses the `Schema` suffix (XxxPayloadSchema);
+//   - payload derived type has no suffix (XxxPayload).
 //
 // ## Top-level structure
 //
@@ -76,10 +48,7 @@ import { ControlBranch } from './control.js';
 import { PiBranch } from './pi.js';
 
 // Re-export every literal so `@remotepi/shared` consumers (worker /
-// bridge / web) continue to import them from a single stable module
-// path. The barrel at `packages/shared/src/index.ts` further flattens
-// this, but having envelope.ts as the canonical re-export keeps any
-// direct importer of `./protocol/envelope.js` working unchanged.
+// bridge / web) continue to import them from a single stable module path.
 export {
   BRIDGE_STATUS_REASONS,
   CONTROL_TYPES,
