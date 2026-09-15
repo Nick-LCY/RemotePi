@@ -1,65 +1,30 @@
-// Sidebar — persistent left-rail navigation surface (M5 §第二块
-// G5 / D8 / 任务 06 §a).
+// Sidebar — persistent left-rail navigation surface.
 //
 // ## Layout (top → bottom)
 //
-//   1. **Brand slot** — `<h1>RemotePi</h1>` migrated from the
-//      old App-level `<main className="app-shell">` top.
-//   2. **Tabs row** — `[Sessions] [WorkDirs]`. The active tab
-//      is internal `useState` (per task brief: "active tab
-//      内部 useState，不写 URL"); the initial value is decided
-//      by the parent's view prop — choiceLevel1 → WorkDirs (the
-//      user has no work_dir yet so the natural next step is
-//      browsing directories); everything else → Sessions
-//      (default per D8).
+//   1. **Brand slot** — `<h1>RemotePi</h1>`.
+//   2. **Tabs row** — `[Sessions] [WorkDirs]`. The active tab is
+//      internal state (not written to the URL); the initial value
+//      is decided by the parent's view prop — `choiceLevel1` →
+//      WorkDirs; everything else → Sessions.
 //   3. **List slot** — Sessions tab renders the current
 //      work_dir's sessions; WorkDirs tab renders the saved
-//      work_dirs list. The list data sources come from the
-//      WsClient store via the existing hooks (no new store
-//      slice; sidebar reads everything off the existing
-//      SessionBucket mirrors).
+//      work_dirs list. Both read from the WsClient store via
+//      the existing `useSessionList` / `useWorkDirs` hooks.
 //   4. **Footer** — `<BridgeStatusBar>` (compact) +
 //      `<button>Settings</button>` (`settings-button` testid).
-//      Settings opens `<TokenModal closable>` for token
-//      rotation (M5 §D10 closable mode).
+//      Settings opens `<TokenModal closable>` for token rotation.
 //
-// ## Why the list lives here (and not in ChoicePage)
+// The list lives in the Sidebar (not in ChoicePage) so the user
+// can navigate sessions without leaving the chat surface — the
+// sidebar is the view, the hash is the truth.
 //
-// M4 ChoicePage level=2 rendered its own session list; M5 task
-// 06 splits the list render into the sidebar — the ChoicePage
-// panels (`ChoiceLevel1Panel` / `ChoiceLevel2Panel`) only carry
-// the header copy + empty-state CTA + an open-modal handle. This
-// avoids duplicate data fetching (the WsClient store is the
-// single source; both surfaces read the same `useSessionList` /
-// `useWorkDirs` hook) and lets the user navigate sessions
-// without leaving the chat surface (釘子 6 — sidebar is the
-// view, hash is the truth).
-//
-// ## testid inventory (new — task 06 §a specifies "新组件新
-// testid 不计入本约束")
-//
-//   - `sidebar`                  — the root `<aside>`.
-//   - `sidebar-tabs`             — the tabs row.
-//   - `sidebar-tab-sessions`     — the Sessions tab button.
-//   - `sidebar-tab-work-dirs`    — the WorkDirs tab button.
-//   - `settings-button`          — Settings button in the footer.
-//
-// ## Legacy testid reuse
-//
-// The session row / work-dir-row / work-dir-list / etc. anchors
-// from the M4 ChoicePage are reused here so e2e 01 / 04 / 07 specs
-// continue to work without spec changes — the anchor selectors
-// match both the ChoicePage-mount path (pre-task-06) and the
-// Sidebar-mount path (post-task-06). The data-testid inventory
-// grep must remain zero-add/zero-del for these legacy anchors
-// (testid list baseline from task 06 brief).
-//
-// ## Tailwind only
-//
-// New component — Tailwind utilities only (task 04 已就绪：
-// `bg-bg` / `text-text` / `border-border` / `text-muted` /
-// `bg-surface` 等已映射到 13 存量 CSS var via `@theme inline`
-// 块 — D11 落地后所有新组件走 Tailwind，存量 1280 行不触碰）。
+// testid inventory:
+//   - `sidebar` / `sidebar-tabs` / `sidebar-tab-sessions` /
+//     `sidebar-tab-work-dirs` / `settings-button` — new.
+//   - The session row / work-dir-row / etc. anchors are reused
+//     from the legacy ChoicePage so e2e selectors continue to
+//     match.
 
 import { useEffect, useState, type ReactNode } from 'react';
 import type { SessionListEntry } from '@remotepi/shared';
@@ -83,28 +48,24 @@ import { BridgeStatusBar } from './BridgeStatusBar.js';
 // Types
 // ---------------------------------------------------------------------------
 
-/** Which tab the sidebar is currently showing. The active tab is
- *  internal state — the URL hash doesn't carry a tab discriminator
- *  (D13: 「交互细节默认」 — sidebar is a view, hash is the navigation
+/** Which tab the sidebar is currently showing. The active tab
+ *  is internal state — the URL hash doesn't carry a tab
+ *  discriminator (sidebar is a view, hash is the navigation
  *  truth). */
 type SidebarTab = 'sessions' | 'work-dirs';
 
 /** Default active tab for a given App view. `choiceLevel1` →
  *  `'work-dirs'` (the user's next step is picking a directory);
  *  every other view → `'sessions'`. Pure function — extracted
- *  from the Sidebar render path so the W3 view-sync logic can
- *  be unit-tested without spinning up a DOM / React reconciler
- *  (the codebase intentionally avoids jsdom per ADR-0009 §决策 4
- *  rationale; the unit surface here is the logic, not the mount). */
+ *  from the Sidebar render path so the view-sync logic can be
+ *  unit-tested without a DOM / React reconciler. */
 export function defaultTabForView(
   view: 'choiceLevel1' | 'choiceLevel2' | 'recovery',
 ): SidebarTab {
   return view === 'choiceLevel1' ? 'work-dirs' : 'sessions';
 }
 
-/** Props the App layer wires up. App owns the gateMapRef /
- *  handleRefill / sessionKey so the sidebar can stay pure
- *  (no App-level refs leak through). */
+/** Props the App layer wires up. */
 export interface SidebarProps {
   /** Active session (or 'new' / null for level=2 / M3_LEGACY).
    *  Used to highlight the current session row. */
@@ -125,14 +86,9 @@ export interface SidebarProps {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** SESSION_LIST_TIMEOUT_MS — 5s. Mirrors the ChoicePage level=2
- *  watchdog (tasks/m4/07 §钉子 5 — session_list 超时未回执视为
- *  bridge 离线). */
+/** session_list / work_dir_list watchdogs — same 5s ceiling as
+ *  the legacy ChoicePage level=2 / level=1 timeouts. */
 const SESSION_LIST_TIMEOUT_MS = 5_000;
-
-/** WORK_DIR_TIMEOUT_MS — 5s. Mirror of ChoicePage level=1
- *  watchdog (tasks/m4/07 §钉子 5 — work_dir_list 超时未回执视为
- *  bridge 离线). */
 const WORK_DIR_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------------------
@@ -141,28 +97,19 @@ const WORK_DIR_TIMEOUT_MS = 5_000;
 
 export function Sidebar(props: SidebarProps): JSX.Element {
   const { currentSession, currentWorkDir, view, onSettingsClick, onBrowseWorkDirsClick } = props;
-  // active tab — internal useState (per task brief). Default
-  // 由 view 决定：choiceLevel1 → WorkDirs (next step); 其余 → Sessions.
-  // The same mapping is re-used by the W3 view-sync effect below
-  // (extracted as the exported `defaultTabForView` pure function
-  // so the unit test surface can pin it without a DOM).
+  // Active tab — internal state; default comes from the view.
   const [activeTab, setActiveTab] = useState<SidebarTab>(() =>
     defaultTabForView(view),
   );
 
-  // M5 task 06 review W3 — sync activeTab to view transitions.
-  // Without this, a user who lands on choiceLevel1 (default tab
-  // = WorkDirs) and then picks a work_dir → view flips to
-  // choiceLevel2 → activeTab STAYS at 'work-dirs' → the user
-  // sees the WorkDirsTab content while the right rail shows the
-  // level=2 panel + sessions header — a real UX bug, not just a
-  // cosmetic mismatch. The fix resets activeTab to view's
-  // default on every view change, while leaving same-view tab
-  // clicks fully free (the user can still flip tabs inside
-  // choiceLevel2 to glance at the WorkDirsTab without leaving
-  // the view). Effect deps: `[view]` is sufficient — the
-  // factory is a stable module-level export so its identity is
-  // stable across renders.
+  // Sync activeTab to view transitions: a user who lands on
+  // choiceLevel1 (default tab = WorkDirs) and then picks a
+  // work_dir → view flips to choiceLevel2 — without this effect
+  // activeTab would stay at 'work-dirs' and the user would see
+  // the WorkDirsTab content while the right rail shows the
+  // level=2 panel + sessions header. Same-view tab clicks stay
+  // free (the user can flip tabs inside choiceLevel2 to glance
+  // at the WorkDirsTab without leaving the view).
   useEffect(() => {
     setActiveTab(defaultTabForView(view));
   }, [view]);
@@ -173,9 +120,6 @@ export function Sidebar(props: SidebarProps): JSX.Element {
       data-testid="sidebar"
       data-active-tab={activeTab}
     >
-      {/* Brand slot — moved from App's <main className="app-shell">
-          top. `data-testid="brand"` is the new testid (task 06
-          §a "新组件新 testid 不计入本约束"). */}
       <div className="flex items-center justify-between">
         <h1
           className="m-0 text-lg font-semibold tracking-tight text-text"
@@ -185,7 +129,6 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         </h1>
       </div>
 
-      {/* Tabs row */}
       <div
         className="flex gap-1 rounded border border-border bg-bg p-1"
         data-testid="sidebar-tabs"
@@ -223,9 +166,6 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         </button>
       </div>
 
-      {/* List slot — 列表数据从 WsClient bucket 读，与 ChoicePage
-          panels 同源。Active tab 切换不重查数据（数据独立于 tab）；
-          mount + workDir 变化触发查询。 */}
       <div className="flex-1 overflow-y-auto">
         {activeTab === 'sessions' ? (
           <SessionsTab
@@ -240,7 +180,6 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         )}
       </div>
 
-      {/* Footer — bridge status (compact) + settings button */}
       <div className="flex flex-col gap-2">
         <BridgeStatusBar />
         <button
@@ -272,12 +211,12 @@ function SessionsTab({ currentSession, currentWorkDir }: SessionsTabProps): Reac
   const sessionList = useSessionList();
   const [error, setError] = useState<string | null>(null);
 
-  // 钉子 5 — level=2 列表刷新时机移植到 Sidebar：
-  //   - mount 时查询一次（首次 mount 触发）
-  //   - workDir 变化时重查（user 切目录 → hash 翻 → workDir 变）
-  //   - 从 ChatView 退回时重查（App.tsx 的 render 分支变化保证
-  //     Sidebar 是新 mount——本 effect 重新触发）
-  //   - 不轮询
+  // Refresh session_list on:
+  //   - mount (initial fetch),
+  //   - connState transition (retry after reconnect),
+  //   - workDir change (user picked a new directory at level=1).
+  // Returning from ChatView re-mounts the Sidebar, which re-fires
+  // the effect — no explicit refetch needed there.
   useEffect(() => {
     setError(null);
     if (connState !== 'online') return;
@@ -307,8 +246,6 @@ function SessionsTab({ currentSession, currentWorkDir }: SessionsTabProps): Reac
     window.location.hash = newSessionHash(currentWorkDir);
   };
 
-  // No work_dir yet — Sessions tab is non-applicable. The empty
-  // state guides the user to the WorkDirs tab to pick a directory.
   if (currentWorkDir === null) {
     return (
       <div className="flex flex-col gap-2 text-sm text-muted" data-testid="sidebar-sessions-empty-no-workdir">
@@ -319,8 +256,6 @@ function SessionsTab({ currentSession, currentWorkDir }: SessionsTabProps): Reac
 
   return (
     <div className="flex flex-col gap-2">
-      {/* New-session button — 顶部 CTA，与 M4 ChoicePage level=2
-          既有「新建会话」语义对齐。 */}
       <button
         type="button"
         onClick={handleNew}
@@ -413,20 +348,15 @@ function WorkDirsTab({ currentWorkDir, onOpenBrowser }: WorkDirsTabProps): React
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [removingPath, setRemovingPath] = useState<string | null>(null);
 
-  // M5 task 06 review W6 — `currentWorkDir` removed from deps.
-  // The work_dirs list is GLOBAL (one list of saved directories,
-  // not scoped to the current work_dir) — refetching on every
-  // level=2 work_dir navigation was redundant. Refetch paths now:
+  // Refresh work_dir_list on:
   //   - mount (initial fetch),
   //   - connState transition (retry after reconnect),
-  //   - post-add (fired explicitly in App.tsx onAdded → the
-  //     one place in the codebase that knows an add just landed),
-  //   - post-remove (inline in handleRemove below; mirror of
-  //     the post-add pattern).
-  // Spec 04 (work_dir_add → level=2 → back to level=1 → list
-  // contains new entry) is covered by the post-add explicit
-  // refetch; the test stays green without the old
-  // currentWorkDir dep.
+  //   - post-add (fired explicitly in App.tsx `onAdded` — the one
+  //     place that knows an add just landed),
+  //   - post-remove (inline in `handleRemove` below).
+  //
+  // The list is GLOBAL — not scoped to the current work_dir — so
+  // there's no refetch on `currentWorkDir` change.
   useEffect(() => {
     setRemoveError(null);
     if (connState !== 'online') return;
@@ -471,7 +401,6 @@ function WorkDirsTab({ currentWorkDir, onOpenBrowser }: WorkDirsTabProps): React
         return;
       }
       client.sendWorkDirList();
-      // 防御性：若被删的是当前 work_dir，跳回 level=1。
       if (currentWorkDir === path) {
         window.location.hash = changeWorkDirHash();
       }

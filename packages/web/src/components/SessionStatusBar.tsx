@@ -1,70 +1,38 @@
-// SessionStatusBar — the per-session status row at the top of the
-// chat surface (M5 §第二块 G5 / D8 / 任务 06 §a).
+// SessionStatusBar — per-session status row at the top of the
+// chat surface.
 //
-// The bar repackages three pieces of per-session state —
-// phase badge + queue pills + session name — into a single
-// horizontal row that sits above the MessageList. The bridge
-// status (previously on the chat surface via the old `<StatusBar>`)
-// has moved to the sidebar footer (`<BridgeStatusBar>`); this
-// component is the "本 session 状态" surface only.
+// Repackages three pieces of per-session state — phase badge +
+// queue pills + session name — into a single horizontal row that
+// sits above the MessageList. Bridge status lives in the sidebar
+// footer (`<BridgeStatusBar>`); this component is the "本 session
+// 状态" surface only.
 //
-// ## M5 task 07 — mobile hamburger (D12 / G7)
+// On mobile (<768px) the sidebar collapses into a drawer (see
+// `AppShell.tsx`); the hamburger button lives on the LEFT of
+// this row. Desktop (>=768px) doesn't render the hamburger (the
+// sidebar is permanently mounted in the grid). The hamburger's
+// `data-open` reflects the current drawer state for e2e 09 spec
+// assertions.
 //
-// On viewport `< 768px` the sidebar collapses into a drawer
-// (see `AppShell.tsx` mobile drawer mode). The hamburger button
-// to open / toggle the drawer lives **on the left of this row**
-// (per PRD §D12 「汉堡按钮位置：移动端 SessionStatusBar 左侧」
-// + task 07 brief §c)。桌面（≥768px）不渲染汉堡按钮（sidebar
-// 在 grid 槽位常驻）。
+// Data sources:
+//   - Phase badge — `useSessionPhaseFor(sessionKey)`. The
+//     five-value enum (running / idle / spawning / exited /
+//     unknown) maps to background colours mirroring the legacy
+//     `.phase-{value}` rules in styles.css.
+//   - Queue pills — `useQueueFor(sessionKey)` returns
+//     `{steering, followUp}` counts. Hidden when both are zero
+//     so the bar doesn't get cluttered during a normal chat.
+//   - Session name — when `sessionKey === 'new'` shows "新会话";
+//     when `sessionKey === 'm3-legacy'` shows "M3 旧链接会话";
+//     otherwise the stem itself.
 //
-//   - `sidebar-toggle` testid — 移动端专属，桌面 render null。
-//   - `aria-label="打开侧边栏"` / `"关闭侧边栏"` 由调用方控制。
-//   - 按钮 click 触发 `onToggleSidebar` 回调（App 层持有
-//     `sidebarOpen` state）；AppShell 内 `useFocusTrap` 在抽屉
-//     关闭时调用 `returnFocusRef.focus()`（即此按钮的 ref）归还
-//     焦点。
-//
-// ## Data sources
-//
-// All three sub-pieces reuse existing store hooks:
-//
-//   - **Phase badge** — `useSessionPhaseFor(sessionKey)` — the
-//     same five-value enum (`running` / `idle` / `spawning` /
-//     `exited` / `unknown`) that `PhaseIndicator` (ChatView) used
-//     to render as its own row. M5 task 06 复用数据源，但
-//     PhaseIndicator 组件本体保留（`ChatView.tsx` 仍 mount 一个
-//     隐藏 PhaseIndicator 为 a11y 兜底——见 ChatView 改动）。
-//
-//   - **Queue pills** — `useQueueFor(sessionKey)` returns the
-//     `{steering, followUp}` counts; `QueueIndicator` (ChatView)
-//     rendered this as its own footer row. Same data, repackaged
-//     into the bar.
-//
-//   - **Session name** — when `sessionKey === 'new'` (pending —
-//     first prompt hasn't derived the real stem yet), the bar
-//     shows the literal "**新会话**" copy (M4 ChoicePage level=2
-//     既有渲染对齐); otherwise it shows the stem itself (e.g.
-//     `sess-2026-09-11-XYZ`)。
-//
-// ## testid
-//
-//   - `session-status-bar` — the root container. e2e specs that
-//     need to assert "the chat surface is showing a session row"
-//     can poll this anchor. New testid — NOT in the legacy
-//     zero-add/zero-del inventory (which covers the
-//     `message-*` / `input-*` / `bridge-status` / `recovery-*` /
-//     `choice-page-*` / `work-dir-*` / `session-row` / etc.
-//     set). M5 task 06 §a specifies "新组件新 testid 不计入本
-//     约束".
-//   - `sidebar-toggle` — **new in M5 task 07** — 仅移动端渲染。
-//     新组件新 testid，**不**计入「既有 testid 零增零删」约束
-//     （与 `sidebar-backdrop` 同列——task 07 brief §c 明示）。
-//
-// ## Tailwind only
-//
-// New component — Tailwind utilities only (task 04 已就绪：
-// `bg-bg` / `text-text` / `border-border` / `text-muted` 等
-// 已映射到 13 存量 CSS var via `@theme inline` 块）。
+// testids:
+//   - `session-status-bar` — root container.
+//   - `sidebar-toggle` — hamburger button (mobile only;
+//     mutual-exclusivity with `MobileTopBar` keeps one DOM
+//     instance at a time).
+//   - `session-status-bar-phase` / `session-status-bar-queue-*`
+//     — sub-anchors.
 
 import type { SessionPhase } from '@remotepi/shared';
 import type { RefObject } from 'react';
@@ -73,20 +41,18 @@ import { useQueueFor, useSessionPhaseFor } from '../ws/WsClientContext.js';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 
 interface SessionStatusBarProps {
-  /** Session key. M3-compat: `M3_LEGACY_KEY` for the legacy
-   *  token-only path; `'new'` for the pending branch (bar
-   *  displays "**新会话**"); any other stem for in-session. */
+  /** Session key. `'new'` for the pending branch (bar displays
+   *  "新会话"); `M3_LEGACY_KEY` for the legacy token-only path;
+   *  any other stem for in-session. */
   session: string;
-  /** 抽屉是否已展开。`isMobile === false` 时忽略。传入供按钮
-   *  aria-label 动态切换（展开 → "关闭侧边栏"，收起 →
-   *  "打开侧边栏"）。 */
+  /** Drawer open state. Drives the hamburger's aria-label and
+   *  data-open attribute. */
   sidebarOpen?: boolean;
-  /** 汉堡按钮 click 回调（移动端）。`isMobile === false` 时
-   *  按钮不渲染。 */
+  /** Hamburger click handler (mobile only — button doesn't
+   *  render on desktop). */
   onToggleSidebar?: () => void;
-  /** 汉堡按钮 ref——抽屉关闭时 `AppShell` 的 `useFocusTrap` 调
-   *  `returnFocusRef.focus()` 归还焦点至此按钮。仅移动端使用；
-   *  桌面端忽略。 */
+  /** Hamburger ref — `AppShell`'s `useFocusTrap` calls
+   *  `returnFocusRef.focus()` on drawer close. */
   hamburgerRef?: RefObject<HTMLButtonElement>;
 }
 
@@ -123,10 +89,9 @@ export function SessionStatusBar(props: SessionStatusBarProps): JSX.Element {
   const totalQueue = steeringCount + followUpCount;
   const isMobile = useIsMobile();
 
-  // `session === 'new'` → 显示「**新会话**」(M4 ChoicePage
-  // level=2 既有 'new' 渲染对齐); 其他 → 显示 stem 本身。
-  // M3-compat（M3_LEGACY_KEY）显示「M3 旧链接会话」 — 与既有
-  // 命名风格保持一致。
+  // `session === 'new'` → "新会话" (pending — first prompt hasn't
+  // derived the real stem yet). `M3_LEGACY_KEY` → "M3 旧链接会话".
+  // Otherwise the stem itself.
   const sessionLabel = session === 'new'
     ? '新会话'
     : session === 'm3-legacy'
@@ -140,13 +105,6 @@ export function SessionStatusBar(props: SessionStatusBarProps): JSX.Element {
       data-session={session}
       data-phase={phase ?? 'unknown'}
     >
-      {/* M5 task 07 — mobile-only hamburger button. Lives on the
-          LEFT of the row per PRD §D12 / task 07 brief §c. Desktop
-          (>=768px) renders nothing here so the layout matches
-          the pre-task-07 baseline (session-status-bar flex children
-          flow unchanged). The button reads `data-open` so e2e 09
-          spec (task 08) can assert "drawer toggle button reflects
-          current drawer state". */}
       {isMobile ? (
         <button
           ref={hamburgerRef}
@@ -159,10 +117,9 @@ export function SessionStatusBar(props: SessionStatusBarProps): JSX.Element {
           data-testid="sidebar-toggle"
           data-open={sidebarOpen ? 'true' : 'false'}
         >
-          {/* Simple hamburger icon — three horizontal bars.
-              Inline SVG keeps it self-contained (no asset path
-              to manage). aria-label already conveys semantic so
-              aria-hidden on the SVG. */}
+          {/* Three horizontal bars — inline SVG keeps it self-
+              contained. aria-label carries the semantic so the
+              SVG itself is aria-hidden. */}
           <svg
             width="16"
             height="16"
@@ -181,12 +138,10 @@ export function SessionStatusBar(props: SessionStatusBarProps): JSX.Element {
         </button>
       ) : null}
 
-      {/* Session name — 显式区分 'new' 路径 */}
       <span className="font-semibold text-text" data-testid="session-status-bar-name">
         {sessionLabel}
       </span>
 
-      {/* Phase badge — 五态 + null(unknown) */}
       <span
         className={`inline-flex items-center rounded-full px-2 py-0.5 text-[0.72rem] font-semibold text-white ${
           phase === null ? 'bg-muted' : PHASE_CLASS[phase]
@@ -197,10 +152,6 @@ export function SessionStatusBar(props: SessionStatusBarProps): JSX.Element {
         {phaseLabel(phase)}
       </span>
 
-      {/* Queue pills — steering + follow_up. Hidden when both are
-          zero so the bar doesn't get cluttered during a normal
-          chat session (queue pills are a "user has pending
-          steering" signal, not a default-on indicator). */}
       {totalQueue > 0 ? (
         <div
           className="flex flex-wrap items-center gap-2 text-muted"

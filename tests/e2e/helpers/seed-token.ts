@@ -1,7 +1,7 @@
 // seedToken — install the room access token into localStorage
-// before any navigation so the M5 §第二块 G6 / D9 TokenModal
-// required branch is bypassed (the token is now sourced from
-// `localStorage` via `ws/tokenStorage.ts`, not from the URL hash).
+// before any navigation so the `<TokenModal required>` branch
+// is bypassed (the token is sourced from `localStorage` via
+// `ws/tokenStorage.ts`, not from the URL hash).
 //
 // ## Why two-step (page navigation pattern)
 //
@@ -58,14 +58,6 @@
 // the post-bootstrap DOM is identical (ChoicePage level=1 in both
 // flows).
 //
-// The multi-context scenario (c) spec also used
-// `openChatOnExistingContext(browser, fullHash)` for the second
-// context (which navigates to a FULL M4 hash carrying
-// `work_dir + session=<stem>`). With the M5 token migration, the
-// hash no longer carries the token, so that navigation path is
-// now `${baseUrl}#work_dir=<encoded>&session=<stem>` — see the
-// `seedTokenForHash` variant below.
-//
 // ## Failure modes
 //
 // - If `page` is fresh (no origin yet), `addInitScript` queues the
@@ -104,20 +96,16 @@ export const TOKEN_STORAGE_KEY = 'remotepi.token';
  *  required>` only when `auth.token === null`, and we want to
  *  see ChoicePage level=1 directly.
  *
- *  Example migration from the pre-M5 `goto('/#<token>')` shape:
+ *  Example migration from the legacy `goto('/#<token>')` shape:
  *
  *    ```ts
- *    // before (M4 / pre-task-05):
+ *    // before:
  *    await page.goto(`${baseUrl}/#${token}`);
  *
- *    // after (M5 §G6 / D9):
+ *    // after:
  *    await seedToken(page, baseUrl, token);
  *    ```
- *
- *  @param page Playwright page to seed + navigate.
- *  @param baseUrl Bare base URL (no hash, no path) — the spec's
- *    first landing point.
- *  @param token Room access token to write into localStorage. */
+ */
 export async function seedToken(page: Page, baseUrl: string, token: string): Promise<void> {
   // addInitScript queues the script for every subsequent
   // navigation. The IIFE receives `token` via Playwright's
@@ -148,16 +136,11 @@ export async function seedToken(page: Page, baseUrl: string, token: string): Pro
  *      encodeURIComponent(workDir) + '&session=' + stem);
  *    ```
  *
- *  The token is in localStorage (NOT in the URL hash — that's the
- *  D9 contract), and the navigation hash carries the navigation
- *  state (work_dir + session) so the SPA boots straight into
- *  `<RecoveryView>` / `<ChatView>` for that session.
- *
- *  @param page Playwright page to seed + navigate.
- *  @param baseUrl Bare base URL (no hash, no path).
- *  @param token Room access token to write into localStorage.
- *  @param hashFragment The hash fragment to navigate to, WITH or
- *    WITHOUT a leading `#`. */
+ *  The token is in localStorage (NOT in the URL hash), and the
+ *  navigation hash carries the navigation state (work_dir +
+ *  session) so the SPA boots straight into `<RecoveryView>` /
+ *  `<ChatView>` for that session.
+ */
 export async function seedTokenForHash(
   page: Page,
   baseUrl: string,

@@ -11,7 +11,7 @@ import type { BlockedOnEntryPayload } from '@remotepi/shared';
 
 export interface InputDialogProps {
   entry: Extract<BlockedOnEntryPayload, { method: 'input' }>;
-  /** M4 §4.5 (tasks/m4/08): see `ConfirmDialog` JSDoc. */
+  /** See `ConfirmDialog` JSDoc. */
   enqueuedAt: number;
   pending: boolean;
   errorMessage: string | null;
@@ -39,9 +39,9 @@ export function InputDialog({
     event.preventDefault();
     if (pending || errorMessage !== null) return;
     onSubmit({ request_id: entry.id, cancelled: false, value });
-    // Clear locally so a re-render (after re-mount) doesn't surface
-    // the stale text. The parent unmounts us on the next
-    // session_state frame; the clear is purely defensive.
+    // Defensive: clear locally so a re-render before unmount
+    // doesn't surface stale text. The parent unmounts us on the
+    // next session_state frame.
     setValue('');
   };
 

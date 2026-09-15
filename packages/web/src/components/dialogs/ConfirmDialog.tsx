@@ -21,12 +21,10 @@ import type { BlockedOnEntryPayload } from '@remotepi/shared';
 
 export interface ConfirmDialogProps {
   entry: Extract<BlockedOnEntryPayload, { method: 'confirm' }>;
-  /** M4 §4.5 (tasks/m4/08): `Date.now()` at the moment the entry
-   *  arrived via `session_state` (the WsClient stamps it on
-   *  inbound). Drives the countdown math so a switch-back to a
-   *  background dialog resumes at the correct point — see
-   *  `useCountdown` JSDoc in `SelectDialog.tsx` for the full
-   *  rationale. */
+  /** `Date.now()` at the moment the entry arrived via
+   *  `session_state`. Drives the countdown math so a
+   *  switch-back to a background dialog resumes at the correct
+   *  point — see `useCountdown` JSDoc in `SelectDialog.tsx`. */
   enqueuedAt: number;
   pending: boolean;
   errorMessage: string | null;
@@ -52,10 +50,9 @@ export function ConfirmDialog({
 
   const handleDecline = () => {
     if (pending || errorMessage !== null) return;
-    // value: false — decline. THIS is the canonical "no" path on
-    // the wire (R2 fix): the web emits `value: false` (boolean),
-    // not a string, not a cancel. The bridge translates to
-    // pi's `{ confirmed: false }`.
+    // Canonical "no" path: `value: false` (boolean), not a string,
+    // not a cancel. The bridge translates to pi's
+    // `{ confirmed: false }`.
     onSubmit({ request_id: entry.id, cancelled: false, value: false });
   };
 

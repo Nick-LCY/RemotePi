@@ -16,8 +16,8 @@
 //   - On pi/event: route to the per-session chat-state machine
 //     (message_update / message_end / agent_settled /
 //     extension_ui_request / queue_update) for the current session.
-//   - On session_state: update per-session phase + blockedOn (M3 PRD §4.1
-//     + M4 §4.3 per-session buckets).
+//   - On session_state: update per-session phase + blockedOn per session
+//     bucket.
 //   - On snapshot: replace the per-session message list (get_messages
 //     reply for the current session).
 //   - On command_result{success:false}: route failure paths.
@@ -31,27 +31,22 @@
 //     caller explicitly disconnected, schedule an exponential reconnect
 //     (base 1s, cap 30s, ±20% jitter).
 //
-// ## Per-session bucket store (M4 §4.3 + tasks/m4/08)
+// ## Per-session bucket store
 //
 // The store is shaped as a `Record<sessionKey, SessionBucket>` so multiple
 // sessions can coexist (ChoicePage level=2 lists them, ChatView renders
 // one at a time, DialogHost is keyed by the current bucket). Inbound
 // envelopes with `envelope.session === X` write to `sessions[X]`;
 // envelopes without a `session` field (the M3_LEGACY auto-spawn path)
-// write to the `M3_LEGACY_KEY` bucket, which the bridge labels with the
-// same constant and which has no consumer in the M4 normal flow (E2E
-// 3 scenarios use this path; see M3_LEGACY_KEY JSDoc).
+// write to the `M3_LEGACY_KEY` bucket — see its JSDoc for the rationale.
 //
 // Outbound `pi/prompt` / `pi/steer` / `pi/follow_up` / `pi/abort` /
 // `pi/get_messages` / `pi/extension_ui_response` / `control/get_state`
-// auto-fill `envelope.session` from `currentSessionKey` (App.tsx mirrors
-// the URL hash's `session` component into the store). M4 操作惯例必带
-// (PRD §1.4 / §4.3); M3 token-only URLs leave `currentSessionKey === null`
-// and produce session-less envelopes, which the bridge's M3_LEGACY path
-// auto-routes to a single legacy manager. The M3 single-bucket fallback
-// preserves E2E 3 scenarios through this path — see
-// `M3_LEGACY_KEY` JSDoc below for the bridge-side counterpart and the
-// retirement evaluation in `docs/tasks/m4/08-web-multi-session-store.md#任务-06-c2-移交义务最小侵入`.
+// auto-fill `envelope.session` from `currentSessionKey` (App-level
+// mirrors the URL hash's `session` component into the store). M3
+// token-only URLs leave `currentSessionKey === null` and produce
+// session-less envelopes, which the bridge's M3_LEGACY path auto-routes
+// to a single legacy manager.
 //
 // React glue lives in `WsClientContext.tsx`; this file is framework-free so
 // the protocol logic stays unit-testable in isolation.
@@ -109,19 +104,17 @@ export type EnvelopeHandler = (envelope: EnvelopeType) => void;
  * The bridge-defined constant for the M3-compat auto-spawned manager
  * (`packages/bridge/src/session-layer.ts` exports the same value). The
  * web uses it as the per-session bucket key for inbound envelopes that
- * lack a `session` field (the only envelope type that reaches web
- * without a session field is the bridge's M3_LEGACY manager's
- * session_state broadcasts + verbatim-forwarded events — see PRD §1.4
- * 启用规则 / §任务 06 C2 移交义务). The M3_LEGACY bucket is a real
- * bucket, not a separate global field; it stores chat state for the
- * M3 token-only URL flow that the E2E 3 scenarios depend on. M4 normal
- * web flow never lands in this bucket because every outbound envelope
- * carries `envelope.session` (auto-filled from `currentSessionKey`).
+ * lack a `session` field (the bridge's M3_LEGACY manager's session_state
+ * broadcasts + verbatim-forwarded events). The M3_LEGACY bucket is a
+ * real bucket, not a separate global field; it stores chat state for
+ * the M3 token-only URL flow. The normal web flow never lands in this
+ * bucket because every outbound envelope carries `envelope.session`
+ * (auto-filled from `currentSessionKey`).
  */
 export const M3_LEGACY_KEY = 'm3-legacy';
 
 // ---------------------------------------------------------------------------
-// Per-session bucket types (M4 §4.3 SessionBucket + §4.5 BlockedOnEntry)
+// Per-session bucket types
 // ---------------------------------------------------------------------------
 
 /** A pi message in its native shape. The shared package does not pin
@@ -147,16 +140,14 @@ export type StreamingSegment =
     };
 
 /** A streaming draft message — accumulates `message_update` deltas
- *  into a per-type segment list. M5 §3 (D3 路线 B) replaces the
- *  M3 single-`text` field with `segments` so the renderer can show
- *  thinking / text / tool segments side-by-side with their own
- *  fold state without a full re-layout on each delta. `messageId`
- *  is the pi-native id (carried in `data.messageId`) so we can
- *  correlate a later `message_end` (which carries the
- *  authoritative full message). The PRD §4.3 wording requires
- *  `message_end` to overwrite / append — using `messageId` lets
- *  us clear the draft when the matching end arrives, even if
- *  another message's deltas interleaved. */
+ *  into a per-type segment list. `segments` lets the renderer show
+ *  thinking / text / tool segments side-by-side with their own fold
+ *  state without a full re-layout on each delta. `messageId` is the
+ *  pi-native id (carried in `data.messageId`) so we can correlate a
+ *  later `message_end` (which carries the authoritative full
+ *  message). Using `messageId` lets us clear the draft when the
+ *  matching end arrives, even if another message's deltas
+ *  interleaved. */
 export interface StreamingDraft {
   messageId?: string;
   role?: string;
@@ -175,12 +166,12 @@ export interface QueueState {
 
 /** `blockedOn` entry wrapped with the local-clock enqueue timestamp.
  *  DialogHost reads this for the countdown math: when a dialog moves
- *  to a background session (per PRD §4.5 — switch session → dialog
- * 暂存), the `enqueuedAt` records the moment the entry arrived so a
- *  later switch-back can compute `remaining = timeout - (Date.now() -
+ *  to a background session (switch session → dialog 暂存), the
+ *  `enqueuedAt` records the moment the entry arrived so a later
+ *  switch-back can compute `remaining = timeout - (Date.now() -
  *  enqueuedAt)` and resume the countdown where it would have been.
- *  Stored per-session on the bucket (with the entry itself) so the
- *  countdown survives a session swap. */
+ *  Stored per-session on the bucket so the countdown survives a
+ *  session swap. */
 export interface BlockedOnEntry {
   /** The wire entry — discriminated by `method` for dialog
    *  rendering. */
@@ -193,8 +184,7 @@ export interface BlockedOnEntry {
   enqueuedAt: number;
 }
 
-/** Per-session chat state. Mirrors the PRD §4.3 SessionBucket shape
- *  with one addition: `blockedOn` is `BlockedOnEntry[]` (not raw
+/** Per-session chat state. `blockedOn` is `BlockedOnEntry[]` (not raw
  *  `BlockedOnEntryPayload[]`) so the dialog countdown math can read
  *  `enqueuedAt` per entry (see `BlockedOnEntry` JSDoc). */
 export interface SessionBucket {
@@ -204,30 +194,29 @@ export interface SessionBucket {
    *  `*_delta` event (text_delta / thinking_delta / defensive
    *  top-level fallback). Reset when the draft is cleared (snapshot /
    *  message_end / reconnect / recovery) OR a new `message_start`
-   *  arrives. Per-bucket (was per-class-field in M3) so two sessions'
-   *  drafts don't share the flag. */
+   *  arrives. Per-bucket so two sessions' drafts don't share the
+   *  flag. */
   _draftHasDelta: boolean;
   queue: QueueState;
   sessionPhase: SessionPhase | null;
   blockedOn: BlockedOnEntry[];
-  /** Mirror of `session_state.payload.work_dir` (M4 §1.2 — bridge
-   *  sends this for every broadcast). `null` until the first
-   *  `session_state` for this bucket lands (or the session was
-   *  never seen — e.g. a ChoicePage-level-2 query for a
-   *  work_dir with no active managers). */
+  /** Mirror of `session_state.payload.work_dir` (the bridge sends
+   *  this for every broadcast). `null` until the first `session_state`
+   *  for this bucket lands. */
   workDir: string | null;
   /** Recovery gate status for this session bucket. `'pending'` =
    *  ceremony in flight, `'ready'` = ChatView can mount, `'error'` =
    *  a failure surfaced and RecoveryErrorCard is shown. Driven by
-   *  the per-session gate map (App.tsx) — the WsClient owns the
-   *  field, the gate owns the transitions (M4 §4.2 / 钉子 6). */
+   *  the per-session gate map (App-level) — the WsClient owns the
+   *  field, the gate owns the transitions. */
   recovery: 'pending' | 'ready' | 'error';
-  /** session_list mirror — per-task-08 W2: session_list reply updates
-   *  this ONLY when `currentSessionKey === envelope.session` so cross-
-   *  session replies don't pollute another session's view. For the
-   *  M3-compat flow (no `currentSessionKey`), the mirror lives on
-   *  the `M3_LEGACY_KEY` bucket — ChoicePage level=2 reads from there
-   *  when `currentSessionKey === null`. */
+  /** session_list mirror. Updated ONLY when the inbound reply's
+   *  `reply_to` matches the most recent outbound id for this
+   *  session — see the `_lastSessionListId` race guard. Cross-
+   *  session replies (and stale replies) are silently dropped so
+   *  they don't pollute another session's view. The M3-compat flow
+   *  (no `currentSessionKey`) lives on the `M3_LEGACY_KEY` bucket —
+   *  ChoicePage level=2 reads from there. */
   sessionList: SessionListEntry[] | null;
 }
 
@@ -236,7 +225,7 @@ export interface SessionBucket {
  *  a dialog (via `reply_to` matching against the dialog's outbound id).
  *  Other failure shapes are intentionally not broadcast — the dialog
  *  auto-closes via the `blocked_on` drop path on the next
- *  `session_state` broadcast (PRD §4.2 关闭规则 + §4.5). */
+ *  `session_state` broadcast. */
 export interface DialogExpiredNotice {
   /** The web envelope id the dialog used to send its response — web
    *  uses this to find the right dialog. */
@@ -265,12 +254,12 @@ export type DialogExpiredHandler = (notice: DialogExpiredNotice) => void;
 export type ReplyResolver = (envelope: EnvelopeType) => void;
 
 /** Broadcast payload for any non-dialog `command_result{success:false}`
- *  (PRD §4.5 — ordinary commands: prompt / steer / follow_up). The
- *  InputBar shows a temporary error banner ("pi 已不再处理该请求，
- *  可能是 idle 超时 kill") and does not retry. The handler is fired
- *  only when the inbound envelope's `reply_to` matches a prompt /
- *  steer / follow_up envelope id the web issued — so a stray failure
- *  for someone else's outbound id is silently dropped. */
+ *  (ordinary commands: prompt / steer / follow_up). The InputBar
+ *  shows a temporary error banner ("pi 已不再处理该请求，可能是
+ *  idle 超时 kill") and does not retry. The handler is fired only
+ *  when the inbound envelope's `reply_to` matches a prompt / steer /
+ *  follow_up envelope id the web issued — so a stray failure for
+ *  someone else's outbound id is silently dropped. */
 export interface CommandErrorNotice {
   /** The web envelope id that the failing command was issued with. */
   replyTo: string;
@@ -352,24 +341,23 @@ export class WsClient {
   private _connState: ConnState = 'offline';
   private _bridgeStatus: BridgeStatusInfo | null = null;
 
-  // M4 per-session bucket store (PRD §4.3 / tasks/m4/08) -------------------
+  // Per-session bucket store -------------------------------------------
   /** Mirror of the URL hash's `session` component. Drives outbound
-   *  session auto-fill (M4 §4.3 操作惯例必带) + per-session UI
-   *  routing. `null` when the hash has no `session` (level=1 /
-   *  level=2 / M3 token-only legacy). App.tsx mirrors this from
-   *  `readAuthFromHash()` on every `hashchange`. */
+   *  session auto-fill + per-session UI routing. `null` when the hash
+   *  has no `session` (level=1 / level=2 / M3 token-only legacy). The
+   *  App-level component mirrors this from `readAuthFromHash()` on
+   *  every `hashchange`. */
   private _currentSessionKey: string | null = null;
-  /** Mirror of the URL hash's `work_dir` component (钉子 1 / §4.1).
-   *  Maintained by `setCurrentWorkDir()` — App.tsx calls it on every
-   *  `hashchange` so outbound `session_list` (and the per-session
-   *  `pi/prompt.payload.work_dir` for `session: 'new'`) can read it
-   *  off the store without re-parsing the URL. `null` when the hash
-   *  has no `work_dir`. */
+  /** Mirror of the URL hash's `work_dir` component. Maintained by
+   *  `setCurrentWorkDir()` — App-level calls it on every `hashchange`
+   *  so outbound `session_list` (and `pi/prompt.payload.work_dir` for
+   *  `session: 'new'`) can read it off the store without re-parsing
+   *  the URL. `null` when the hash has no `work_dir`. */
   private _currentWorkDir: string | null = null;
-  /** Per-session buckets. Sessions are created lazily on first
-   *  inbound with `envelope.session === key`. The `M3_LEGACY_KEY`
-   *  bucket is also a real bucket — it collects session-less inbound
-   *  (M3-compat path / E2E 3 scenarios). */
+  /** Per-session buckets. Created lazily on first inbound with
+   *  `envelope.session === key`. The `M3_LEGACY_KEY` bucket is also
+   *  a real bucket — it collects session-less inbound (M3-compat
+   *  path). */
   private _sessions: Record<string, SessionBucket> = {};
   /** Stem keys that have already emitted the non-empty-pending
    *  migration warning. A substantive pending bucket is retained
@@ -378,25 +366,19 @@ export class WsClient {
   private readonly pendingMigrationWarnings = new Set<string>();
   /** Mirror of `bridge/state.json` `work_dirs` array — the user-saved
    *  work directory list. Refreshed on every `work_dir_list` reply
-   *  (and after every `work_dir_add` / `work_dir_remove` mutation;
-   *  those operations invalidate the snapshot, so the
-   *  ChoicePage refreshes by re-issuing `work_dir_list` immediately
-   *  after a mutation). The web does not persist this list itself —
-   *  bridge is the source of truth. */
+   *  (and after every `work_dir_add` / `work_dir_remove` mutation).
+   *  The web does not persist this list itself — bridge is the source
+   *  of truth. */
   private _workDirs: string[] = [];
-  /** Review 修复轮 W4 — `session_list` 迟到回执竞态守卫：记录最近
-   *  一次 `sendSessionList(workDir)` 生成的 outbound id。`case
-   *  'result'` 处理器在解码为 session_list payload 时检查
-   *  `envelope.reply_to` 是否匹配；不匹配 → 静默丢弃不更新镜像。
-   *
-   *  为什么需要：钉子 5 触发"从 ChatView 退回 level2 时重查"
-   *  或"新会话 stem 回填后重查"时，可能存在两个并发 session_list
-   *  询查（不同 id）共享同一个 sessionList 镜像字段。若 query1
-   *  的回执在 query2 之后才到达，naive 的 wholesale-replace 会让
-   *  陈旧的 query1 数据覆盖 query2 的新结果——UI 显示已消失的会话
-   *  / 丢失新会话。ChoicePage 层另有 `inFlightListRef` 同款防护
-   *  （见 `ChoicePage.tsx` ChoiceLevel2 effect），两层互补：组件
-   *  层避免 resolver 回调运行；WsClient 层避免 mirror 更新。 */
+  /** Session-list reply race guard: records the outbound id of the
+   *  most recent `sendSessionList(workDir)`. The `result` handler
+   *  silently drops replies whose `envelope.reply_to` doesn't match —
+   *  two concurrent queries with different ids share the same mirror
+   *  field, so a stale query1 reply arriving after query2 would
+   *  otherwise overwrite the fresh data with stale data. The
+   *  ChoicePage layer has a complementary `inFlightListRef` guard
+   *  (component-level: skip the resolver callback); this guard is
+   *  mirror-level: don't update the mirror. */
   private _lastSessionListId: string | null = null;
 
   // Heartbeat bookkeeping ----------------------------------------------------
@@ -470,15 +452,14 @@ export class WsClient {
     return this._bridgeStatus;
   }
 
-  /** Mirror of the URL hash's `session` component (钉子 1 / PRD §4.1).
-   *  `null` when the hash has no `session` (level=1 / level=2 / M3
-   *  token-only legacy). */
+  /** Mirror of the URL hash's `session` component. `null` when the
+   *  hash has no `session` (level=1 / level=2 / M3 token-only legacy). */
   get currentSessionKey(): string | null {
     return this._currentSessionKey;
   }
 
-  /** Mirror of the hash's `work_dir` component (钉子 1 / PRD §4.1).
-   *  `null` when the hash has no `work_dir` (ChoicePage level=1). */
+  /** Mirror of the hash's `work_dir` component. `null` when the hash
+   *  has no `work_dir` (ChoicePage level=1). */
   get currentWorkDir(): string | null {
     return this._currentWorkDir;
   }
@@ -492,10 +473,10 @@ export class WsClient {
 
   /** Latest `session_list` reply — for M3-compat (`currentSessionKey
    *  === null`) this is the M3_LEGACY bucket's mirror; for the
-   *  current M4 view (`currentSessionKey === X`) this is the
+   *  normal view (`currentSessionKey === X`) this is the
    *  `sessions[X].sessionList` mirror. ChoicePage level=2 reads this
    *  directly via the per-bucket getter. The class-level getter
-   *  here is a convenience for the M3-compat callers; M4 normal
+   *  here is a convenience for the M3-compat callers; normal
    *  callers go through `bucketFor(...).sessionList`. */
   get sessionList(): readonly SessionListEntry[] | null {
     if (this._currentSessionKey !== null) {
@@ -504,7 +485,7 @@ export class WsClient {
     return this._sessions[M3_LEGACY_KEY]?.sessionList ?? null;
   }
 
-  // ---- M4 per-session bucket accessors (tasks/m4/08) -----------------------
+  // ---- Per-session bucket accessors ---------------------------------------
 
   /** Resolve a session key to a live bucket. Lazily creates the
    *  bucket when missing — the create-on-miss policy is what makes
@@ -529,13 +510,13 @@ export class WsClient {
     return bucket;
   }
 
-  // ---- Back-compat top-level getters (M3 single-bucket reads) -------------
+  // ---- Back-compat top-level getters --------------------------------------
   //
   // For callers that haven't been updated to the per-session API yet
   // (existing tests, any third-party code that reads `client.messages`
   // / `client.sessionPhase` etc.) these getters resolve to the
   // current session's bucket. They are documented as "legacy" because
-  // the per-bucket getters are the canonical M4 path — new code
+  // the per-bucket getters are the canonical path — new code
   // should use `bucketFor(currentSessionKey).messages` or the
   // `useMessagesFor(session)` hook.
 
@@ -643,8 +624,8 @@ export class WsClient {
    *
    * `replyToId` is the outbound envelope id the caller put in their
    * request's `id` field; the bridge's outstanding-commands table
-   * (task 04) echoes that id into the reply's `reply_to` field
-   * (`snapshot` for get_messages, `result` for get_state).
+   * echoes that id into the reply's `reply_to` field (`snapshot` for
+   * get_messages, `result` for get_state).
    */
   registerReplyResolver(replyToId: string, resolver: ReplyResolver): () => void {
     let set = this.replyResolvers.get(replyToId);
@@ -698,12 +679,12 @@ export class WsClient {
    *  previous session can't trigger a phantom error banner on the
    *  new session (PRD §4.5).
    *
-   *  In M4, "the current session" means the bucket at
-   *  `currentSessionKey` (or the M3_LEGACY bucket if no session is
-   *  set). Background sessions' buckets are intentionally left
-   *  untouched — the user might be about to switch back to them
-   *  via the URL hash, and a network blip shouldn't wipe out a
-   *  background session's accumulated messages. */
+   *  "The current session" means the bucket at `currentSessionKey`
+   *  (or the M3_LEGACY bucket if no session is set). Background
+   *  sessions' buckets are intentionally left untouched — the user
+   *  might be about to switch back to them via the URL hash, and a
+   *  network blip shouldn't wipe out a background session's
+   *  accumulated messages. */
   resetChatState(): void {
     const bucket = this.bucketFor(this._currentSessionKey);
     bucket.messages = [];
@@ -716,7 +697,7 @@ export class WsClient {
     this.emitStateChange();
   }
 
-  // ---- M4 choice-page state setters (tasks/m4/07) --------------------------
+  // ---- Choice-page state setters ------------------------------------------
 
   /** Mirror the URL hash's `work_dir` component into the store.
    *  App.tsx calls this on every `hashchange` (in addition to its
@@ -730,15 +711,14 @@ export class WsClient {
     this.emitStateChange();
   }
 
-  /** Mirror the URL hash's `session` component into the store (M4
-   *  §4.1 / 钉子 1). Drives outbound session auto-fill (M4 §4.3
-   *  操作惯例必带) + per-session UI routing. App.tsx calls this on
-   *  every `hashchange` so the WsClient can stamp outbound envelopes
-   *  with the right `envelope.session` field. `null` when the hash
-   *  has no `session` (level=1 / level=2 / M3 token-only legacy).
-   *  Changing this value does NOT wipe any session bucket — the
-   *  caller (App.tsx) is responsible for triggering a recovery
-   *  ceremony on switch. */
+  /** Mirror the URL hash's `session` component into the store. Drives
+   *  outbound session auto-fill + per-session UI routing. App-level
+   *  calls this on every `hashchange` so the WsClient can stamp
+   *  outbound envelopes with the right `envelope.session` field.
+   *  `null` when the hash has no `session` (level=1 / level=2 / M3
+   *  token-only legacy). Changing this value does NOT wipe any
+   *  session bucket — the caller is responsible for triggering a
+   *  recovery ceremony on switch. */
   setCurrentSessionKey(sessionKey: string | null): void {
     if (this._currentSessionKey === sessionKey) return;
     this._currentSessionKey = sessionKey;
@@ -757,11 +737,10 @@ export class WsClient {
   }
 
   /** Send `pi/prompt` — used by the InputBar. Auto-fills the
-   *  `session` field from `currentSessionKey` per M4 §4.3
-   *  (M4 操作惯例必带). When `currentSessionKey === 'new'` the
-   *  payload additionally carries `work_dir` (裁定 A 方案 A — only
-   *  the new-session prompt needs the work_dir to spawn the
-   *  pending manager). The bridge accepts and routes per
+   *  `session` field from `currentSessionKey`. When `currentSessionKey
+   *  === 'new'` the payload additionally carries `work_dir` (only
+   *  the new-session prompt needs the work_dir to spawn the pending
+   *  manager). The bridge accepts and routes per
    *  `BridgeSessionLayer.handleEnvelope`. */
   sendPrompt(content: string): string {
     return this.sendPiCommand<PromptPayload>('prompt', { content }, 'prompt');
@@ -804,12 +783,12 @@ export class WsClient {
    *  against a later `command_result{success:false, error.code ===
    *  'request_expired'}` for the late-submission path. Auto-fills
    *  `session` from `currentSessionKey` so the bridge routes the
-   *  response to the right per-session manager (M4 §1.4). */
+   *  response to the right per-session manager. */
   sendExtensionUIResponse(payload: ExtensionUIResponsePayload): string {
     return this.sendPiCommand<ExtensionUIResponsePayload>('extension_ui_response', payload, null);
   }
 
-  // ---- M4 control-family commands (tasks/m4/07) ----------------------------
+  // ---- Control-family commands ---------------------------------------------
   //
   // These five commands form the ChoicePage's outbound surface; the
   // bridge handles each in its own `control/<type>` handler. Replies
@@ -856,10 +835,9 @@ export class WsClient {
   /** Send `control/work_dir_add` — add a path to the user's saved
    *  list. Returns the outbound id so the DirectoryBrowser can
    *  await the result and decide whether to advance to level=2.
-   *  The bridge performs the canonical M3 three-piece check
-   *  (exists + is directory + readable); failures land as
-   *  `result.ok = false` + `error.code` and surface via
-   *  `takeWorkDirResult(id)`. */
+   *  The bridge performs the canonical three-piece check (exists
+   *  + is directory + readable); failures land as `result.ok =
+   *  false` + `error.code` and surface via `takeWorkDirResult(id)`. */
   sendWorkDirAdd(path: string): string {
     const id = this.makeId();
     const payload: WorkDirAddPayload = { path };
@@ -874,9 +852,9 @@ export class WsClient {
   }
 
   /** Send `control/work_dir_remove` — remove a path from the saved
-   *  list. Per PRD §钉子 3 the bridge does NOT kill any active
-   *  PiProcessManager rooted in this directory; removal only makes
-   *  the directory unreachable from ChoicePage level=2. */
+   *  list. The bridge does NOT kill any active PiProcessManager
+   *  rooted in this directory; removal only makes the directory
+   *  unreachable from ChoicePage level=2. */
   sendWorkDirRemove(path: string): string {
     const id = this.makeId();
     const payload: WorkDirRemovePayload = { path };
@@ -891,27 +869,24 @@ export class WsClient {
   }
 
   /** Send `control/session_list` — query the session list for one
-   *  work directory (裁定 A 操作惯例 — `payload.work_dir` 必带).
-   *  M4 §4.3 出站组装 + W2 移交——`envelope.session` 字段从
-   *  `currentSessionKey` 自动填出（task 08 落地后生效），与
-   *  同段「出站自动带 session」约定一致。bridge 自答路径
-   *  （不经 manager 路由）下该字段当前可省略但保留填出——
-   *  与「所有 pi 命令与 get_state 必须携带 session 字段」强制
-   *  约束保持一致。
+   *  work directory. `payload.work_dir` is required.
+   *
+   *  `envelope.session` is auto-filled from `currentSessionKey`
+   *  (the "all outbound commands carry session" contract).
    *
    *  Reply populates the sessionList mirror via the central
-   *  `case 'result'` handler with two layers of guards: (a) W4
-   *  `_lastSessionListId` 迟到回执守卫 ensures only the reply
-   *  for the most recent outbound id updates the mirror; (b) the
-   *  W2 路由守卫 `currentSessionKey === envelope.session` ensures
+   *  `case 'result'` handler with two layers of guards: the
+   *  `_lastSessionListId` late-reply guard ensures only the reply
+   *  for the most recent outbound id updates the mirror; the
+   *  `currentSessionKey === envelope.session` route guard ensures
    *  the update lands in the right session bucket (or the
    *  M3_LEGACY bucket when `currentSessionKey === null`).
    *  Returns the outbound id. */
   sendSessionList(workDir: string): string {
     const id = this.makeId();
     const payload: SessionListPayload = { work_dir: workDir };
-    // W4 守卫：每次 send 覆写 _lastSessionListId；case 'result'
-    // 处理器见到 session_list 解码时以此判定陈旧回执。
+    // Race-guard: each send overwrites the last outbound id; the
+    // case 'result' handler uses it to discard stale replies.
     this._lastSessionListId = id;
     this.sendRaw({
       v: PROTOCOL_VERSION,
@@ -1047,55 +1022,34 @@ export class WsClient {
         break;
       }
       case 'session_state': {
-        // M3 PRD §4.1 / M4 §4.3: session_state is the authoritative
-        // source for phase + blocked_on + work_dir per session.
+        // session_state is the authoritative source for phase +
+        // blocked_on + work_dir per session. `envelope.session` is
+        // always injected by the bridge's outbound wrapper, so
+        // `envelope.session ?? M3_LEGACY_KEY` falls through to
+        // `M3_LEGACY_KEY` only on the legacy manager's self-reply
+        // path.
         //
-        // M4 routing 锚（review 修复轮保留 R2 的锚）：
-        //   `envelope.session` 永远由 bridge `makeOutboundWrapper`
-        //   注入（session-layer.ts：仅 session_state 信封注入
-        //   session 字段，event / snapshot 透传无 session），所以
-        //   这里的 `envelope.session ?? M3_LEGACY_KEY` 几乎只会
-        //   在 M3_LEGACY manager 的自答路径下取 M3_LEGACY。
+        // Stem-refilled bucket migration: when the user starts a
+        // new session (hash `&session=new`), the pending-key path
+        // receives streaming delta events without a session field;
+        // they fall through to the `'new'` bucket via the
+        // `envelope.session ?? currentSessionKey` fallback chain.
+        // After the bridge migrates to the real stem (broadcasts
+        // `session_state{session:<stem>}`), the App-level refill
+        // hash flips `currentSessionKey` to `<stem>` and the data
+        // accumulated in the `'new'` bucket must move with it —
+        // otherwise the early user prompt and the first deltas
+        // appear "lost" once ChatView starts reading from the
+        // `<stem>` bucket. `migratePendingBucket` performs the
+        // rename before any writes land in the new bucket.
         //
-        // Review 修复轮 R4——stem 回填桶迁移：
-        //   场景：用户新会话流（hash `&session=new`）→ 发首条 prompt
-        //   （session:'new' + payload.work_dir）→ bridge pending 期间
-        //   流式 delta 事件 session-less → 落 `new` 桶（R2 fallback
-        //   链 envelope.session ?? currentSessionKey => 'new'）。
-        //   bridge 派生 stem 后 broadcast session_state{session:
-        //   <stem>} → web App.tsx 回填 hash + currentSessionKey 变
-        //   <stem> → 后续事件落 stem 桶。**若不迁移**，'new' 桶里
-        //   的早期消息（用户 prompt + 部分 delta）全部"丢失"——
-        //   ChatView 切到读 stem 桶，'new' 桶的累积状态不再被渲染。
-        //
-        //   修法：WsClient 在处理 session_state 入站时，若
-        //     a) `envelope.session === <realStem>`（非 'new' /
-        //        非 M3_LEGACY / 非 undefined）；
-        //     b) `'new'` 桶存在（user 早期消息累积）；
-        //     c) `envelope.payload.work_dir === new 桶的 workDir`
-        //        ——防误迁移（不同 work_dir 的 'new' 桶不应被本
-        //        session_state 抢走）；
-        //     d) `currentSessionKey === 'new'` 或
-        //        `currentSessionKey === <stem>`（仪式启动时若
-        //        已回填；否则 currentSessionKey 仍 'new'，等
-        //        App.tsx 触发回填后下次事件即落 stem 桶）
-        //   → 整体迁移 `new` 桶为 `<stem>` 桶（rename，保留
-        //     messages / streamingDraft / queue / blockedOn /
-        //     sessionPhase / recovery / sessionList 全部 8 字段）
-        //     + 删除 'new' 键。
-        //
-        //   该迁移必须发生在写入之前（写入针对 stem 桶，迁移前
-        //   new 桶尚有累积内容；写完后再迁移则 stem 桶被孤立为
-        //   空，`new` 桶内容仍残留——这正是要修的 bug）。
-        // Route the session_state to the right bucket. The bridge's
-        // internal `pending-key` format (`new:<work_dir>` — task 06
-        // §钉子 2) is the bridge's per-manager map key BEFORE
-        // migration; from the web's view it represents the same
-        // session the user is currently looking at (the 'new'
-        // bucket), so collapse it to `SESSION_NEW` to keep the
-        // user's early messages in one bucket. The migration to
-        // the real stem happens on the next session_state that
-        // carries `envelope.session` as an actual stem.
+        // Bridge internal `pending-key` format
+        // (`new:<work_dir>`) is the per-manager map key BEFORE
+        // migration. From the web's view it represents the same
+        // session the user is currently looking at, so collapse it
+        // to `SESSION_NEW` to keep the user's early messages in one
+        // bucket. The migration to the real stem happens on the
+        // next session_state that carries a real stem.
         const rawSession = envelope.session;
         const isPendingKey = typeof rawSession === 'string' && rawSession.startsWith('new:');
         const sessionKey = isPendingKey ? SESSION_NEW : (rawSession ?? M3_LEGACY_KEY);
@@ -1103,22 +1057,19 @@ export class WsClient {
           rawSession !== undefined &&
           rawSession !== 'new' &&
           rawSession !== M3_LEGACY_KEY &&
-          // Skip the bridge's internal `pending-key` format
-          // (`new:<work_dir>` — see task 06 §钉子 2 + stem-refilled
-          // JSDoc). The bridge forwards the pending manager's FIRST
+          // Skip the bridge's internal `pending-key` format.
+          // The bridge forwards the pending manager's FIRST
           // session_state with `envelope.session === 'new:<work_dir>'`
-          // BEFORE the migration; this is the wrapper's passthrough
-          // of the original envelope (migration attempt failed because
-          // the jsonl wasn't on disk yet, so `broadcastedPhase` was
-          // `false`). Treating this as a real stem (Branch 1+2)
-          // would (a) rename the 'new' bucket to a 'new:<work_dir>'
-          // bucket, losing the user's early messages, and (b) make
-          // the recovery ceremony fire with `session: 'new:<work_dir>'`
-          // which the bridge rejects (no such jsonl). The correct
-          // behaviour is to route this envelope to the 'new' bucket
-          // (since the manager hasn't derived a real stem yet) and
-          // skip the migration — the next session_state with a real
-          // stem will trigger the proper migration broadcast.
+          // BEFORE the migration (the jsonl isn't on disk yet).
+          // Treating this as a real stem would (a) rename the
+          // 'new' bucket to 'new:<work_dir>', losing the user's
+          // early messages, and (b) make the recovery ceremony
+          // fire with `session: 'new:<work_dir>'` which the
+          // bridge rejects (no such jsonl). The correct
+          // behaviour is to route to the 'new' bucket (since
+          // the manager hasn't derived a real stem yet) and
+          // skip the migration — the next session_state with a
+          // real stem triggers the proper migration.
           !isPendingKey
         ) {
           this.migratePendingBucket(rawSession, envelope.payload.work_dir);
@@ -1206,16 +1157,15 @@ export class WsClient {
         if (workDirList !== null) {
           this.setWorkDirs(workDirList.work_dirs);
         } else if (sessions !== null) {
-          // W4 守卫：仅当回执 reply_to 匹配最近一次
-          // sendSessionList 生成的 id 时才更新镜像；陈旧回执
-          // 静默丢弃。组件层另有 inFlightListRef 同款防护。
-          // W2 路由：更新目标桶 = envelope.session 的桶（M4 流
-          // 下 sendSessionList 自动填 session）。review 修复轮 R2
-          // 把兜底扩展为 `envelope.session ?? currentSessionKey ??
-          // M3_LEGACY_KEY`——桥端可能不 echo session（自答路径
-          // 透传 inbound；M3 token-only 路径 inbound session-less），
-          // 此时落当前 session 视图的桶（M4 单端活动会话模型）；
-          // currentSessionKey 仍 null 时才落 M3_LEGACY（M3-compat）。
+          // Two layers of guard:
+          //  - Late-reply: only update the mirror when the reply's
+          //    `reply_to` matches the most recent outbound id; stale
+          //    replies are silently dropped. The ChoicePage layer has
+          //    a complementary `inFlightListRef` guard.
+          //  - Routing: target bucket = `envelope.session` (or
+          //    `currentSessionKey` if the bridge didn't echo session,
+          //    or `M3_LEGACY_KEY` if both are null — M3-compat
+          //    fallback).
           const replyTo = envelope.reply_to;
           if (
             replyTo !== undefined &&
@@ -1239,24 +1189,23 @@ export class WsClient {
     if (envelope.kind !== 'pi') return;
     switch (envelope.type) {
       case 'snapshot': {
-        // get_messages reply — replace the message list wholesale. Per
-        // PRD §4.3, `snapshot.messages` is the authoritative history.
+        // get_messages reply — replace the message list wholesale.
+        // `snapshot.messages` is the authoritative history.
         //
-        // M4 routing (review 修复轮 R2 fallback 链):
-        //   - `envelope.session` echo (bridge may carry it) →
-        //     路由到对应 session 桶；
-        //   - session-less (bridge **does NOT** inject session on
-        //     snapshot — `makeOutboundWrapper` only injects on
-        //     `session_state`, see packages/bridge/src/session-layer.ts)
-        //     → 落到 `currentSessionKey` 桶（M4 单端活动会话模型：用户
-        //     在看 session X，session-less snapshot 必然来自 X 的 manager）；
-        //   - `currentSessionKey` 仍 null（用户停留在 ChoicePage / 未进入
-        //     任何 session） → 落 `M3_LEGACY_KEY` 桶（M3-compat fallback，
-        //     task 06 C2 移交义务：web 不得主动发 session-less envelope，
-        //     该路径仅服务于 bridge M3_LEGACY manager 自身行为）。
-        // 桥端不"注入 session on snapshot"——这是事实，不是桥注入
-        // 假象（task 07 实施期 JSDoc 的"bridge injects session on
-        // snapshot"表述错误，review R2 翻转）。
+        // Routing fallback chain:
+        //  - `envelope.session` echo (bridge may carry it) → route
+        //    to that session's bucket.
+        //  - session-less (the bridge's outbound wrapper only
+        //    injects `session` on `session_state`, NOT on
+        //    `snapshot`) → fall through to `currentSessionKey`
+        //    (the single active session the user is looking at;
+        //    a session-less snapshot must be from that manager).
+        //  - `currentSessionKey` also null (user is on a
+        //    ChoicePage / not in any session) → fall through to
+        //    `M3_LEGACY_KEY` (M3-compat fallback). Web must NOT
+        //    itself send session-less envelopes; this path only
+        //    exists for the bridge M3_LEGACY manager's own
+        //    behavior.
         const sessionKey = envelope.session ?? this._currentSessionKey ?? M3_LEGACY_KEY;
         const bucket = this.bucketFor(sessionKey);
         this.setBucketMessages(bucket, envelope.payload.messages);
@@ -1273,20 +1222,12 @@ export class WsClient {
         break;
       }
       case 'event': {
-        // M4 routing (review 修复轮 R2 fallback 链):
-        //   - `envelope.session` echo（极少 — pi 0.85.1 不在 event 上
-        //     带 session 字段） → 路由到对应 session 桶；
-        //   - session-less（bridge `makeOutboundWrapper` 仅在
-        //     `session_state` 注入 session，事件透传无 session 字段）
-        //     → 落到 `currentSessionKey` 桶（M4 单端活动会话模型：用户
-        //     在看 session X，活动事件来自 X 的 manager）；
-        //   - `currentSessionKey` 仍 null（用户在 ChoicePage / 未进入
-        //     任何 session） → 落 `M3_LEGACY_KEY` 桶（M3-compat fallback）。
-        // 表现：用户新会话流（pending `new` 桶 → 派生后 stem 回填）下，
-        // bridge pending 期间发的流式 delta 事件 session-less → 落 `new`
-        // 桶；stem 派生后 broadcast session_state{session:<stem>} → web
-        // 回填 hash + currentSessionKey 变 stem → 后续事件落 stem 桶。
-        // R4 stem 回填桶迁移负责把 `new` 桶里的早期消息搬到 stem 桶。
+        // Routing fallback chain (same shape as the `snapshot` case
+        // above): `envelope.session` echo → `currentSessionKey` →
+        // `M3_LEGACY_KEY`. The bridge's outbound wrapper only
+        // injects `session` on `session_state`, NOT on events; for
+        // the active-session model, a session-less event must
+        // belong to the session the user is currently viewing.
         const sessionKey = envelope.session ?? this._currentSessionKey ?? M3_LEGACY_KEY;
         const bucket = this.bucketFor(sessionKey);
         this.handlePiEvent(bucket, envelope.payload.event, envelope.payload.data);
@@ -1448,10 +1389,10 @@ export class WsClient {
         break;
       }
       case 'message_end': {
-        // Authoritative full message — clear the draft and append (or
-        // replace) the message in the list. We DO try to deduplicate by
-        // messageId (S2 review): if the bridge re-delivers a message_end
-        // for an id we already have, slice-and-replace in place so the
+        // Authoritative full message — clear the draft and append
+        // (or replace) the message in the list. Deduplicate by
+        // messageId: if the bridge re-delivers a `message_end` for
+        // an id we already have, slice-and-replace in place so the
         // UI doesn't see two rows for the same logical message.
         const message = extractMessageEndMessage(data);
         if (message === undefined) return;
@@ -1686,26 +1627,13 @@ export class WsClient {
     _trackable: 'prompt' | 'steer' | 'follow_up' | null,
   ): string {
     const id = this.makeId();
-    // M4 §4.3 出站组装: pi 家族命令自动从 `currentSessionKey` 填
-    // `session` 字段（M4 操作惯例必带）。`null`（M3 token-only URL
-    // / E2E 兼容）时不填——bridge 的 M3_LEGACY 兼容路径处理。
-    // `session: 'new'` 是 pending 占位（钉子 2），bridge 用
-    // `new:<work_dir>` 内部键路由；该 pi/prompt 必须携带
-    // `payload.work_dir`（裁定 A 方案 A），由发送方在调用
-    // `sendPrompt` 之前先 `setCurrentWorkDir()` 保证 store 镜像
-    // 一致——但 `prompt` 的 payload shape 不接受 work_dir 字段
-    // （仅 `session: 'new'` 携带），所以此处的 `session` 字段
-    // 自动填 + payload.work_dir 由 ChoicePage 在调用 sendPrompt
-    // 之前通过 setCurrentWorkDir 写入。
-    //
-    // 实际行为：当前 sendPrompt 不携带 payload.work_dir（schema
-    // 不支持——裁定 A 方案 A 决定仅 `session: 'new'` 携带）。
-    // ChoicePage 流程：用户点"新建会话" → hash 写 `&session=new`
-    // + hash 已有 `&work_dir=...` → App.tsx 在 hashchange 中
-    // 同步 setCurrentWorkDir + setCurrentSessionKey('new') →
-    // sendPrompt 自动填 session='new' → bridge 收到
-    // session='new' 但 payload 没 work_dir，钉子 2 边界
-    // 路径（见 BridgeSessionLayer.handleEnvelope task 06 注释）。
+    // pi-family commands auto-fill `session` from
+    // `currentSessionKey`. `null` (M3 token-only URL / E2E
+    // compat) omits the field — the bridge's M3_LEGACY path
+    // handles session-less envelopes. `session: 'new'` is the
+    // pending placeholder; the bridge routes it via its
+    // `new:<work_dir>` internal key, which requires
+    // `payload.work_dir` to be present on the envelope.
     // 实施期以「`currentSessionKey === 'new'` 必带 work_dir」
     // 断言；M4 PRD §1.2 接受 `pi/prompt.work_dir` 字段，ChoicePage
     // 在发送时显式追加。
@@ -1796,7 +1724,7 @@ export class WsClient {
     this.emitStateChange();
   }
 
-  // ---- Internals: per-bucket setters (M4 §4.3 / tasks/m4/08) ---------------
+  // ---- Internals: per-bucket setters ---------------------------------------
   //
   // Each setter is a "replace-on-change" — equality guard against
   // the current bucket field, then fan out a state-change event.
@@ -1824,11 +1752,11 @@ export class WsClient {
   }
 
   /** Append a fresh message, or — if `messageId` is provided AND we
-   *  already have an entry with that id — slice-and-replace in place
-   *  (S2 review). The bridge re-delivers a `message_end` for the
-   *  same id when pi re-emits a snapshot mid-turn; without the
-   *  replace path the message list would double-row. When the id is
-   *  missing or doesn't match an existing entry we fall back to a
+   *  already have an entry with that id — slice-and-replace in place.
+   *  The bridge re-delivers a `message_end` for the same id when
+   *  pi re-emits a snapshot mid-turn; without the replace path the
+   *  message list would double-row. When the id is missing or
+   *  doesn't match an existing entry we fall back to a
    *  plain append. */
   private upsertMessage(bucket: SessionBucket, message: AgentMessage, messageId: string | undefined): void {
     if (messageId !== undefined) {
@@ -1989,19 +1917,18 @@ export class WsClient {
    *  against out-of-order events where a `toolcall_delta` lands
    *  before the matching `toolcall_start`).
    *
-   *  **Reference contract (M5 review C1)**: every mutation here
-   *  produces a fresh `streamingDraft` object AND a fresh
-   *  `segments` array AND exactly ONE `emitStateChange()` call.
-   *  `useSyncExternalStore` compares snapshots with `Object.is`,
-   *  so an in-place mutation (`draft.segments.push(…)` or
-   *  `draft.segments[idx] = …` with the same `draft` reference)
-   *  would silently skip the React re-render — the streaming tool
-   *  args would never visibly grow in the UI. The orphan path
-   *  (no draft / no tool segment yet) used to call
-   *  `openToolSegment` (which emits) and then keep mutating,
-   *  producing TWO emits and a half-applied state — also a
-   *  re-render hazard. This implementation collapses to a single
-   *  new-reference + single emit per delta. */
+   *  **Reference contract**: every mutation here produces a fresh
+   *  `streamingDraft` object AND a fresh `segments` array AND
+   *  exactly ONE `emitStateChange()` call. `useSyncExternalStore`
+   *  compares snapshots with `Object.is`, so an in-place mutation
+   *  (`draft.segments.push(…)` or `draft.segments[idx] = …` with
+   *  the same `draft` reference) would silently skip the React
+   *  re-render — the streaming tool args would never visibly grow
+   *  in the UI. The orphan path (no draft / no tool segment yet)
+   *  used to call `openToolSegment` (which emits) and then keep
+   *  mutating, producing two emits and a half-applied state —
+   *  also a re-render hazard. This implementation collapses to a
+   *  single new-reference + single emit per delta. */
   private appendToolArgs(bucket: SessionBucket, data: unknown): void {
     const delta = extractToolDeltaText(data);
     if (delta === null) return;
@@ -2107,7 +2034,7 @@ export class WsClient {
     this.emitStateChange();
   }
 
-  /** R4 review 修复轮——stem 回填桶迁移。
+  /** Stem-refilled bucket migration:
    *
    *  触发：session_state 处理器收到 `envelope.session === <realStem>`
    *  （非 'new' / 非 M3_LEGACY / 非 undefined），且：
@@ -2145,19 +2072,18 @@ export class WsClient {
     const pending = this._sessions[SESSION_NEW];
     if (pending === undefined) return;
     // Defensive: skip the bridge's internal `pending-key` format
-    // (`new:<work_dir>` — task 06 §钉子 2). The bridge's outbound
-    // wrapper may forward the pending manager's FIRST session_state
-    // (before migration) with this session value; the upstream
-    // `case 'session_state':` handler now filters this out, but a
-    // belt-and-suspenders check here prevents a future caller from
-    // accidentally renaming the 'new' bucket to a 'new:<work_dir>'
-    // bucket. The actual migration is driven by the subsequent
-    // session_state carrying the real stem.
+    // (`new:<work_dir>`). The bridge's outbound wrapper may forward
+    // the pending manager's FIRST session_state (before migration)
+    // with this session value; the upstream `case 'session_state'`
+    // handler filters this out, but a belt-and-suspenders check here
+    // prevents a future caller from accidentally renaming the 'new'
+    // bucket to a 'new:<work_dir>' bucket.
     if (stem.startsWith('new:')) return;
     if (this._currentSessionKey !== SESSION_NEW && this._currentSessionKey !== stem) {
-      // 用户已离开 pending 流；'new' 桶可能是其他并发流的累积
-      // (理论上 M4 单端活动模型不会出现并发 pending，但保守
-      // 守卫防误迁移）。
+      // User has left the pending flow; the 'new' bucket may
+      // belong to a different concurrent flow (the single-active-
+      // session model shouldn't allow concurrent pendings, but
+      // the guard is defensive).
       return;
     }
     if (
@@ -2200,14 +2126,13 @@ export class WsClient {
     // so a pending bucket containing only that mirror is still safe to
     // discard when the stem bucket already exists.
     //
-    // M5 §3 (D3 路线 B) — `streamingDraft` is now a segment list
-    // (M3 single `text` → M5 `segments[]`); the empty-check
-    // adapts from `=== null` (no draft at all) to
-    // `streamingDraftIsEmpty(...)` (no draft OR a draft whose
-    // segments carry no content — equivalent to the M3
-    // `text === ''` contract, restored after the W3 review
-    // found that `segments.length === 0` would treat a draft
-    // produced by an empty `text_delta` as non-empty).
+    // `streamingDraft` is a segment list (replaces the M3 single-
+    // `text` field). The empty-check uses `streamingDraftIsEmpty`
+    // rather than `=== null` so a draft whose segments carry no
+    // content is still treated as empty — matches the M3
+    // `text === ''` contract. (`segments.length === 0` would
+    // wrongly treat a draft produced by an empty `text_delta`
+    // as non-empty.)
     const pendingIsEmpty =
       pending.messages.length === 0 &&
       pending.queue.steering.length === 0 &&
@@ -2258,7 +2183,7 @@ export class WsClient {
     this.emitStateChange();
   }
 
-  // ---- M4 setters (tasks/m4/07) -------------------------------------------
+  // ---- Per-bucket setters --------------------------------------------------
 
   /** Replace the in-memory `work_dirs` mirror with a fresh snapshot
    *  from the bridge (reply of `work_dir_list`). Called from the
@@ -2323,7 +2248,7 @@ export class WsClient {
     }
   }
 
-  // ---- M4 result consumers (tasks/m4/07) -----------------------------------
+  // ---- Result consumers ----------------------------------------------------
   //
   // Review 修复轮 C1 — `takeListDirResult` / `takeWorkDirResult`
   // + 配套 transient Maps (`listDirResults` / `workDirResults`)
@@ -2382,7 +2307,7 @@ export function tryDecodeGetStateData(envelope: EnvelopeType): SessionStatePaylo
 }
 
 // ---------------------------------------------------------------------------
-// M4 result-data decoders (tasks/m4/07)
+// Result-data decoders
 // ---------------------------------------------------------------------------
 //
 // Review 修复轮 C1 — `tryDecodeListDirectoriesResult` 已删除
@@ -2686,17 +2611,13 @@ function lastToolSegmentIndex(segments: readonly StreamingSegment[]): number {
  *  does NOT count as content; we only care about whether the
  *  user-facing payload is empty).
  *
- *  M5 review W3 — `migratePendingBucket`'s M5-first-cut
- *  judgment was `segments.length === 0`, which dropped the M3
- *  "draft present but empty" semantic: an empty text_delta
- *  produced `[{type:'text', text:''}]` (length 1, no content).
- *  Under M3, that draft was `text === ''` → empty. Under M5
- *  pre-fix, it was length-1 → non-empty. Two extremes of
- *  semantic drift (M5 said "has content" while the user saw
- *  nothing). This helper restores the M3 contract by checking
- *  each segment's content field instead of the array length.
- *  An empty draft is safe to migrate (or drop) — there's
- *  nothing the user could lose. */
+ *  A naïve `segments.length === 0` check would treat a draft
+ *  produced by an empty `text_delta` (length 1, no content) as
+ *  non-empty — semantic drift from the M3 `text === ''` contract.
+ *  This helper restores the M3 semantics by checking each
+ *  segment's content field instead of the array length. An empty
+ *  draft is safe to migrate (or drop) — there's nothing the user
+ *  could lose. */
 function streamingDraftIsEmpty(draft: StreamingDraft | null): boolean {
   if (draft === null) return true;
   const segs = draft.segments;

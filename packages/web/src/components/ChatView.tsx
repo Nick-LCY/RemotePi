@@ -1,42 +1,33 @@
-// ChatView — M3 main chat surface (PRD §4.3), made per-session in M4
-// task 08 (PRD §4.6).
+// ChatView — main chat surface, per-session.
 //
-// Composition (M5 task 06 review W4 simplified):
-//   <MessageList />      — History + streaming draft (typing effect).
-//   <InputBar />         — Text input + send + abort.
-//   <DialogHost />       — Layered dialog renderer over the chat.
+// Composition:
+//   <MessageList />  — History + streaming draft (typing effect).
+//   <InputBar />     — Text input + send + abort.
+//   <DialogHost />   — Layered dialog renderer over the chat.
 //
-// The previous render tree also mounted a per-session <PhaseIndicator />
-// + <QueueIndicator /> pair. Both moved into the new
-// `<SessionStatusBar>` (M5 task 06 §a) which sits at the top of the
-// right rail — the user no longer sees phase badge + queue pills
-// twice (once inside ChatView, once on the new bar). The component
-// bodies are removed (dead code is worse than a clean removal;
-// SessionStatusBar inlines its own phase + queue rendering rather
-// than depending on these local helpers).
+// The previous render tree also mounted a per-session
+// `<PhaseIndicator />` + `<QueueIndicator />` pair. Both moved
+// into the new `<SessionStatusBar>` (mounted by App above this
+// subtree); the user no longer sees phase badge + queue pills
+// twice. Those components are removed (cleaner than leaving dead
+// helpers).
 //
-// M4 task 08 (PRD §4.6): ChatView now takes a `session` prop and
-// reads/writes exclusively from the per-session bucket via
-// `bucketFor(session)`. The previous M3 single-bucket reads
-// (client.messages, client.sessionPhase, etc.) are still available
-// as back-compat getters — they resolve to the current session's
-// bucket — but ChatView's internal hooks pin the session so
-// background sessions can't accidentally leak into the foreground
-// UI.
+// Per-session reads/writes: ChatView takes a `session` prop and
+// reads exclusively from the per-session bucket via
+// `useXxxFor(session)`. Background sessions can't accidentally
+// leak into the foreground UI.
 //
-// M5 §1 / §3 — MessageList now renders streaming drafts by
-// segment (thinking → `<details>` folded, text → plain `\n`-split
-// text inside `.message-body` for e2e 01 spec §6 continuity
-// compatibility, tool → folded pill). The terminal assistant
-// message body delegates to `<AssistantMessageBody>` which does
-// the markdown / folded-think / tool-pill final-state rendering.
-// Non-assistant messages (user / toolResult) keep the existing
-// pure-text path unchanged (D6).
+// Streaming draft renders by segment (thinking folded
+// `<details>` / text plain inside `.message-body` / tool folded
+// pill). The terminal assistant message body delegates to
+// `<AssistantMessageBody>` for the markdown / folded-think /
+// tool-pill final-state rendering. Non-assistant messages (user
+// / toolResult) keep the existing pure-text path.
 //
-// State source: WsClient per-session bucket. ChatView reads via
-// `useXxxFor(session)` hooks (no local state that could drift from
-// the protocol) — the only React state local to this subtree is
-// the controlled-input value in InputBar.
+// State source: WsClient per-session bucket via `useXxxFor(
+// session)` — no local state that could drift from the protocol.
+// The only React state local to this subtree is the
+// controlled-input value in InputBar.
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
@@ -54,20 +45,20 @@ import { DialogHost } from './dialogs/DialogHost.js';
 import type { StreamingSegment } from '../ws/WsClient.js';
 import { mergeToolResults, extractMergedResult } from './toolResultMerge.js';
 
-// M5 review W1 — `AssistantMessageBody` pulls in the entire
-// markdown pipeline (react-markdown + remark-gfm +
-// rehype-sanitize + micromark + mdast/hast/unist transitives,
-// ~170 KB raw / ~52 KB gzip). To stay under the 350 KB first-
-// load budget we lazy-load it: the main bundle never imports it
-// directly. The component is only needed for TERMINAL assistant
-// messages (the streaming-time path uses the lightweight
-// `StreamingDraftBody` below, which renders plain text / folded
-// `<details>` / tool pills — no markdown). The terminal branch
-// fires the dynamic import on first render.
+// `AssistantMessageBody` pulls in the entire markdown pipeline
+// (react-markdown + remark-gfm + rehype-sanitize + micromark +
+// mdast/hast/unist transitives, ~170 KB raw / ~52 KB gzip). To
+// stay under the 350 KB first-load budget we lazy-load it: the
+// main bundle never imports it directly. The component is only
+// needed for TERMINAL assistant messages (the streaming-time
+// path uses the lightweight `StreamingDraftBody` below, which
+// renders plain text / folded `<details>` / tool pills — no
+// markdown). The terminal branch fires the dynamic import on
+// first render.
 //
 // Lazy import reference: kept as a module-level constant so the
 // `prewarmMarkdownChunk` effect below can fire the SAME dynamic
-// import() on ChatView mount — Vite dedupes by URL, so this is
+// `import()` on ChatView mount — Vite dedupes by URL, so this is
 // free at the network level. The chunk lands in the browser's
 // HTTP cache during the warm-up; the first real terminal
 // assistant message resolves the same `import()` Promise
@@ -84,8 +75,7 @@ const AssistantMessageBody = lazy(() =>
  *  own `<Suspense>` fallback). The catch is intentionally empty
  *  — there's nothing useful to do with a preload failure here,
  *  and logging would just spam the dev console for offline /
- *  slow-network cases.
- */
+ *  slow-network cases. */
 function prewarmMarkdownChunk(): void {
   void import('./AssistantMessageBody.js').catch(() => {
     // intentional no-op — see comment above.
@@ -96,27 +86,17 @@ function prewarmMarkdownChunk(): void {
 // ChatView
 // ---------------------------------------------------------------------------
 
-/** M4 task 08 per-session entry. The `session` prop pins the
+/** Per-session ChatView entry. The `session` prop pins the
  *  bucket — all reads/writes inside this subtree go through
  *  `useXxxFor(session)`. `workDir` is plumbed through so the
  *  InputBar's `session: 'new'` prompt auto-fill can include
- *  `payload.work_dir` (裁定 A 方案 A — only the new-session
- *  prompt carries the work_dir field).
+ *  `payload.work_dir`.
  *
- *  M5 review W1 — ChatView mounts the markdown chunk on
- *  first paint (prewarm) so the user-visible first-load
- *  doesn't carry the 170 KB chunk. The chunk only becomes
- *  load-bearing when a terminal assistant message renders —
- *  the streaming draft path renders plain text and never
- *  touches `<AssistantMessageBody>`.
- *
- *  M5 task 06 review W4 — removed `<PhaseIndicator />` +
- *  `<QueueIndicator />` from the render tree. The new
- *  `<SessionStatusBar>` (mounted by App above this subtree)
- *  already shows the same phase + queue data; rendering both
- *  was visible duplication (the user saw two phase badges + two
- *  queue pills for one session). The component bodies are
- *  removed (cleaner than leaving dead helpers). */
+ *  ChatView mounts the markdown chunk on first paint (prewarm)
+ *  so the user-visible first-load doesn't carry the 170 KB chunk.
+ *  The chunk only becomes load-bearing when a terminal assistant
+ *  message renders — the streaming draft path renders plain text
+ *  and never touches `<AssistantMessageBody>`. */
 export function ChatView({ session, workDir }: { session: string; workDir: string }) {
   useEffect(() => {
     // Fire-and-forget preload of the markdown chunk. Runs once
@@ -162,19 +142,18 @@ function MessageList({ session }: { session: string }) {
   const messages = useMessagesFor(session);
   const draft = useStreamingDraftFor(session);
 
-  // M5 验收期 gap fix — tool result 渲染层归并。`mergeToolResults`
-  // walks the per-session bucket's `messages` array, consumes
+  // Tool-result rendering-layer merge: `mergeToolResults` walks
+  // the per-session bucket's `messages` array, consumes
   // toolResult messages whose `toolCallId` matches a prior
   // assistant message's toolCall block, and attaches the
   // normalised `{text, isError}` payload to that block
   // (immutably, via shallow-copy). Orphan toolResults (no
   // matching toolCall — e.g. MESSAGES_CAP truncated the
   // assistant message) are preserved with `__mergedOrphan: true`
-  // and rendered as folded `<details>` by `TerminalMessageBody`'s
-  // toolResult branch. Pure function; never mutates the input;
-  // runs cheaply on every render (assistant turns carry ≤ a
-  // handful of toolCalls; toolResult count is bounded by
-  // `MESSAGES_CAP` at 1k).
+  // and rendered as folded `<details>` by the toolResult branch.
+  // Pure function; never mutates the input; cheap on every
+  // render (assistant turns carry ≤ a handful of toolCalls;
+  // toolResult count is bounded by `MESSAGES_CAP` at 1k).
   const mergedMessages = useMemo(() => mergeToolResults(messages), [messages]);
 
   // No virtualization for now — the MESSAGES_CAP of 1k keeps the DOM
@@ -295,10 +274,10 @@ function StreamingDraftBody({ segments }: { segments: readonly StreamingSegment[
  *  `messageToItem` + `extractText` plain-text path unchanged (D6
  *  — user / plain assistant content stay plain).
  *
- *  M5 review W1 — `<AssistantMessageBody>` is lazy-loaded; we
- *  wrap it in `<Suspense>` so React has a fallback during the
- *  chunk fetch. The fallback is an empty `<span>` (not a
- *  spinner / "loading…" text) because:
+ *  `<AssistantMessageBody>` is lazy-loaded; we wrap it in
+ *  `<Suspense>` so React has a fallback during the chunk fetch.
+ *  The fallback is an empty `<span>` (not a spinner / "loading…"
+ *  text) because:
  *    - The prewarm effect in `ChatView` typically lands the
  *      chunk before the user reaches the first terminal
  *      assistant message — the fallback almost never paints.
@@ -308,14 +287,14 @@ function StreamingDraftBody({ segments }: { segments: readonly StreamingSegment[
  *      later. The user perceives "the message is here, content
  *      coming in" rather than "the UI re-layed out".
  *
- *  M5 验收期 gap fix — toolResult 分支从纯文本路径切换为折叠
- *  details。`mergeToolResults` 已经把「能归并到 assistant toolCall
- *  块的」toolResult 消费掉了；走到这条分支的是「孤儿」toolResult
- *  （找不到匹配 toolCall——典型场景是 MESSAGES_CAP 截断后丢了
- *  上面 assistant 的 toolCall，但 toolResult 还在 1k 窗口内）。
- *  折作为 `<details>` 摘要 + `pre` 内容，避免 29k 字符的 result
- *  裸文本刷屏；isError 为真时加 `.message-tool-result-error`
- *  样式。 */
+ *  toolResult branch falls back to a folded `<details>`
+ * summary: `mergeToolResults` consumes toolResults that match
+ * a prior assistant's toolCall; the surviving orphans
+ * (typically because MESSAGES_CAP truncated the assistant
+ * message but the toolResult still fits in the 1k window)
+ * render as a folded summary with a `pre` body so a ~29k-char
+ * result doesn't paint raw on screen. `isError` adds a
+ * `.message-tool-result-error` class. */
 function TerminalMessageBody({ role, raw }: { role: string; raw: unknown }) {
   if (role === 'assistant' && raw !== null && typeof raw === 'object') {
     const obj = raw as Record<string, unknown>;
@@ -361,25 +340,17 @@ function TerminalMessageBody({ role, raw }: { role: string; raw: unknown }) {
  *  never reach the DOM — they're consumed by the merger into
  *  their matching toolCall block's `result` field).
  *
- *  M5 review W1 — text extraction goes through the SAME
- *  `extractMergedResult` helper the merger uses, so an orphan
- *  with `content:[{text:'line1'},{text:'line2'}]` renders
+ *  Text extraction goes through the SAME `extractMergedResult`
+ *  helper the merger uses, so an orphan with
+ *  `content:[{text:'line1'},{text:'line2'}]` renders
  *  `'line1line2'` and a matching toolCall with the same wire
- *  payload also renders `'line1line2'`. The previous code
- *  routed through `extractTextFromMessage` → `extractText`,
- *  which inserted separators + `trimEnd()` between blocks —
- *  the two render paths diverged on the same data.
+ *  payload also renders `'line1line2'`. Keeps the two render
+ *  paths aligned through one helper.
  *
- *  M5 review W2 — the summary line ALWAYS carries `(orphan)`,
- *  regardless of whether `toolCallId` is present. The previous
- *  conditional (`toolCallId.length > 0` → `(orphan)`, else
- *  plain `· result`) created two visually distinct summary
- *  shapes for the same orphan scenario — operators couldn't
- *  tell at a glance whether an unfolded result was orphan or
- *  matched. The marker now reflects the merge-layer's invariant
- *  (everything reaching `OrphanToolResultBody` is by
- *  definition an orphan — the marker is an identity, not a
- *  conditional). */
+ *  The summary line ALWAYS carries `(orphan)` — every entry
+ *  reaching this component is by definition orphan (the only way
+ *  to land here is the merger couldn't find a matching
+ *  toolCall). The unconditional marker reflects that invariant. */
 function OrphanToolResultBody({ raw }: { raw: unknown }) {
   // Narrow the shape defensively — the merge function only
   // preserves toolResult messages with `role === 'toolResult'` +
@@ -388,17 +359,17 @@ function OrphanToolResultBody({ raw }: { raw: unknown }) {
   // with a sensible fallback rather than crashing the render.
   const obj = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
   const toolName = obj !== null && typeof obj.toolName === 'string' ? obj.toolName : 'tool';
-  // M5 review W2 — `toolCallId` is read for display but the
-  // summary marker no longer depends on its presence; we keep
-  // the field extraction in case a future revision wants to
-  // surface the id inline (and so test fixtures that include a
-  // non-empty id still parse cleanly).
+  // `toolCallId` is read for display but the summary marker no
+  // longer depends on its presence; we keep the field extraction
+  // in case a future revision wants to surface the id inline
+  // (and so test fixtures that include a non-empty id still parse
+  // cleanly).
   const _toolCallId = obj !== null && typeof obj.toolCallId === 'string' ? obj.toolCallId : '';
   // Joined text — same extraction rule the merge function uses,
   // so the rendered orphan body matches what the matching
   // toolCall would have shown. `extractMergedResult` is the
-  // single source of truth (W1) — see
-  // `components/toolResultMerge.ts` for the join semantics
+  // single source of truth for orphan / matched-text parity —
+  // see `components/toolResultMerge.ts` for join semantics
   // (no separator; non-text blocks skipped).
   const merged = extractMergedResult(raw);
   const text = merged.text;
@@ -426,10 +397,10 @@ function OrphanToolResultBody({ raw }: { raw: unknown }) {
 }
 
 /** Minimal text extractor for the terminal-message plain-text
- *  path. Mirrors the original M3 behaviour from `messageToItem`
- *  (extractText / JSON.stringify fallback). The D6 rule keeps
- *  user / toolResult messages on this path; only assistant
- *  messages with `content: Array` opt into the markdown body. */
+ *  path. Mirrors the original behaviour from `messageToItem`
+ *  (extractText / JSON.stringify fallback). User / toolResult
+ *  messages stay on this path; only assistant messages with
+ *  `content: Array` opt into the markdown body. */
 function extractTextFromMessage(raw: unknown): string {
   if (raw === null || typeof raw !== 'object') {
     if (raw === null || raw === undefined) return '';
@@ -621,9 +592,8 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
   // failures resets the 5s window rather than overlapping.
   const [commandError, setCommandError] = useState<string | null>(null);
   const commandErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // M4 task 08: `session === 'new'` requires the prompt to carry
-  // `payload.work_dir` (裁定 A 方案 A — only `session: 'new'` carries
-  // the work_dir field; the bridge rejects `session: 'new'` without
+  // `session === 'new'` requires the prompt to carry
+  // `payload.work_dir` (the bridge rejects `session: 'new'` without
   // it as `invalid_envelope`). The InputBar routes through a small
   // helper that splits the wire shape between new-session and
   // in-session sends.
@@ -693,13 +663,13 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
   const inputDisabled = phase === 'running' || phase === 'spawning';
   const abortLive = phase === 'running';
 
-  // M5 task 02 — auto-grow textarea (see
-  // `hooks/useAutoResizeTextarea.ts`). The ref is owned by the
-  // component (so the hook can keep using `value` as a stable
-  // dep) and the hook writes `style.height` against `ref.current`
-  // on every render that touches `value`. The hook intentionally
-  // does not manage the ref itself — keeping ref ownership local
-  // matches the existing `commandErrorTimerRef` style.
+  // Auto-grow textarea (see `hooks/useAutoResizeTextarea.ts`).
+  // The ref is owned by the component (so the hook can keep using
+  // `value` as a stable dep) and the hook writes `style.height`
+  // against `ref.current` on every render that touches `value`.
+  // The hook intentionally does not manage the ref itself —
+  // keeping ref ownership local matches the existing
+  // `commandErrorTimerRef` style.
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   useAutoResizeTextarea({ ref: textareaRef, value });
 
@@ -708,21 +678,20 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
   };
 
   /** The shared send path used by both the form's onSubmit and the
-   *  input's onKeyDown (S7 review). Extracting it removes the
-   *  `event as unknown as FormEvent<...>` cast that the previous
-   *  version needed because onKeyDown synthesised a fake form-event
-   *  to call onSubmit. Now both call sites just pass a plain string
-   *  — no synthetic events, no casts.
+   *  input's onKeyDown. Extracting it removes the
+   *  `event as unknown as FormEvent<...>` cast the previous
+   *  version needed because onKeyDown synthesised a fake
+   *  form-event to call onSubmit. Both call sites now just pass
+   *  a plain string — no synthetic events, no casts.
    *
-   *  M4 task 08 (裁定 A 方案 A): when `session === 'new'`, the
-   *  prompt payload carries `work_dir` so the bridge can spawn the
-   *  new manager with the right cwd. We use `client.send` (the
-   *  low-level escape hatch on `WsClient`) to construct the
-   *  envelope with the optional `work_dir` field — the high-level
-   *  `sendPrompt` shape is intentionally narrow to in-session
-   *  prompts. The bridge rejects `session: 'new'` without
-   *  work_dir (钉子 2 边界) so the InputBar is the only place this
-   *  is enforced. */
+   *  When `session === 'new'`, the prompt payload carries
+   *  `work_dir` so the bridge can spawn the new manager with the
+   *  right cwd. We use `client.send` (the low-level escape hatch
+   *  on `WsClient`) to construct the envelope with the optional
+   *  `work_dir` field — the high-level `sendPrompt` shape is
+   *  intentionally narrow to in-session prompts. The bridge
+   *  rejects `session: 'new'` without work_dir, so the InputBar
+   *  is the only place this is enforced. */
   const submitText = (text: string): void => {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -770,7 +739,7 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    // M5 task 02 / PRD §4 / 验收 §3 — three-piece guard:
+    // Three-piece guard:
     //   Enter + !shiftKey + !isComposing → submit
     //   Shift+Enter → browser native newline (no preventDefault)
     //   IME composing → ignore (let candidate commit)
@@ -779,10 +748,7 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
     // WsClient stack (see `__tests__/input-bar-keydown.test.ts`).
     // `event.nativeEvent.isComposing` is the spec-correct IME
     // flag (UI Events §6.3) — every modern browser sets it on
-    // composition-end Enter; Safari historically used
-    // `keyCode === 229` for the same state but modern Safari
-    // now sets `isComposing` correctly, so no keyCode defence is
-    // needed (S-implification: don't carry dead-code paths).
+    // composition-end Enter.
     const action = decideKeyDownAction({
       key: event.key,
       shiftKey: event.shiftKey,

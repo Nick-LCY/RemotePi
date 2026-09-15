@@ -1,36 +1,29 @@
-// DirectoryBrowser — M4 tasks/m4/07 DirectoryBrowser component.
+// DirectoryBrowser — lets the user pick a directory off the
+// filesystem and add it to the saved work_dirs list.
 //
-// Renders inside ChoicePage level=1 ("浏览添加" button) to let the
-// user pick a directory off the filesystem. Calls
-// `client.sendListDirectories(path)` to enumerate the children of
-// `path` (缺省 = $HOME on the bridge side) and shows a "上到 home"
-// button that re-issues the same command with `path` omitted.
+// Calls `client.sendListDirectories(path)` to enumerate the
+// children of `path` (omitted ⇒ bridge defaults to `$HOME`) and
+// shows a "上到 home" button that re-issues the same command with
+// `path` omitted.
 //
-// Lifecycle / state machine:
+// Lifecycle:
 //   - Local React state holds `path: string | null`. `null` means
-//     "show home" — the outbound `list_directories` omits `path` and
-//     the bridge defaults to `$HOME` (control.md §6.5).
+//     "show home" — the outbound `list_directories` omits `path`.
 //   - On path change (initial mount + button clicks) we fire
-//     `sendListDirectories(path)` and poll `takeListDirResult(id)`
-//     until the reply lands. The poll is short-lived (every 50ms,
-//     bounded to 5s — same envelope budget as the recovery
-//     ceremony's per-reply window). On timeout / socket-drop we
-//     surface an error message instead of crashing.
-//   - Each row shows "name" + a "选择" button. Clicking "选择" fires
-//     `sendWorkDirAdd(path)` and polls `takeWorkDirResult(id)` for
-//     the success/failure verdict. On success we call
-//     `onAdded(path)` (parent typically advances to level=2 by
-//     writing the hash). On failure we show the bridge-side message
-//     inline; the user can retry by clicking "选择" again.
+//     `sendListDirectories(path)` and register a one-shot
+//     `registerReplyResolver` callback. A `setTimeout` watchdog
+//     (`LIST_DIRECTORIES_TIMEOUT_MS`) clears the resolver on
+//     timeout.
+//   - Each row shows "name" + a "选择" button. Clicking "选择"
+//     fires `sendWorkDirAdd(path)` with the same one-shot
+//     callback + watchdog pattern.
 //
-// Error handling (PRD §6.5 / tasks/m4/05 错误码映射):
-//   - `invalid_envelope` → "路径无效 / 不存在 / 不可读" —
-//     usually ENOENT/EACCES/EPERM/ENOTDIR. We surface this as the
-//     bridge message verbatim (the message includes a domain hint).
-//   - `internal` → "bridge 内部错误" — fallback for unexpected
-//     I/O errors.
+// Bridge error handling (PRD §6.5):
+//   - `invalid_envelope` → "路径无效 / 不存在 / 不可读" (ENOENT/
+//     EACCES/EPERM/ENOTDIR etc.).
+//   - `internal` → "bridge 内部错误" for unexpected I/O errors.
 //   - `unknown` → fallback when the reply carried no error code
-//     (defensive — should never occur on a healthy bridge).
+//     (defensive).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -38,28 +31,18 @@ import { useFocusTrap } from '../hooks/useFocusTrap.js';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 import { useWsClient } from '../ws/WsClientContext.js';
 
-// Review 修复轮 C1+W1——废弃 POLL_INTERVAL_MS / POLL_TIMEOUT_MS
-// setInterval 50ms 轮询常量。轮询路径改为一次性回调（见下方
-// useEffect + handleSelect 实现），仅保留 setTimeout 看门狗
-// 常量 LIST_DIRECTORIES_TIMEOUT_MS / WORK_DIR_ADD_TIMEOUT_MS
-// （定义在文件中段，靠近使用点便于审阅）。
-
 interface DirectoryBrowserProps {
   /** When false, the browser renders nothing (parent is hiding
-   *  it). Default true for backward compat with the ChoicePage
-   *  level=1 mount path (where the parent renders the browser
-   *  inline whenever `browsing === true`). M5 task 06
-   *  Sidebar → WorkDirs tab → 浏览添加 路径下，`open` is the
-   *  canonical visibility flag and the parent no longer needs
-   *  to track a separate `browsing` state. */
+   *  it). Default true for backward compat with the legacy
+   *  ChoicePage level=1 mount path. */
   open?: boolean;
   /** Called after `work_dir_add` succeeds. Parent typically uses
    *  this to write the new work_dir into the URL hash, which
    *  triggers App's `hashchange` listener and re-dispatches to
    *  ChoicePage level=2. */
   onAdded: (path: string) => void;
-  /** Called when the user dismisses the browser (e.g. presses an
-   *  "上一步" button or hits Escape). */
+  /** Called when the user dismisses the browser (e.g. hits
+   *  Escape or clicks "取消"). */
   onCancel: () => void;
 }
 
@@ -67,28 +50,22 @@ interface ListEntries {
   entries: Array<{ name: string; path: string }>;
 }
 
-// Review 修复轮 C1+W1+W5——`WorkDirAddOutcome` 内部类型删除（只
-// 轮询路径内部使用；resolver 回调直接从 envelope.payload 解析）。
-
-// 超时预算集中常量：
-//   - LIST_DIRECTORIES_TIMEOUT_MS = 10_000（reviewer W1 推导：大
-//     目录 readdirSync 可能慢，fs 操作看门狗从 5s 放宽到 10s）；
-//   - WORK_DIR_ADD_TIMEOUT_MS = 5_000（add 路径与 work_dir_*
-//     同为轻量 fs 操作，参考 M3 RECOVERY_TIMEOUT_MS）。
+// Watchdog budgets:
+//   - LIST_DIRECTORIES_TIMEOUT_MS = 10_000 (large directory
+//     readdirSync can be slow; relaxed from 5s).
+//   - WORK_DIR_ADD_TIMEOUT_MS = 5_000 (lightweight fs op, same
+//     shape as M3 RECOVERY_TIMEOUT_MS).
 const LIST_DIRECTORIES_TIMEOUT_MS = 10_000;
 const WORK_DIR_ADD_TIMEOUT_MS = 5_000;
 
 export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserProps) {
   const client = useWsClient();
-  // M5 task 06 — modal-化：父组件持 `open` 开关；`open === false`
-  // 时不渲染（避免 modal 仍占 DOM 槽位导致 backdrop 点击触发空
-  // handler / a11y 焦点泄漏）。`open` 默认 `true` 向后兼容既有
-  // ChoicePage level=1 mount 路径（父组件 `<>{browsing ? <DB
-  // /> : null}</>` 一直显式 mount）。
+  // When `open === false`, return an empty fragment so the modal
+  // doesn't occupy DOM slots that could catch a backdrop click or
+  // leak focus.
   if (open === false) return <></>;
 
-  // M5 task 07 — 移动端全屏 sheet 形态 + useFocusTrap 启用。
-  // 桌面端保持既有 `.card directory-browser` 居中卡片形态。
+  // Mobile: full-screen sheet. Desktop: centred `.card` panel.
   const isMobile = useIsMobile();
   const containerRef = useRef<HTMLElement | null>(null);
   useFocusTrap({
@@ -114,26 +91,26 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
   // reply lands last.
   const inFlightListRef = useRef<string | null>(null);
 
-  // Fetch entries whenever `path` changes. `path === null` triggers a
-  // home query (no `path` in the outbound).
+  // Fetch entries whenever `path` changes. `path === null`
+  // triggers a home query (no `path` in the outbound).
   //
-  // Review 修复轮 C1+W1+W5——废弃 setInterval 50ms 轮询 +
-  // transient `listDirResults` Map + `takeListDirResult` 方法，
-  // 改为一次性回调模式（对齐 M3 recovery.ts
-  // `registerReplyResolver` 先例）：
-  //   1. sendListDirectories(path?) → outbound id;
-  //   2. registerReplyResolver(id, cb) 注册一次性回调——resolver
-  //      内部从 envelope.payload 解析 entries（success）或
-  //      `payload.error`（failure）走成功/失败分支；
-  //   3. setTimeout 看门狗（10s — list_directories 属 fs 操作，
-  //      大目录 readdirSync 可能慢，reviewer W1 推导）；超时
-  //      → unsub + setListError；
-  //   4. useEffect cleanup 统一 clearTimeout + unsub（W5）；
-  //   5. inFlightListRef 防护语义保留——resolver 闭包内检查
-  //      ref 仍持有本次 id；否则陈旧回执丢弃（尽管 cleanup
-  //      已经 unsub，双保险）。
-  // setEntries(null) + setListError(null) 在 effect 起始同步执行，
-  // 保持原“切换路径 → 清陈旧 entries + 清错误”语义。
+  // One-shot callback pattern (mirrors `recovery.ts`'s
+  // `registerReplyResolver`):
+  //   1. `sendListDirectories(path?)` → outbound id.
+  //   2. `registerReplyResolver(id, cb)` registers a one-shot
+  //      callback that parses `envelope.payload.data.entries` (or
+  //      `payload.error`) for the success/failure branch.
+  //   3. `setTimeout` watchdog (`LIST_DIRECTORIES_TIMEOUT_MS`);
+  //      timeout → unsub + `setListError`.
+  //   4. useEffect cleanup cancels both timer and unsub.
+  //   5. `inFlightListRef` is a defensive guard — the cleanup
+  //      already unsubs, but the resolver closure still checks the
+  //      ref before mutating state so a stale reply that somehow
+  //      raced past cleanup is still dropped.
+  //
+  // `setEntries(null) + setListError(null)` at effect start
+  // preserves the "switch path → clear stale entries + clear
+  // errors" semantic.
   useEffect(() => {
     setEntries(null);
     setListError(null);
@@ -157,8 +134,8 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
         );
         return;
       }
-      // 成功：从 envelope.payload.data 解析 entries。 schema
-      // `ListDirectoriesResult` = { entries: { name, path }[] }。
+      // Success: parse `envelope.payload.data.entries`. Schema is
+      // `ListDirectoriesResult` = `{ entries: { name, path }[] }`.
       const data = env.payload.data;
       if (data === null || typeof data !== 'object') return;
       const entriesRaw = (data as { entries?: unknown }).entries;

@@ -1,49 +1,31 @@
-// Vitest specs for the M4 WsClient per-session bucket store added in
-// tasks/m4/08 (PRD §4.3 + §4.4 + §4.5 + §4.6) + task 08 review 修复轮
-// (R1 / R2 / R3 / R4 / R5).
+// Vitest specs for the WsClient per-session bucket store.
 //
-// ## 桥端会话字段注入现状（review R2 校准）
+// The bridge's outbound wrapper only injects `envelope.session` on
+// `session_state` envelopes — event / snapshot / command_result
+// pass through pi's native wire shape without the session field.
+// Inbound routing uses the fallback chain
+//   `envelope.session ?? this._currentSessionKey ?? M3_LEGACY_KEY`
+// to land each envelope in the right bucket.
 //
-// bridge `makeOutboundWrapper`（packages/bridge/src/session-layer.ts）
-// 仅在 `session_state` 信封上 inject `envelope.session` 字段——
-// event / snapshot / command_result 等透传 pi 原 wire shape（pi 0.85.1
-// 不带 session 字段）。Result：M4 normal flow 下事件级入站多为
-// session-less，依赖 review R2 落地后的 fallback 链落桶。
-//
-// ## Fallback 链（review R2 钉桩）
-//
-//   envelope.session ?? this._currentSessionKey ?? M3_LEGACY_KEY
-//
-// 三档语义：
-//   1. `envelope.session` echo（极少——bridge 当前不在 event / snapshot
-//      上注入）：路由到对应 session 桶；
-//   2. session-less + `currentSessionKey === X`：落 X 桶（M4 单端
-//      活动会话模型——用户在 ChatView 看 session X，活动事件
-//      必然来自 X 的 manager）；
-//   3. session-less + `currentSessionKey === null`：落 M3_LEGACY 桶
-//      （M3-compat fallback——用户在 ChoicePage level=2 / M3 token-
-//      only 链接）。
-//
-// ## Surface under test:
-//   - Outbound session auto-fill（all pi commands + control/get_state +
-//     control/session_list）stamp `envelope.session` from
+// Surface under test:
+//   - Outbound session auto-fill (pi commands + control/get_state +
+//     control/session_list) stamp `envelope.session` from
 //     `currentSessionKey`.
-//   - Inbound routing（session_state / snapshot / event / get_state reply
-//     / session_list reply）：按 R2 fallback 链入桶；
-//     `session_state` 是 anchor（bridge 必注入），保留 `envelope.session
-//     ?? M3_LEGACY_KEY` 直路由语义。
-//   - Cross-session isolation：bucket A 的 messages / streamingDraft /
-//     queue / phase / blockedOn / workDir 不会被 envelope.session === B
-//     的入站触碰。
-//   - session_list reply：per-task-08 W2 — 经 W4 lastSessionListId
-//     守卫后，仅当 envelope.session 落入目标桶（R2 fallback 链 +
-//     currentSessionKey 兜底）才更新镜像。
-//   - R4 stem 回填桶迁移：session_state{session:<stem>} 触发
-//     `new` → stem 桶迁移。
-//   - `bucketFor(null)` / `bucketFor('m3-legacy')` resolve 到同一个
-//     M3_LEGACY 桶（M3-compat fallback）。
-//   - `setCurrentSessionKey` / `setCurrentWorkDir` mirror URL hash；
-//     兼容 getter 解析到 currentSessionKey 的桶。
+//   - Inbound routing (session_state / snapshot / event / get_state
+//     reply / session_list reply) follows the fallback chain;
+//     `session_state` is the anchor (bridge always injects) and
+//     uses `envelope.session ?? M3_LEGACY_KEY` direct routing.
+//   - Cross-session isolation: bucket A's fields aren't touched by
+//     `envelope.session === B` inbound.
+//   - session_list reply: the `_lastSessionListId` guard ensures
+//     only the reply for the most recent outbound id updates the
+//     mirror.
+//   - Stem-refilled bucket migration: `session_state{session:<stem>}`
+//     migrates the `new` bucket to the stem bucket.
+//   - `bucketFor(null)` / `bucketFor('m3-legacy')` resolve to the
+//     same M3_LEGACY bucket.
+//   - `setCurrentSessionKey` / `setCurrentWorkDir` mirror URL hash;
+//     back-compat getters resolve to the currentSessionKey bucket.
 
 import { PROTOCOL_VERSION, type Envelope, type SessionListEntry } from '@remotepi/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -173,7 +155,7 @@ function controlResult(
 }
 
 // ---------------------------------------------------------------------------
-// Outbound session auto-fill (M4 §4.3 + 任务 06 C2)
+// Outbound session auto-fill
 // ---------------------------------------------------------------------------
 
 describe('WsClient M4 task 08 — outbound session auto-fill', () => {
@@ -239,7 +221,7 @@ describe('WsClient M4 task 08 — outbound session auto-fill', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Inbound session routing (M4 §4.3 + §4.4 — per-session buckets)
+// Inbound session routing (per-session buckets)
 // ---------------------------------------------------------------------------
 
 describe('WsClient M4 task 08 — inbound per-session routing', () => {
@@ -289,10 +271,10 @@ describe('WsClient M4 task 08 — inbound per-session routing', () => {
       }),
       fake,
     );
-    // M5 §3 (D3 路线 B) — streamingDraft is now a segment list;
-    // a single text_delta opens a single text segment. The
-    // semantic invariant is preserved: bucket A holds the
-    // accumulated delta, bucket B is untouched.
+    // streamingDraft is a segment list; a single text_delta
+    // opens a single text segment. The semantic invariant is
+    // preserved: bucket A holds the accumulated delta, bucket B
+    // is untouched.
     expect(ws.bucketFor('A').streamingDraft?.segments).toEqual([
       { type: 'text', text: 'd1' },
     ]);
@@ -300,18 +282,17 @@ describe('WsClient M4 task 08 — inbound per-session routing', () => {
   });
 
   it('2.4 session-less inbound lands in M3_LEGACY bucket when currentSessionKey=null (M3-compat default)', () => {
-    // Review 修复轮 R2 落地：session-less inbound 路由语义
-    // 现在分两档——
-    //   (a) `currentSessionKey === null`（用户在 ChoicePage
-    //       level=2 / 未进入任何 session / M3 token-only 链接）：
-    //       仍落 M3_LEGACY 桶（保持 M3-compat 语义——bridge
-    //       M3_LEGACY manager 的自答路径预期落此桶）。
-    //   (b) `currentSessionKey === X`（用户在看 session X）：
-    //       落 X 桶（M4 单端活动会话模型：bridge 的
-    //       `makeOutboundWrapper` 仅在 session_state 注入
-    //       session，event / snapshot 透传无 session 字段——
-    //       会话级事件必然来自当前 manager，落当前桶）。
-    // 本用例 pin (a)；2.4b pin (b)。
+    // Session-less inbound routing splits two ways:
+    //   (a) `currentSessionKey === null` (user on a ChoicePage /
+    //       no session / M3 token-only link) → lands in the
+    //       M3_LEGACY bucket (the bridge's M3_LEGACY manager's
+    //       self-reply path expects this).
+    //   (b) `currentSessionKey === X` (user looking at session
+    //       X) → lands in the X bucket (the bridge's outbound
+    //       wrapper only injects session on session_state —
+    //       event / snapshot are session-less, so the session-
+    //       level events must belong to the current manager).
+    // This case pins (a); 2.4b pins (b).
     const { ws, fake } = makeConnectedWs();
     simulateInbound(
       ws,
@@ -323,8 +304,9 @@ describe('WsClient M4 task 08 — inbound per-session routing', () => {
   });
 
   it('2.4b session-less inbound lands in currentSessionKey bucket when set (R2 fallback chain)', () => {
-    // R2 落地用例：用户在 ChatView 看 session X 时收到 session-less
-    // 入站（bridge 不在 event / snapshot 上注入 session）→ 落 X 桶
+    // User looking at session X receives session-less inbound
+    // (bridge doesn't inject session on event/snapshot) → lands
+    // in the X bucket.
     // （不是 M3_LEGACY）。这是 M4 单端活动会话模型下事件归属
     // 当前 session 的核心。
     // bridge 实测参考：packages/bridge/src/session-layer.ts
@@ -340,18 +322,18 @@ describe('WsClient M4 task 08 — inbound per-session routing', () => {
       }),
       fake,
     );
-    // M5 §3 — draft now stored as a segment list; the semantic
-    // invariant (the delta landed in bucket X) is preserved.
+    // Draft stored as a segment list; the semantic invariant
+    // (the delta landed in bucket X) is preserved.
     expect(ws.bucketFor('X').streamingDraft?.segments).toEqual([
       { type: 'text', text: 'hello' },
     ]);
-    // M3_LEGACY 桶未受污染。
     expect(ws.bucketFor(M3_LEGACY_KEY).streamingDraft).toBeNull();
   });
 
   it('2.4c session-less snapshot lands in currentSessionKey bucket (R2 fallback chain — snapshot site)', () => {
-    // R2 落地用例：get_messages 回执（snapshot 信封）—— bridge
-    // 不注入 session → 落 currentSessionKey 桶。同 2.4b 原理。
+    // get_messages reply (snapshot envelope) — bridge doesn't
+    // inject session → lands in currentSessionKey bucket. Same
+    // reasoning as 2.4b.
     const { ws, fake } = makeConnectedWs();
     ws.setCurrentSessionKey('X');
     const id = ws.sendGetMessages();
@@ -365,23 +347,25 @@ describe('WsClient M4 task 08 — inbound per-session routing', () => {
   });
 
   it('2.5 session=literal "new" still routes to bucket key "new" (bridge pending key — schema 兜底)', () => {
-    // Schema 兜底语义：bridge 实际不发字面量 session='new'
-    // 入站（pending 期间 session_state 由 manager 自答——`new`
-    //     是 outbound 的 `envelope.session`，不是 inbound 形
-    //     态）；本用例保留以钉 schema 兜底：session_state
-    //     收到 `session === 'new'` 仍按字面键 'new' 写入桶。
-    //     R4 stem 回填桶迁移依赖此钉桩——pending 期间若 bridge
-    //     发 session_state{session:'new'}（防御性场景），web
-    //     不应误判为 stem 而触发迁移。
+    // Schema backstop: bridge doesn't actually emit literal
+    // `session='new'` inbound (pending session_state is the
+    // manager's self-reply; 'new' is the outbound
+    // `envelope.session`, not an inbound shape). This case
+    // pins the schema backstop — session_state with
+    // `session === 'new'` still writes to the literal 'new'
+    // bucket key. The stem-refilled migration relies on this
+    // pin (defensive: during pending, if bridge ever sends
+    // session_state{session:'new'}, web should NOT treat it as
+    // a stem and trigger migration).
     const { ws, fake } = makeConnectedWs();
     simulateInbound(ws, sessionState('new', 'spawning', [], '/h'), fake);
     expect(ws.bucketFor('new').sessionPhase).toBe('spawning');
   });
-  // M4 task 08 review 修复轮 R2 + R4 加固：bridge outbound wrapper
-  // forwards the pending manager's FIRST session_state (before the
-  // jsonl is on disk, so the migration broadcast can't fire yet)
-  // with `envelope.session === 'new:<work_dir>'` — the bridge's
-  // internal pending-key map key (task 06 §钉子 2). Web must:
+  // The bridge's outbound wrapper may forward the pending
+  // manager's FIRST session_state (before the jsonl is on disk,
+  // so the migration broadcast can't fire yet) with
+  // `envelope.session === 'new:<work_dir>'` — the bridge's
+  // internal pending-key map key. Web must:
   //   (a) route the session_state payload to the 'new' bucket
   //       (NOT create a `new:<work_dir>` bucket that holds the
   //       user's early messages hostage);
@@ -478,7 +462,7 @@ describe('WsClient M4 task 08 — inbound per-session routing', () => {
 });
 
 // ---------------------------------------------------------------------------
-// session_list reply routing (M4 W2 — per-session bucket mirror)
+// session_list reply routing (per-session bucket mirror)
 // ---------------------------------------------------------------------------
 
 describe('WsClient M4 task 08 — session_list per-bucket routing (W2)', () => {
@@ -577,7 +561,7 @@ describe('WsClient M4 task 08 — session_list per-bucket routing (W2)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Back-compat top-level getters (M3 callers — legacy code)
+// Back-compat top-level getters (legacy callers)
 // ---------------------------------------------------------------------------
 
 describe('WsClient M4 task 08 — back-compat top-level getters', () => {

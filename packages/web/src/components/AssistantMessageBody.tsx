@@ -1,45 +1,37 @@
 // AssistantMessageBody — terminal-state renderer for assistant
-// messages (M5 §1 + §2 — react-markdown + remark-gfm +
-// rehype-sanitize, folded thinking + toolCall pills, D6 keeps
-// user / toolResult on the old plain-text path).
+// messages (react-markdown + remark-gfm + rehype-sanitize,
+// folded thinking + toolCall pills; user / toolResult messages
+// stay on the plain-text path in ChatView).
 //
 // Composition rules:
-//   - `content: string` → plain text (D6 — user / toolResult
-//     messages stay on this path; assistant messages with a
-//     string content take the same path for backward compat).
+//   - `content: string` → plain text.
 //   - `content: Array<...>` → dispatch by `piece.type`:
 //       - `text` → ReactMarkdown (GFM + sanitize)
 //       - `thinking` → `<details>` default folded, plain-text body
 //       - `toolCall` → folded pill (summary = 🔧 + name; body =
-//         参数 (stringifySafe(arguments)) + 结果 (`result.text` 当
-//         有 MergedToolResult; D4 裁定 keeps the result
-//         untruncated); `result.isError === true` 时结果区加
-//         `.message-tool-result-error` 样式)
-//       - 未知 type → 纯文本 fallback (extractText path)
-//   - `null` / `undefined` → empty container (the user sees no
-//     body — this matches the M3 "missing content" fallback and
-//     keeps the surrounding `.message-body` anchor alive for the
-//     e2e testid contract).
+//         参数 (stringifySafe(arguments)) + 结果 (`result.text` when
+//         a `MergedToolResult` is attached; `result.isError` adds
+//         `.message-tool-result-error` class)
+//       - 未知 type → plain-text fallback (extractText path)
+//   - `null` / `undefined` → empty container (the surrounding
+//     `.message-body` anchor stays alive for the e2e testid
+//     contract).
 //
-// Sanitize (D1 — rehype-sanitize default schema):
-//   - rejects `<script>` (no script tag in output)
+// Sanitize (rehype-sanitize default schema):
+//   - rejects `<script>`
 //   - strips `onerror` / `onclick` / … event handlers
 //   - rewrites `href="javascript:…"` → `href` removed
 //
-// React 18 + Vite friendly: the component is a pure function
-// (no hooks, no side-effects) and serialises through
-// `react-dom/server.renderToStaticMarkup` for the unit tests —
-// the suite intentionally avoids pulling in a jsdom / happy-dom
-// runtime (project policy, see `choice-page-flow.test.ts` header
-// + ADR-0009 §决策 4).
+// React 18 + Vite friendly: pure function (no hooks, no
+// side-effects), serialises through `react-dom/server
+// .renderToStaticMarkup` for the unit tests. The suite
+// intentionally avoids pulling in a jsdom / happy-dom runtime.
 //
-// M5 验收期 gap — toolResult 渲染层归并：
-//   - `toolCall.result` 形状从过去的任意对象收紧为 `MergedToolResult`
-//     （`{text: string, isError: boolean}`），由 `mergeToolResults`
-//     在 ChatView 层挂到 toolCall 块上；本组件只读取它，不做任何
-//     推断或回退。
-//   - `result` 未到（assistant 刚落地、toolResult 还在路上）→ 保留
-//     现有 `pending…` 提示（此为精确的瞬态语义，不是缺陷）。
+// toolCall.result is shaped `{text, isError}` (MergedToolResult)
+// — attached by `mergeToolResults` in ChatView before this
+// component renders. When the result hasn't landed yet
+// (assistant just emitted, toolResult still in flight), we show
+// `pending…` — this is the exact transient semantic, not a bug.
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -137,14 +129,13 @@ function AssistantSegment({ piece }: AssistantSegmentProps): ReactNode {
       const name = typeof obj.name === 'string' ? obj.name : 'tool';
       const args = obj.arguments;
       const result = obj.result;
-      // M5 验收期 gap fix — `result` shape is the `MergedToolResult`
-      // attached by `mergeToolResults` (see
-      // `components/toolResultMerge.ts`): `{text, isError}`.
-      // Anything else (older test fixtures that pass an arbitrary
-      // object, drift in the wire shape) falls through to the
-      // `pending…` hint rather than rendering an unexpected
-      // structure — the merge function is the single source of
-      // truth for `result` shape today.
+      // `result` shape is the `MergedToolResult` attached by
+      // `mergeToolResults` (see `components/toolResultMerge.ts`):
+      // `{text, isError}`. Anything else (older test fixtures
+      // that pass an arbitrary object, drift in the wire shape)
+      // falls through to the `pending…` hint rather than
+      // rendering an unexpected structure — the merge function
+      // is the single source of truth for `result` shape today.
       const mergedResult = readMergedToolResult(result);
       return (
         <details
@@ -218,17 +209,16 @@ function AssistantSegment({ piece }: AssistantSegmentProps): ReactNode {
 // hast Element shape.
 const markdownComponents: Record<string, unknown> = {
   a: ({ href, children }: { href?: string; children?: ReactNode }) => {
-    // M5 review S3 — `mailto:` links should NOT open in a new
-    // tab. The browser routes them to the OS mail client
-    // (which a tab/window handle can't reach anyway), and
-    // forcing `target="_blank"` would spawn a useless blank
-    // tab the user has to close. Same idea for any other
-    // protocol the browser doesn't open inline — we let the
-    // browser follow its default behaviour. The
-    // `target="_blank" rel="noreferrer"` hardening is only
+    // `mailto:` links should NOT open in a new tab. The browser
+    // routes them to the OS mail client (which a tab/window
+    // handle can't reach anyway), and forcing `target="_blank"`
+    // would spawn a useless blank tab the user has to close.
+    // Same idea for any other protocol the browser doesn't open
+    // inline — we let the browser follow its default behaviour.
+    // The `target="_blank" rel="noreferrer"` hardening is only
     // applied to http(s):// URLs, which are the actually-
-    // navigable targets where referrer leakage + tab-jacking
-    // are real risks.
+    // navigable targets where referrer leakage + tab-jacking are
+    // real risks.
     const isExternal = href !== undefined && /^(https?:)/i.test(href);
     return (
       <a

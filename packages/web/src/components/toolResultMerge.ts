@@ -1,57 +1,3 @@
-// toolResultMerge — pure rendering-layer merger for pi-native
-// toolCall ↔ toolResult matching (M5 验收期 gap — tool result 未与
-// toolCall 合并、被渲染成独立未折叠行)。
-//
-// ## Why this file exists
-//
-// Per the scout report, the pi 0.85.x wire delivers tool results
-// as **separate messages** (`{role:'toolResult', toolCallId,
-// toolName, content:[{type:'text', text}…], isError, timestamp}`)
-// that follow the assistant turn's `message_end`. The shared
-// `messages` array therefore contains:
-//   - assistant message with `content: [{type:'toolCall', id,
-//     name, arguments}, …]`
-//   - toolResult message(s), one per toolCall (matched by
-//     `toolCallId === toolCall.id`).
-//
-// Two rendering-layer bugs followed from that shape:
-//   1. `AssistantMessageBody`'s toolCall branch read
-//      `obj.result` — but toolCall blocks carry no result field
-//      in the real wire, so the UI rendered `pending…`
-//      permanently for every tool call.
-//   2. `ChatView`'s toolResult path went through the D6
-//      plain-text fallback — each result rendered as its own
-//      message row (1 row per tool call), and a single ~29k-
-//      char result would dominate the scroll area uncollapsed.
-//
-// ## Fix strategy (rendering-layer only)
-//
-// We rebuild the messages list for rendering:
-//   - **matched** toolResult messages are consumed (removed
-//     from the output) and their `{text, isError}` payload is
-//     attached to the corresponding toolCall block on the most
-//     recent assistant message (matched by `toolCall.id`).
-//   - **orphan** toolResult messages (no matching toolCall —
-//     e.g. MESSAGES_CAP truncated the assistant message, or
-//     the toolCall landed after the result for any reason) are
-//     kept as independent items and rendered as a folded
-//     `<details>` summary by the caller.
-//
-// No WsClient / store / protocol / bridge / worker change is
-// made — the wire shape is preserved verbatim and the renderer
-// only sees the merged view.
-//
-// ## Immutability contract
-//
-// The function never mutates `messages` or any nested object.
-// Assistant messages with attached results are reconstructed
-// via shallow copies (`{...msg, content: [...content]}` then
-// replace the matching index). Tools blocks are reconstructed
-// via `{...block, result}` when attaching the merged result.
-// Non-matching messages pass through by reference (the
-// downstream consumer must not mutate them either, which the
-// existing contract already required).
-
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -60,9 +6,7 @@
  *  block. We join `content[].text` into a single string and carry
  *  the `isError` flag through so the renderer can apply error
  *  styling. The original `content` array is intentionally NOT
- *  preserved — the renderer only needs the joined text (D4: 不
- *  截断 the result body, but only `text` parts survive — image /
- *  binary blocks would be skipped at extraction time). */
+ *  preserved — the renderer only needs the joined text. */
 export interface MergedToolResult {
   /** Joined text from `content[].text` blocks. `''` when the
    *  toolResult had no text parts. */
@@ -101,8 +45,7 @@ export type OrphanMarker = true;
  *  in practice but defensive), the LAST assistant message wins
  *  (the pre-scan overwrites the index). The matching is purely
  *  by id — the toolResult's position relative to its assistant
- *  message is irrelevant (the spec covers out-of-order arrival
- *  via the §乱序容错 test).
+ *  message is irrelevant.
  *
  *  **Result attachment**: when a match is found, the assistant
  *  message is reconstructed with a shallow-cloned `content`
@@ -131,10 +74,6 @@ export type OrphanMarker = true;
 export function mergeToolResults(messages: readonly unknown[]): readonly unknown[] {
   if (messages.length === 0) return messages;
 
-  // Pre-scan: build `toolCallId → {messageIndex, blockIndex}` for
-  // every toolCall block across every assistant message. Single
-  // map keyed by id — duplicates across assistant messages are
-  // resolved by last-wins (see JSDoc).
   const toolCallIndex = new Map<string, { messageIndex: number; blockIndex: number }>();
   for (let i = 0; i < messages.length; i += 1) {
     const toolCallBlocks = readToolCallBlocks(messages[i]);
@@ -145,23 +84,8 @@ export function mergeToolResults(messages: readonly unknown[]): readonly unknown
     }
   }
 
-  // If the index is empty (no toolCalls in any assistant message)
-  // we still want to walk the messages once to flag any
-  // toolResults as orphans. We can't bail early.
-
-  // Aggregate attached results: messageIndex → blockIndex →
-  // MergedToolResult. Built incrementally as we encounter
-  // matched toolResults.
   const attachedByMessage = new Map<number, Map<number, MergedToolResult>>();
 
-  // We don't strictly need to pre-scan every message here — we
-  // could combine this with the build pass. But splitting makes
-  // the orphan-vs-match decision a pure function of the
-  // pre-built index, which keeps the build pass linear and
-  // avoids an in-loop "have we seen this message before" state
-  // machine. The pre-scan cost is O(n × avg-toolCall-count);
-  // for typical chat turns (1-3 toolCalls) this is well under
-  // any user-visible threshold.
   for (let i = 0; i < messages.length; i += 1) {
     const toolCallId = readToolResultId(messages[i]);
     if (toolCallId === null) continue;
@@ -176,37 +100,21 @@ export function mergeToolResults(messages: readonly unknown[]): readonly unknown
     perMessage.set(target.blockIndex, merged);
   }
 
-  // Build pass: emit one output entry per surviving message,
-  // reconstructing assistant messages whose indices appear in
-  // `attachedByMessage`. Matched toolResults are SKIPPED (they
-  // were consumed); orphans (toolResult without a matching
-  // toolCall) get the `__mergedOrphan: true` marker added.
   const output: unknown[] = [];
   for (let i = 0; i < messages.length; i += 1) {
     const msg = messages[i];
     const toolCallId = readToolResultId(msg);
     if (toolCallId !== null) {
-      // It's a toolResult message. Was it matched? If yes, skip
-      // (consumed into the matching assistant's toolCall block).
       const matched = toolCallIndex.get(toolCallId);
       if (matched !== undefined) continue;
-      // Orphan: pass through with the marker. Add the marker
-      // immutably — `{...msg, __mergedOrphan: true}` is a fresh
-      // shallow copy.
       output.push({ ...(msg as Record<string, unknown>), [ORPHAN_MARKER_KEY]: true });
       continue;
     }
     const perMessage = attachedByMessage.get(i);
     if (perMessage !== undefined) {
-      // This assistant message has results attached to one or
-      // more of its toolCall blocks. Reconstruct it with a
-      // fresh `content` array (shallow clone) and substitute
-      // each affected block with `{...block, result: merged}`.
       output.push(rebuildAssistantWithResults(msg, perMessage));
       continue;
     }
-    // Unchanged — emit by reference (the contract guarantees
-    // the caller never mutates these).
     output.push(msg);
   }
   return output;
@@ -267,26 +175,11 @@ function readToolCallBlocks(value: unknown): readonly { id: string; block: Recor
  *  in practice; non-text blocks are silently skipped at extraction
  *  time — image / binary blocks would simply not contribute).
  *
- *  **Exported** (M5 review W1) so the orphan-renderer
- *  (`ChatView.tsx` `OrphanToolResultBody`) and the merger
- *  (`mergeToolResults`) share one source of truth for the
- *  joined-text semantics. Prior to this export, the orphan
- *  path went through `extractTextFromMessage` →
- *  `extractText(obj.content)` which uses a `\n` separator
- *  between content blocks and `trimEnd()` — so the SAME wire
- *  payload `content:[{text:'line1'},{text:'line2'}]` rendered
- *  as `'line1\nline2'` when orphaned vs `'line1line2'` when
- *  matched. The discrepancy confused operators and made the two
- *  render paths impossible to reason about. Both now go
- *  through `extractMergedResult`, which joins text blocks with
- *  NO separator (each block's text is the model's emitted chunk
- *  verbatim; the wire never inserts a delimiter between
- *  blocks — adding one would invent content).
- *
- *  Contract: the joined text is purely the concatenation of
- *  `content[].text` fields. Non-text blocks are skipped. The
- *  `isError` flag is read defensively (defaults to `false`
- *  when missing or non-boolean). */
+ *  Joined text is the pure concatenation of `content[].text` fields
+ *  with NO separator (each block's text is the model's emitted chunk
+ *  verbatim; the wire never inserts a delimiter between blocks —
+ *  adding one would invent content). The `isError` flag is read
+ *  defensively (defaults to `false` when missing or non-boolean). */
 export function extractMergedResult(value: unknown): MergedToolResult {
   let text = '';
   let isError = false;
@@ -329,23 +222,11 @@ function rebuildAssistantWithResults(
   const obj = value as Record<string, unknown>;
   const content: unknown = obj.content;
   if (!Array.isArray(content)) return value;
-  // Walk content once, building a new array only when we hit a
-  // matched index. Unaffected indices pass through by reference
-  // (so a message with 1 of 5 toolCalls attached allocates a
-  // fresh array + one new block — minimal churn).
   let nextContent: Record<string, unknown>[] | null = null;
   for (const [blockIndex, merged] of perMessage) {
     if (blockIndex < 0 || blockIndex >= content.length) continue;
-    // Type the array element explicitly so the lint rule below
-    // doesn't widen `unknown` to `any` on index access.
     const block: unknown = content[blockIndex];
     if (block === null || typeof block !== 'object') continue;
-    // Build the new block by cloning the original's own
-    // enumerable keys. We can't cast `block as Record<string,
-    // unknown>` because the index signature on Record is wider
-    // than `unknown`'s, tripping `no-unsafe-*` rules; the
-    // loop-local re-keying keeps the type narrow without
-    // touching the lint surface.
     const blockCopy = cloneBlock(block);
     if (nextContent === null) {
       nextContent = content.slice() as Record<string, unknown>[];
@@ -368,11 +249,6 @@ function rebuildAssistantWithResults(
 function cloneBlock(block: unknown): Record<string, unknown> {
   if (block === null || typeof block !== 'object') return {};
   const out: Record<string, unknown> = {};
-  // Object.keys on `block` requires `block` to be `object` — the
-  // narrow above guarantees that. Each key yields a known
-  // string; indexing back into `block` via that key keeps the
-  // assignment type-safe (string index into an `object` widens
-  // to `unknown`).
   const keys = Object.keys(block);
   for (const key of keys) {
     out[key] = (block as Record<string, unknown>)[key];

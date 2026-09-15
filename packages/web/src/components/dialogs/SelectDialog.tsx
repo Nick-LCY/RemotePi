@@ -1,34 +1,24 @@
-// SelectDialog — render the pi `select` extension UI request as a list
-// of single-choice buttons (PRD §4.2). The component is purely a
-// view layer — it owns local UI state (which option is being
-// submitted, transient "submitted" status) and delegates all wire
-// I/O to the parent via the `onSubmit` / `onCancel` callbacks.
+// SelectDialog — render the pi `select` extension UI request as a
+// list of single-choice buttons. Pure view layer — owns local UI
+// state (which option is being submitted) and delegates wire I/O
+// to the parent via `onSubmit` / `onCancel`.
 //
-// Wire shape on confirm (PRD §4.2):
-//   { request_id, cancelled: false, value: <option string> }
-// Wire shape on cancel:
-//   { request_id, cancelled: true }   (no `value`)
+// Wire shape on confirm: `{ request_id, cancelled: false,
+// value: <option string> }`. On cancel: `{ request_id,
+// cancelled: true }` (no `value`).
 //
-// Countdown (PRD §4.2 / §1.3):
-//   - When `entry.timeout` is present, render a header showing
-//     "remaining Ns" + a progress bar (1s tick). When it expires,
-//     call `onTimeout()` so the parent can drop the dialog. The
-//     bridge mirrors its own timeout; whichever fires first wins
-//     and the loser is a no-op (PRD §2.4).
-//   - When `entry.timeout` is absent (this method always carries
-//     one in practice, but the type allows omission), do NOT render
-//     a countdown.
+// Countdown (when `entry.timeout` is present): render a header
+// showing "remaining Ns" + a progress bar. On expiry call
+// `onTimeout()` — the bridge mirrors its own timeout; whichever
+// fires first wins and the loser is a no-op.
 //
-// M4 §4.5 (tasks/m4/08): the countdown math uses `enqueuedAt` so a
-// dialog that arrives on a background session and then is
-// foregrounded via a session switch resumes the countdown at the
-// correct point — `remaining = (enqueuedAt + timeoutMs) - now`,
-// not the M3 `remaining = timeoutMs - elapsed-since-mount` form.
-// The session_state broadcast that adds the entry stamps
-// `enqueuedAt`; the per-bucket routing ensures foreground and
-// background sessions see different `enqueuedAt` values for
-// identical ids (if that ever occurred) without any state
-// confusion.
+// Countdown math: deadline = `enqueuedAt + timeoutMs` (an
+// absolute wall-clock instant) rather than mount-time +
+// timeoutMs. The two are identical for a dialog foregrounded
+// from t=0; they diverge when a session switch makes a
+// background dialog the foreground — the countdown then resumes
+// at the correct point (remaining = (enqueuedAt + timeoutMs) -
+// now) instead of restarting from `timeoutMs`.
 
 import { useEffect, useState } from 'react';
 import type { ChangeEvent } from 'react';
@@ -149,13 +139,9 @@ export function SelectDialog({
 export interface DialogHeaderProps {
   id: string;
   title: string;
-  /** Original `entry.timeout` in milliseconds. M4 countdown math
-   *  uses `enqueuedAt` (see below) to compute `remaining =
-   *  (enqueuedAt + timeoutMs) - now` instead of the M3 `remaining
-   *  = timeoutMs - elapsed-since-mount` form. The two are
-   *  equivalent when the dialog is foregrounded from t=0; they
-   *  diverge when the dialog is on a background session and the
-   *  user later switches to it. */
+  /** Original `entry.timeout` in milliseconds. Countdown math
+   *  uses `enqueuedAt` to compute `remaining = (enqueuedAt +
+   *  timeoutMs) - now` — see `useCountdown` below. */
   timeoutMs?: number;
   /** `Date.now()` at the moment the entry arrived via
    *  `session_state` (the WsClient stamps it on inbound). */
@@ -164,10 +150,6 @@ export interface DialogHeaderProps {
 }
 
 export function DialogHeader({ id, title, timeoutMs, enqueuedAt, onTimeout }: DialogHeaderProps) {
-  // Local countdown state — kept in seconds. We avoid re-rendering
-  // every millisecond (would be janky); 1Hz is enough granularity
-  // for a human-facing timer and matches the PRD wording ("每秒
-  // 更新").
   const remainingMs = useCountdown(timeoutMs, enqueuedAt, onTimeout);
   if (timeoutMs === undefined) {
     return (
@@ -231,37 +213,32 @@ export function DialogFooter({ onCancel, submitLabel, submitDisabled }: DialogFo
 // useCountdown — local timer that calls `onTimeout` exactly once
 // ---------------------------------------------------------------------------
 
-/** Drive the countdown header. Returns the remaining milliseconds,
- *  updated 1×/second (S6 review — default cadence). When the
- *  deadline is short (< 5s) we keep the legacy 250ms cadence so
- *  the very last ticks stay smooth — the seconds-display still
- *  jumps in 1s steps, but the width-bar fill keeps moving between
- *  jumps. Calls `onTimeout()` exactly once when the deadline
- *  elapses — the parent is expected to drop the dialog from its
- *  render tree in response (PRD §4.2 关闭规则: the bridge will
- *  also broadcast a session_state with the id removed; the local
- *  timer just gives the user feedback while the wire catches up).
+/** Drive the countdown header. Returns the remaining
+ *  milliseconds, updated 1×/second by default. When the deadline
+ *  is short (< 5s) we keep a faster 250ms cadence so the very
+ *  last ticks stay smooth — the seconds display still jumps in
+ *  1s steps but the width-bar fill keeps moving between jumps.
+ *  Calls `onTimeout()` exactly once when the deadline elapses.
  *
- *  M4 §4.5 (tasks/m4/08): the hook now takes `enqueuedAt` so the
- *  deadline is `enqueuedAt + timeoutMs` (an absolute wall-clock
- *  instant) rather than `mount-time + timeoutMs`. The two are
- *  identical for a dialog foregrounded from t=0; they diverge
- *  when a session switch makes a background dialog the foreground
- *  — the countdown then resumes at the correct point (remaining =
- *  (enqueuedAt + timeoutMs) - now) instead of restarting from
- *  `timeoutMs`. The hook treats `enqueuedAt` as a dep so a later
- *  session_state broadcast (which can REPLACE the entry with a
- *  new enqueuedAt — see WsClient.setBucketBlockedOn) restarts the
- *  countdown with the new deadline.
+ *  Takes `enqueuedAt` so the deadline is `enqueuedAt + timeoutMs`
+ *  (an absolute wall-clock instant) rather than mount-time +
+ *  timeoutMs. The two are identical for a dialog foregrounded
+ *  from t=0; they diverge when a session switch makes a
+ *  background dialog the foreground — the countdown then resumes
+ *  at the correct point (remaining = (enqueuedAt + timeoutMs) -
+ *  now) instead of restarting from `timeoutMs`. The hook treats
+ *  `enqueuedAt` as a dep so a later session_state broadcast that
+ *  replaces the entry (with a new enqueuedAt) restarts the
+ *  countdown against the new deadline.
  *
- *  Note: we deliberately do NOT optimistically close the dialog on
- *  timeout — the parent listens to both the local timer (for UX)
- *  AND the session_state broadcast (for the source of truth). If
- *  the local timer fires first, the parent calls onTimeout() which
- *  surfaces the W3 timeout toast; the next session_state frame
- *  then unmounts the dialog normally. If the broadcast arrives
- *  first, the dialog unmounts before the timer fires and the
- *  cleanup function cancels the interval (no leaked callbacks). */
+ *  We do NOT optimistically close the dialog on timeout — the
+ *  parent listens to both the local timer (for UX feedback) and
+ *  the session_state broadcast (for the source of truth). If
+ *  the local timer fires first, the parent surfaces the timeout
+ *  toast; the next session_state frame then unmounts the
+ *  dialog. If the broadcast arrives first, the dialog unmounts
+ *  before the timer fires and the cleanup function cancels the
+ *  interval. */
 function useCountdown(
   timeoutMs: number | undefined,
   enqueuedAt: number,
@@ -279,10 +256,6 @@ function useCountdown(
     }
     const deadline = enqueuedAt + timeoutMs;
     setRemainingMs(Math.max(0, deadline - Date.now()));
-    // 1Hz ticks are enough granularity for a human-facing timer and
-    // match the PRD wording ("每秒更新"). The legacy 250ms cadence
-    // is kept for the short-deadline tail (< 5s) so the progress bar
-    // doesn't look frozen between seconds-jumps.
     const remaining = Math.max(0, deadline - Date.now());
     const tickMs = remaining < 5_000 ? 250 : 1_000;
     const id = window.setInterval(() => {
@@ -303,10 +276,7 @@ function useCountdown(
     // case where a stale callback fires.
     // enqueuedAt is in the dep array so a later session_state
     // broadcast that replaces the entry (with a new enqueuedAt)
-    // restarts the countdown against the new deadline. This
-    // matches the bridge's "every phase transition triggers a
-    // session_state broadcast" cadence — a re-enqueue refreshes
-    // the deadline to the wall-clock "now".
+    // restarts the countdown against the new deadline.
   }, [timeoutMs, enqueuedAt]);
 
   return remainingMs;

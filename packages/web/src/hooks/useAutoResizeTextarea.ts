@@ -1,30 +1,23 @@
-// useAutoResizeTextarea — M5 task 02 (PRD §4 / 验收 §4).
+// `useLayoutEffect` (NOT `useEffect`) so the height adjustment
+// runs synchronously BEFORE the browser paints the new value,
+// eliminating the one-frame "jump" the user would otherwise see
+// when typing past a growth threshold.
 //
-// Auto-grow the textarea height as the user types up to a hard
-// `maxHeight` cap (default 200px). When content exceeds the cap,
-// the textarea stops growing and `overflow-y: auto` takes over
-// (styles.css `.input-bar-field` rule — see CSS for the
-// matching pair).
+// First we reset `el.style.height = 'auto'` — without this step
+// the textarea would only ever grow (because the `scrollHeight`
+// is monotonically non-decreasing for an element with no
+// `height` cap), so on a value CLEARS the textarea would NOT
+// shrink back. The reset + re-measure sequence is the canonical
+// fix (mirrored by most textarea auto-grow libraries, e.g.
+// `react-textarea-autosize`).
 //
-// Implementation notes:
-//   - `useLayoutEffect` (NOT `useEffect`) so the height
-//     adjustment runs synchronously BEFORE the browser paints
-//     the new value, eliminating the one-frame "jump" the user
-//     would otherwise see when typing past a growth threshold.
-//   - First we reset `el.style.height = 'auto'` — without this
-//     step the textarea would only ever grow (because the
-//     `scrollHeight` is monotonically non-decreasing for an
-//     element with no `height` cap), so on a value CLEARS the
-//     textarea would NOT shrink back. The reset + re-measure
-//     sequence is the canonical fix (mirrored by most textarea
-//     auto-grow libraries, e.g. `react-textarea-autosize`).
-//   - `computeTargetHeight` is exported separately so the
-//     "given a scrollHeight, clamp to maxHeight" decision can
-//     be unit-tested as a pure function (jsdom returns 0 for
-//     `scrollHeight`, which makes a true DOM-level test of
-//     this hook require either a polyfill or a manual mock —
-//     the pure function sidesteps that friction while still
-//     pinning the behaviour).
+// `computeTargetHeight` is exported separately so the
+// "given a scrollHeight, clamp to maxHeight" decision can be
+// unit-tested as a pure function (jsdom returns 0 for
+// `scrollHeight`, which makes a true DOM-level test of this
+// hook require either a polyfill or a manual mock — the pure
+// function sidesteps that friction while still pinning the
+// behaviour).
 
 import { useLayoutEffect, type RefObject } from 'react';
 
@@ -84,14 +77,7 @@ export function useAutoResizeTextarea({
   useLayoutEffect(() => {
     const el = ref.current;
     if (el === null) return;
-    // Reset before re-measuring so a CLEARS value can shrink
-    // the textarea back to single-line (see file header).
     el.style.height = 'auto';
     el.style.height = `${computeTargetHeight(el.scrollHeight, maxHeight)}px`;
-    // `value` is intentionally the effect dep — we want the
-    // resize to fire whenever the textarea's content length
-    // changes. `ref` is also a dep (the ref object identity
-    // is stable per mount, but explicit deps keep React's
-    // lint plugin happy and document the contract).
   }, [ref, value, maxHeight]);
 }

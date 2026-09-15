@@ -1,5 +1,4 @@
-// TokenModal — the access-token entry dialog. M5 §第二块 G6 / D10
-// 落地。
+// TokenModal — access-token entry dialog.
 //
 // ## Two render modes
 //
@@ -14,65 +13,20 @@
 //     same modal layout but **可关闭** through three independent
 //     paths: Esc key, backdrop click, X button. Submission triggers
 //     `tokenStorage.write(value)` + `onSubmit(value)` callback
-//     (the App layer wires this to `client.connect(newToken)` which
-//     follows the existing teardown + swap + openSocket semantics).
+//     (the App layer wires this to `client.connect(newToken)`).
 //
-// ## Two submit flows (per D10)
+// testids:
+//   - `token-input` / `token-submit` — carried over from the M3
+//     `TokenPrompt` (e2e 03 asserts on these).
+//   - `token-modal` / `token-modal-backdrop` /
+//     `token-modal-close` — new (dialog container + dismiss
+//     targets).
 //
-//   - **required submit** — the App-level `onSubmit` callback
-//     receives the value, calls `tokenStorage.write(value)` +
-//     `window.location.reload()`. Hard reload triggers App.tsx to
-//     re-derive auth from localStorage; if the user re-enters a
-//     valid token, App's `auth.token !== null` branch fires and
-//     the recovery ceremony takes over.
-//
-//   - **closable submit** — the App-level `onSubmit` callback
-//     receives the value, calls `tokenStorage.write(value)` +
-//     `client.connect(value)`. The existing
-//     `WsClient.connect(token)` semantics cover teardown of the
-//     old socket + opening a new one with `token` in subprotocol
-//     slot 1 — auto-reconnect backoff is reset on connect, so a
-//     freshly-cached token will be used by all subsequent
-//     outbound envelopes.
-//
-// ## testid surface (task brief + D10 / task 05 §b)
-//
-//   - `token-input` (carried over from M3 TokenPrompt —
-//     e2e 03 spec asserts on this anchor).
-//   - `token-submit` (carried over from M3 TokenPrompt).
-//   - `token-modal` (NEW — the dialog container).
-//   - `token-modal-backdrop` (NEW — the click target for
-//     backdrop-dismiss in closable mode).
-//   - `token-modal-close` (NEW — only rendered in closable mode;
-//     the X button at the top-right of the dialog).
-//
-// ## Styling
-//
-// Tailwind v4 only (任务 04 已就绪：`bg-bg` / `text-text` /
-// `border-border` / `backdrop-blur-sm` 等 utility 已经映射到
-// 13 个 legacy CSS var via `@theme inline` 块 — D11 落地后所有
-// 新组件走 Tailwind，存量 1280 行不触碰）。手机全屏 sheet 形
-// 态留任务 07，本任务仅做桌面居中卡片。
-//
-// ## Focus management (deferred)
-//
-// 任务 07 才实现完整 `useFocusTrap` + `useFocusOnClose` + 焦点
-// 归还。本任务只 `autoFocus` 输入框（required 模式 mount 即聚
-// 焦；closable 模式 mount 即聚焦，便于用户立即键入）。
-//
-// M5 task 08 review W2 — Escape 关闭路径走 `useFocusTrap` 的
-// `onEscape` 回调（closable 模式唯一 Escape 入口）。本组件不再
-// 挂额外的 `window keydown Escape` listener（避免双重触发
-// onClose——双触发 bug 已修复，见 W2 注释）。
-//
-// ## Migration note (D9)
-//
-// M3/M4 的 `TokenPrompt.tsx` 把 token 写到 `location.hash`；本
-// 组件是它的继承者——写到 `localStorage` + App 层 reload。
-// `TokenPrompt.tsx` 已在 M5 任务 05 中删除（彻底删除，不留 deprecated
-// 副本——D9 明确不允许向后兼容迁移；旧书签 `#<token>&work_dir=...`
-// 形态会被 App 的 `auth.token === null` 路由到本组件的 required
-// 模式，提示用户重新粘贴新 token）。本组件是当前唯一入口。
+// Focus: closable mode installs `useFocusTrap` (Escape closes);
+// required mode has the input as the only focusable element,
+// handled by `autoFocus`. Escape handling is centralised in the
+// focus trap — the component does NOT attach its own keydown
+// listener (a previous duplicate listener was removed).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -94,38 +48,25 @@ export interface TokenModalProps {
   required: boolean;
   /** Called when the user submits the form. The component itself
    *  does NOT persist the value (that's the App's job) — it just
-   *  reports the trimmed string. The required-mode callback in
-   *  production wires `tokenStorage.write(value)` +
-   *  `window.location.reload()`; the closable-mode callback wires
-   *  `tokenStorage.write(value)` + `client.connect(value)`. */
+   *  reports the trimmed string. */
   onSubmit: (token: string) => void;
   /** Required when `required === false`. The component calls this
    *  from each of the three close paths (Esc / backdrop / X). The
    *  TypeScript signature requires `onClose` in closable mode so
    *  the consumer can't accidentally mount an un-closable modal
-   *  that has nowhere to escape to.
-   *
-   *  In `required` mode, `onClose` is not consulted — the dialog
-   *  is un-closable. Pass `undefined` (or omit) when `required`
-   *  is true. */
+   *  that has nowhere to escape to. In `required` mode `onClose`
+   *  is not consulted — the dialog is un-closable. */
   onClose?: () => void;
-  /** Optional banner copy displayed at the top of the dialog.
-   *  Used by the legacy-bookmark path to surface "旧书签 token 已
-   *  失效，请粘贴新 token" — the App reads the current hash shape
-   *  and passes an appropriate hint here when required=true. The
-   *  default empty string keeps the dialog compact for the
+  /** Optional banner copy at the top of the dialog. Used by the
+   *  legacy-bookmark path to surface "旧书签 token 已失效" UX.
+   *  Default empty string keeps the dialog compact for the
    *  Settings → 更换 Token path. */
   bannerHint?: string;
-  /** Optional inline error banner — surfaced when `tokenStorage.write`
-   *  returned `false` (privacy mode / quota exceeded / SecurityError).
-   *  M5 task 05 review W1 — without this, the App-level submit
-   *  handler would silently no-op on write failure and the user
-   *  would see no feedback. Inline render at the top of the dialog
-   *  (visually below the optional bannerHint) with the bridge-error
-   *  colour family so the operator learns one "red = something
-   *  failed" signal across all surfaces (mirrors `.dialog-error` /
-   *  `.input-bar-error`). Default `null` keeps the dialog compact
-   *  for the happy path. */
+  /** Optional inline error banner — surfaced when
+   *  `tokenStorage.write` returned `false` (privacy mode /
+   *  quota exceeded / SecurityError). The App-level submit handler
+   *  sets this so the user sees feedback on a write failure.
+   *  Default `null` keeps the dialog compact for the happy path. */
   storageError?: string | null;
 }
 
@@ -138,41 +79,27 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
   const isMobile = useIsMobile();
-  // 容器 ref：useFocusTrap 目标。closable 模式启用 trap（brief
-  // §2.7 「TokenModal open + closable 模式（required 模式默认即
-  // 唯一 focusable 元素，无需 trap）」）；required 模式唯一
-  // focusable 即 input——已有 autoFocus 处理，不必 trap。
+  // useFocusTrap target. Closable mode enables the trap; required
+  // mode has the input as the only focusable element, handled by
+  // autoFocus.
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // M5 task 07 — closable 模式启用 useFocusTrap。Escape 触发
-  // onClose；active 翻转时无 returnFocusRef（token modal 是全屏
-  // overlay，焦点归还目标取决于调用场景——settings 按钮 / 直接
-  // 路由等各异，hook 调用方决定；本组件保持中性）。
+  // Closable mode installs the focus trap; Escape calls onClose.
+  // No returnFocusRef here — token modal is a full-screen overlay
+  // and the focus-restore target depends on the call site
+  // (settings button, direct URL route, etc.); the App-level
+  // caller decides.
   useFocusTrap({
     active: !required,
     containerRef,
     onEscape: !required ? onClose : undefined,
   });
 
-  // autoFocus the input on mount (required mode → user pastes
-  // immediately; closable mode → user can tab to it but
-  // autoFocus saves a click). Deferred focus-trap implementation
-  // lives in task 07 (no Tab-cycling / no single-focusable edge
-  // cases yet).
-  //
-  // We use the React-idiomatic `autoFocus` prop (HTML `autofocus`
-  // attribute at mount) AND a `useEffect` `.focus()` call as a
-  // belt-and-suspenders — the latter handles the StrictMode
-  // double-mount case where the autofocus attribute can be
-  // consumed by the first mount and the effect fires after the
+  // Focus the input on mount. Uses BOTH the React `autoFocus` prop
+  // AND a `.focus()` call in an effect — the latter handles the
+  // StrictMode double-mount case where the autofocus attribute can
+  // be consumed by the first mount and the effect fires after the
   // second mount, ensuring focus lands on the visible input.
-  //
-  // M5 task 08 review W2 — Escape 关闭路径：上一版这里还有一个
-  // 显式 `window.addEventListener('keydown', ...)` effect，
-  // 与上方 `useFocusTrap` 的 `onEscape` 形成双重触发（同一按键
-  // 触发 onClose 两次）。`useFocusTrap` 已在 closable 模式下挂
-  // document keydown listener 处理 Escape——是 Escape 的唯一
-  // 入口。该 useEffect 已删除（清理死代码 / 双触发路径）。
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
@@ -251,16 +178,12 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
 
         {/* Inline storage-error banner — surfaced when
             `tokenStorage.write` returned false (privacy mode /
-            quota exceeded / SecurityError). Renders with the same
-            bridge-error colour family as `.dialog-error` / `.input-
-            bar-error` so the operator learns one "red = something
-            failed" signal across all surfaces. The literal
-            `rgba(...)` is hard-coded to mirror `.input-bar-error`'s
-            8%-alpha offline tint; using a Tailwind opacity modifier
-            on `bg-state-offline/10` would require a Tailwind v4
-            `<alpha-value>` channel rewrite of the `var(--state-offline)`
-            definition, which would ripple to every other surface —
-            not worth it for one inline banner. */}
+            quota exceeded / SecurityError). Hard-coded `rgba(…)`
+            mirrors `.input-bar-error`'s 8%-alpha offline tint;
+            using a Tailwind opacity modifier on `bg-state-offline/10`
+            would require a Tailwind v4 `<alpha-value>` channel
+            rewrite of the `var(--state-offline)` definition, which
+            would ripple to every other surface. */}
         {storageError !== undefined && storageError !== null && storageError.length > 0 ? (
           <div
             className="mb-4 rounded border border-state-offline px-3 py-2 text-sm text-state-offline"

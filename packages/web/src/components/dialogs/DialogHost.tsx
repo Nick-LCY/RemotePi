@@ -3,65 +3,46 @@
 // layer stack) and renders one dialog per entry in the current
 // session's `blockedOn` bucket.
 //
-// M4 §4.5 per-session isolation (tasks/m4/08):
-//   - Reads `useBlockedOnFor(currentSessionKey)` — the entries are
-//     a `BlockedOnEntry[]` (each `{ entry, enqueuedAt }`) so the
-//     countdown math can read `enqueuedAt` (see WsClient.ts
-//     `setBucketBlockedOn` JSDoc for the why).
+// Per-session isolation:
+//   - Reads `useBlockedOnFor(currentSessionKey)` — entries are
+//     `BlockedOnEntry[]` (each `{ entry, enqueuedAt }`) so the
+//     countdown math can read `enqueuedAt`.
 //   - Background sessions' dialogs are stored in their own bucket
 //     but not rendered here — DialogHost is keyed by the current
 //     session via `currentSessionKey`. Switching sessions unmounts
 //     the foreground dialogs; switching back re-mounts them with
 //     the same `enqueuedAt` so the countdown resumes from where
 //     it would have been (remaining = timeout - (Date.now() -
-//     enqueuedAt) per PRD §4.5).
+//     enqueuedAt)).
 //   - The local `Map<id, DialogLocalState>` is keyed by the
 //     payload's `id` (not the bucket's array index) so a
 //     `session_state` broadcast that REORDERS the blocked_on
 //     array doesn't desync the local state from the dialog.
 //
-// Local state (M3 PRD §4.2 关闭规则 + §4.5 提交失败处理):
-//   `Map<id, DialogLocalState>` — tracks each dialog's local
-//   status:
-//     - 'open'        — entry is in blockedOn, no action taken yet
-//     - 'submitting'  — outbound extension_ui_response sent; we're
-//                       waiting for either:
-//                        * session_state.blocked_on drops the id
-//                          (bridge confirmed → unmount)
-//                        * command_result{success:false,
-//                          error.code:'request_expired'} arrives
-//                          (bridge says we were too late → mark
-//                          expired → unmount on next session_state)
-//     - 'expired'     — request_expired arrived; show inline error
-//                       banner + unmount as soon as session_state
-//                       drops the id (which it does, because the
-//                       bridge already cleared the pending entry
-//                       when it issued the request_expired).
+// Local `Map<id, DialogLocalState>` per dialog:
+//   - 'open'       — entry is in blockedOn, no action taken yet
+//   - 'submitting' — outbound extension_ui_response sent; waiting
+//                    for session_state to drop the id (bridge
+//                    confirmed) or `request_expired` to land.
+//   - 'expired'    — request_expired arrived; show inline error
+//                    banner + unmount on the next session_state.
 //
-// Auto-close: DialogHost observes `useBlockedOnFor(currentSessionKey)`
-// on every render. When an entry's id is no longer in the array,
-// the dialog unmounts. This satisfies PRD §4.2 关闭规则:
-// "session_state 帧 blocked_on 不含该 id → 自动收起（即使本地'已提交
-// 待确认'）".
+// Auto-close: when an entry's id is no longer in the array, the
+// dialog unmounts (React's `key` matching drops the component).
 //
-// Optimistic UI: OFF (H decision). The 'submitting' state disables
-// the dialog buttons to avoid double-submit but does not advance
-// any visual state — the user still sees the dialog until the
-// bridge confirms via the next session_state frame.
+// Optimistic UI: OFF. The 'submitting' state disables dialog
+// buttons to avoid double-submit but does not advance visual
+// state — the user still sees the dialog until the bridge
+// confirms via the next session_state frame.
 //
-// Local-timeout branch (W3 review): when `useCountdown` expires
-// in the dialog's header BEFORE the bridge mirrors its own timer,
-// the previous implementation flipped the dialog's local Map state
-// to `expired`. That was effectively invisible: the bridge's
-// mirrored timer fires ~immediately after (within the same tick
-// in practice) and the next `session_state` drops the id — so
-// React unmounts the dialog on key change before the user can see
-// the expired banner. Per reviewer feedback, we now DO NOT mutate
-// the Map on the local timer; instead we surface a brief global
-// toast ("弹窗已超时") that the host owns, so the UX is decoupled
-// from whichever dialog fired. The countdown UI keeps rendering
-// until the bridge confirms via session_state, which is the source
-// of truth.
+// Local-timeout branch: the dialog's `useCountdown` may expire
+// before the bridge mirrors its own timer; rather than flip the
+// dialog's local Map state to `expired` (effectively invisible —
+// the next session_state un-mounts the dialog before the user
+// can see the inline banner), the host surfaces a brief global
+// toast that auto-hides. The countdown UI keeps rendering until
+// the bridge confirms via session_state — that's the source of
+// truth.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -112,7 +93,7 @@ export function DialogHost() {
   // are `BlockedOnEntry[]` (entry + enqueuedAt); we key by the
   // payload's id so the local map stays decoupled from the bucket's
   // enqueuedAt timestamps (which are replaced wholesale on every
-  // session_state broadcast — see WsClient.setBucketBlockedOn).
+  // session_state broadcast).
   useEffect(() => {
     const seen = new Set<string>();
     for (const { entry } of entries) seen.add(entry.id);
@@ -129,9 +110,9 @@ export function DialogHost() {
     });
   }, [entries]);
 
-  // Subscribe to request_expired notices (PRD §4.5). Match by
-  // outboundId — the dialog that submitted the response is the
-  // one to flag as expired.
+  // Subscribe to request_expired notices. Match by outboundId —
+  // the dialog that submitted the response is the one to flag as
+  // expired.
   useDialogExpiredSubscription(
     useCallback((notice) => {
       setLocal((prev) => {
@@ -155,9 +136,6 @@ export function DialogHost() {
     }, []),
   );
 
-  // Helper: record submission state. Called by the dialog callbacks
-  // below. We extract the submission handler logic into shared
-  // functions so each dialog can use the same bookkeeping.
   const submit = useCallback(
     (entry: BlockedOnEntryPayload, payload: ExtensionUIResponsePayload) => {
       const outboundId = client.sendExtensionUIResponse(payload);
@@ -170,7 +148,7 @@ export function DialogHost() {
     [client],
   );
 
-  // W3 — local-timeout handler no longer mutates the dialog's local
+  // Local-timeout handler no longer mutates the dialog's local
   // Map state. The bridge's mirrored timer fires within the same
   // tick in practice, so the next `session_state` un-mounts the
   // dialog via React key matching before the user could see an
@@ -240,17 +218,17 @@ export function DialogHost() {
         // field — the toast replaces it.
         const errorMessage = state.status === 'expired' ? state.errorMessage : null;
         return (
-          <DialogEntry
-            key={entry.id}
-            entry={entry}
-            enqueuedAt={enqueuedAt}
-            pending={pending}
-            errorMessage={errorMessage}
-            submit={submit}
-            onCancel={(payload) => submit(entry, payload)}
-            onTimeout={() => handleTimeout(entry)}
-          />
-        );
+        <DialogEntry
+          key={entry.id}
+          entry={entry}
+          enqueuedAt={enqueuedAt}
+          pending={pending}
+          errorMessage={errorMessage}
+          submit={submit}
+          onCancel={(payload) => submit(entry, payload)}
+          onTimeout={() => handleTimeout(entry)}
+        />
+      );
       })}
       {timeoutToast !== null ? (
         <div className="dialog-host-toast" role="status" aria-live="polite" data-testid="dialog-toast">

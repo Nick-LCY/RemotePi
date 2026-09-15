@@ -1,39 +1,34 @@
-/* RemotePi web — minimal native CSS. No UI library; only what the four
-   components need to look like an integrated page rather than a dev console.
-   Layout is a single column on narrow viewports. */
+/* RemotePi web — minimal native CSS. No UI library; only what
+   the four components need to look like an integrated page
+   rather than a dev console. Layout is a single column on
+   narrow viewports. */
 
 /* =====================================================================
- * M5 task 04 — Tailwind v4 intro.
+ * Tailwind v4 intro.
  *
- * The directive order below is intentional and load-bearing:
+ * Directive order (load-bearing):
  *
  *   1. `@import "tailwindcss";` injects preflight (the v4 CSS
- *      reset) + the utilities layer + the default @theme. This
- *      MUST be the first non-comment content.
+ *      reset) + the utilities layer + the default @theme. Must
+ *      be the first non-comment content.
  *   2. `@theme inline { ... }` re-maps 12 legacy color custom
- *      properties (e.g. `--bg`) onto Tailwind's `--color-*`
- *      tokens. The `inline` modifier means the value is pasted
- *      into each utility class as `var(--bg)`, so utilities
- *      auto-track any future `:root` override (including the
+ *      properties onto Tailwind's `--color-*` tokens. The
+ *      `inline` modifier means the value is pasted into each
+ *      utility class as `var(--bg)`, so utilities auto-track any
+ *      future `:root` override (including the
  *      `@media (prefers-color-scheme: dark)` block further down).
  *   3. `:root { ... }` keeps the original 13 legacy CSS custom
- *      properties verbatim (their names are unchanged on
- *      purpose: every existing `background: var(--bg)` rule
- *      below depends on them) and adds ONE new var,
- *      `--sidebar-width: 280px`, for task 06 (AppShell sidebar).
+ *      properties verbatim (their names are unchanged because
+ *      every existing `background: var(--bg)` rule below depends
+ *      on them) and adds `--sidebar-width`.
  *   4. `@media (prefers-color-scheme: dark) { :root { ... } }`
  *      keeps its 12 dark-color overrides — because @theme inline
  *      re-references the original vars, dark mode keeps working
  *      for both legacy rules and Tailwind utilities.
- *   5. `@layer components { ... }` wraps the 1280 lines of
- *      legacy CSS so they stack ABOVE preflight (legacy overrides
- *      reset) but BELOW ad-hoc Tailwind utilities (new components
- *      win on specificity without re-architecting). This is
- *      the standard progressive-migration cascade order.
- *
- * Preflight is intentionally LEFT ON (D11 user ruling — see PRD
- * §D11) so utilities get a consistent reset; the visual diff is
- * logged in the task completion report.
+ *   5. `@layer components { ... }` wraps the legacy CSS so it
+ *      stacks ABOVE preflight (legacy overrides reset) but BELOW
+ *      ad-hoc Tailwind utilities (new components win on
+ *      specificity without re-architecting).
  * ===================================================================== */
 
 @import "tailwindcss";
@@ -72,23 +67,18 @@
   --state-offline: #c0392b;
   --state-connecting: #6b6b76;
 
-  /* M5 task 02 — InputBar textarea auto-grow cap. This CSS
-     value is the visual source of truth for the
-     `max-height` + `overflow-y: auto` pair on `.input-bar-field`
-     (the user actually sees the cap here). The JS-side
+  /* InputBar textarea auto-grow cap. This CSS value is the
+     visual source of truth for the `max-height` +
+     `overflow-y: auto` pair on `.input-bar-field` (the user
+     actually sees the cap here). The JS-side
      `DEFAULT_TEXTAREA_MAX_HEIGHT` in
      `hooks/useAutoResizeTextarea.ts` mirrors it as the default
-     for callers that don't pass an explicit `maxHeight`, and
-     one test (`use-auto-resize-textarea.test.ts` §2.1) pins
-     that today's values still agree (200px / 200) — adjusting
-     either side in isolation is safe because the CSS cap kicks
-     in independently of the JS inline `style.height`. */
+     for callers that don't pass an explicit `maxHeight` —
+     adjusting either side in isolation is safe because the CSS
+     cap kicks in independently of the JS inline `style.height`. */
   --input-max-height: 200px;
 
-  /* M5 task 04 — AppShell sidebar width (task 06+).
-     Pure addition; no existing var touched. Lives in :root so
-     light/dark overrides in the @media block below can override
-     it too if a future theme needs a narrower rail. */
+  /* AppShell sidebar width. */
   --sidebar-width: 280px;
 
   font-family:
@@ -143,12 +133,10 @@ code {
 }
 
 .app-shell {
-  /* M5 task 06 顺期迁移——原 `.app-shell` 是单列居中 max-width:960px
-     布局；M5 双栏布局后，`<AppShell>` 接 grid(`grid-template-columns:
-     var(--sidebar-width) 1fr`)，Tailwind utility 写在 JSX 上。本
-     类仅作为兜底（任何在 JSX 外仍引用 `.app-shell` 的代码不应被
-     错误渲染为单列居中）。未来 task 07 移动端 drawer 接手后，本
-     类可删除。 */
+  /* Legacy fallback for any code that still references `.app-shell`
+     outside of the `<AppShell>` JSX (which renders the grid via
+     Tailwind utilities). New components should not touch this
+     class — they go through `<AppShell>`. */
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -170,23 +158,12 @@ code {
   font-size: 1.1rem;
 }
 
-/* ---- StatusBar (legacy M2/M3/M4 — deleted in M5 task 06; the
-   bridge-status badge + meta are now inlined into the sidebar's
-   `BridgeStatusBar` (Tailwind utilities, see components/BridgeStatusBar.tsx).
-   The original `.status-bar` / `.badge-*` rules were only ever
-   used by the deleted component, so they're removed in lockstep
-   to keep the layer slim. The `bridge-status` testid anchor is
-   preserved on the new component (Tailwind inline classNames
-   don't use this class — the testid + data-state live on the
-   new component directly). */
-
-/* ---- TokenPrompt (M3/M4 — deleted in M5 task 05/06; token
-   moved to localStorage + TokenModal. The original `.token-prompt`
-   rules were only ever used by the deleted component, so
-   they're removed in lockstep. The `token-input` / `token-submit`
-   testid anchors are preserved on the new TokenModal component
-   (Tailwind inline classNames don't use this class — the testids
-   live on the new component directly). */
+/* ---- Legacy `.status-bar` / `.badge-*` rules (the
+   pre-M5 `<StatusBar>` component) were removed when that
+   component was deleted; bridge status now lives in
+   `BridgeStatusBar`. Legacy `.token-prompt` rules (the pre-M5
+   `<TokenPrompt>`) were removed when that component was deleted;
+   token entry now lives in `TokenModal`. */
 
 /* ---- Buttons ---------------------------------------------------------- */
 
@@ -335,11 +312,9 @@ td code {
 
 .input-bar {
   display: flex;
-  /* M5 task 02 — the field is now a multi-line `<textarea>`;
-     `align-items: flex-end` keeps the Send / Abort buttons pinned
-     to the textarea's bottom edge so they don't drift upward as
-     the textarea grows past one line (which would look broken
-     with the prior `align-items: center` rule). */
+  /* `align-items: flex-end` pins the Send / Abort buttons to the
+     textarea's bottom edge so they don't drift upward as the
+     textarea grows past one line. */
   align-items: flex-end;
   gap: 0.5rem;
   background: var(--surface);
@@ -359,13 +334,12 @@ td code {
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--text);
-  /* M5 task 02 — textarea-specific shape rules. `resize: none`
-     disables the browser's drag handle (we manage height via
-     the hook, so a user-draggable handle would let them make
-     it taller than `--input-max-height`, defeating the cap).
-     `min-height` keeps the field visually a single row at idle
-     (`rows={1}` + line-height gives ~32px) so the Send / Abort
-     buttons stay close to where the user expects on first
+  /* `resize: none` disables the browser's drag handle (we manage
+     height via the hook, so a user-draggable handle would let
+     them make it taller than `--input-max-height`, defeating
+     the cap). `min-height` keeps the field visually a single row
+     at idle (`rows={1}` + line-height gives ~32px) so the Send /
+     Abort buttons stay close to where the user expects on first
      paint. `max-height` + `overflow-y: auto` is the auto-grow
      ceiling — content past the cap gets an internal scrollbar
      rather than blowing the row height past the layout budget.
@@ -394,14 +368,13 @@ td code {
   border-color: var(--border);
 }
 
-/* M5 task 02 — the global `button` rule has `align-self:
-   flex-start` (it predates the multi-line textarea). The
-   `.input-bar` container now uses `align-items: flex-end` to
-   keep the buttons pinned to the textarea's bottom edge as
-   the textarea grows; the `align-self` override on the buttons
-   is what makes them honour that container alignment. Without
-   this, the Send / Abort buttons would stay glued to the top
-   of the row regardless of how tall the textarea gets. */
+/* The global `button` rule has `align-self: flex-start`; the
+   `.input-bar` container uses `align-items: flex-end` to keep
+   the buttons pinned to the textarea's bottom edge as the
+   textarea grows. The `align-self: flex-end` override below
+   makes the buttons honour that container alignment —
+   otherwise they'd stay glued to the top of the row regardless
+   of how tall the textarea gets. */
 .input-bar button {
   align-self: flex-end;
 }
@@ -919,7 +892,7 @@ td code {
   color: var(--muted);
 }
 
-/* ---- M5 markdown + folding (AssistantMessageBody + streaming draft) ---
+/* ---- Markdown + folding (AssistantMessageBody + streaming draft) ---
  *
  * Styles for react-markdown output (terminal assistant messages)
  * and the folded thinking / toolCall pills (terminal + streaming
@@ -1173,7 +1146,7 @@ td code {
   overflow: auto;
 }
 
-/* M5 验收期 gap fix — tool result error styling. Applied to the
+/* Tool result error styling. Applied to the
    `<pre class="message-tool-result">` when `result.isError === true`
    (the MergedToolResult shape from `mergeToolResults`). Visual
    treatment: red-tinted background + red border + red text, so the
@@ -1187,9 +1160,9 @@ td code {
   color: var(--state-offline);
 }
 
-/* M5 验收期 gap fix — orphan toolResult folded details. Applied
-   when `mergeToolResults` couldn't match a toolResult to any
-   prior assistant toolCall (typical: MESSAGES_CAP truncated the
+/* Orphan toolResult folded details. Applied when
+   `mergeToolResults` couldn't match a toolResult to any prior
+   assistant toolCall (typical: MESSAGES_CAP truncated the
    assistant message but the toolResult survived). The wrapper
    uses the existing `.message-tool-details` chrome (folded
    summary, default-folded `<details>`) and the `.message-tool-

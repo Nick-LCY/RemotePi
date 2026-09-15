@@ -146,14 +146,13 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
     await page.locator('[data-testid="session-new"]').click();
     await waitForChatView(page);
 
-    // R6 review 修复轮——wait for WebSocket to be online before
-    // sending prompts. ChatView for session='new' mounts
-    // immediately (createReadyGate = always ready, 不跑仪式),
-    // 但 WebSocket 可能仍在握手/connecting 中——若 sendRaw 时
-    // socket.readyState !== OPEN 则静默丢包。M4 流下 root cause
-    // 是 choicePage level1/level2 切换 + createReadyGate 立即
-    // ready 让 chat-view 早于 WS online 出现；testid 点击路径已
-    // 走对，仅需等 WS online 后再点 send 即可。
+    // Wait for WebSocket to be online before sending prompts.
+    // ChatView for session='new' mounts immediately
+    // (createReadyGate = always ready, no ceremony), but the
+    // WebSocket may still be in handshake/connecting — if
+    // `sendRaw` runs while `socket.readyState !== OPEN` the
+    // packet is silently dropped. The testid click path is
+    // correct; just wait for WS online before clicking send.
     await page
       .locator('[data-testid="bridge-status"] [data-state="online"]')
       .waitFor({ state: 'visible', timeout: 30_000 });
@@ -188,12 +187,14 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
     const observerPromise = page.evaluate(async () => {
       const samples: number[] = [];
       const draftSelector = '[data-testid="message-draft"]';
-      // M4 验收期 4th gap 修复——streaming continuity 断言：observer
-      // 还需要追踪 [data-testid="chat-view"] / [data-testid=
-      // "recovery-in-flight"] 在 stream 期间的可见性。若 ChatView 在
-      // 任何 delta 之间被 `<RecoveryInFlight/>` 顶替，ChatView 卸载
-      // → draft 元素从 DOM 移除 → 后续 delta 不渲染 → streaming
-      // 打字机效果丢失（验收期 4th gap 原症状）。
+      // Streaming continuity guard: the observer also tracks
+      // `[data-testid="chat-view"]` / `[data-testid="recovery-in-
+      // flight"]` visibility during the stream. If ChatView gets
+      // replaced by `<RecoveryInFlight/>` between any two
+      // deltas, ChatView unmounts → draft element leaves the DOM
+      // → subsequent deltas don't render → the streaming
+      // typewriter effect is lost (the original 4th gap
+      // regression).
       const start = performance.now();
       const deadline = start + 20_000;
       // Observe the MessageList subtree (the closest stable
@@ -223,13 +224,14 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
         }
       });
       observer.observe(messageList, { childList: true, subtree: true, characterData: true });
-      // M4 验收期 4th gap 修复——streaming continuity tracker：
-      // 在 observer 生命周期内持续轮询 DOM，记录 chat-view 与
-      // recovery-in-flight 的可见状态。`chatViewSeen` 仅作 sanity
-      // 钉（observer 启动时 chat-view 应已可见）；`recoveryInFlightSeen`
-      // 是流式连续性的关键断言——若该值在 observer 期间变为 true，
-      // 即 ChatView 被 RecoveryInFlight 顶替，违反本 spec §4th gap
-      // 核心断言。
+      // Streaming continuity tracker: while the observer is
+      // alive, poll the DOM for chat-view and recovery-in-flight
+      // visibility. `chatViewSeen` is a sanity pin (chat-view
+      // should be visible when the observer starts);
+      // `recoveryInFlightSeen` is the load-bearing assertion — if
+      // it ever becomes true during the observer window,
+      // ChatView was replaced by RecoveryInFlight, violating the
+      // 4th gap regression invariant.
       let chatViewSeen = false;
       let recoveryInFlightSeen = false;
       while (performance.now() < deadline) {
@@ -265,18 +267,19 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
     );
     await userRow.waitFor({ state: 'visible', timeout: 15_000 });
 
-    // Step 6 (R6 M4 flow): wait for the App.tsx stem-refilled
-    // watcher (W8) to fire — bridge broadcasts
-    // session_state{session:<stem>} after the pending manager's
-    // first session_state, watcher refills the hash from
-    // `session=new` to `session=<realStem>`. We poll up to 30s
-    // (the ceremony's first turn + pi cold spawn + watcher fire
-    // usually well under 5s; 30s is headroom for slow machines).
+    // Step 6: wait for the App-level stem-refilled watcher to
+    // fire — bridge broadcasts session_state{session:<stem>}
+    // after the pending manager's first session_state, watcher
+    // refills the hash from `session=new` to
+    // `session=<realStem>`. We poll up to 30s (the ceremony's
+    // first turn + pi cold spawn + watcher fire usually well
+    // under 5s; 30s is headroom for slow machines).
     //
-    // 关键时序：watcher 在 session_state 入桶时触发 hash 写入；
-    // 该 session_state 通常在用户 prompt 发出后 + pi 第一条
-    // session_state 阶段转换时到达。在 userRow 出现（本地
-    // optimistic append）后立即轮询，等待 watcher fire。
+    // The watcher fires when the session_state arrives in the
+    // bucket, which typically lands after the user's prompt
+    // + pi's first session_state phase transition. After
+    // userRow appears (local optimistic append) we poll for
+    // the watcher fire.
     await expect
       .poll(
         async () => {
@@ -306,20 +309,21 @@ test.describe('scenario (a) — first-turn streaming render (M4 flow)', () => {
       draftGrowthSamples.samples.length,
       `expected at least 2 distinct draft text lengths (monotonic growth signal); got [${draftGrowthSamples.samples.join(', ')}]`,
     ).toBeGreaterThanOrEqual(2);
-    // M4 验收期 4th gap 修复——streaming continuity 断言：
-    //   observer 期间 chat-view 必须持续可见（mount 不被卸载）；
-    //   recovery-in-flight 必须全程不在 DOM 中（ChatView 没被
-    //   RecoveryInFlight 顶替）。原 4th gap 症状即 hash 翻转后
-    //   gateForSession(<stem>) miss → initiateRecovery 触发 → 
-    //   ChatView 卸载换 RecoveryInFlight → delta 不渲染 → 流式
-    //   效果丢失。本断言是该缺口的 e2e 钉子。
+    // Streaming continuity assertion: chat-view must stay
+    // mounted throughout the observer window (not unmounted);
+    // recovery-in-flight must NOT appear in the DOM (ChatView
+    // not replaced by RecoveryInFlight). The original symptom
+    // was: hash flip → gateForSession(<stem>) miss →
+    // initiateRecovery → ChatView unmounts → RecoveryInFlight
+    // → deltas don't render → typewriter effect lost. This
+    // assertion is the regression pin for that bug.
     expect(
       draftGrowthSamples.chatViewSeen,
-      'chat-view should be visible throughout the streaming window (M4 4th gap fix)',
+      'chat-view should be visible throughout the streaming window',
     ).toBe(true);
     expect(
       draftGrowthSamples.recoveryInFlightSeen,
-      'recovery-in-flight must NOT appear during streaming window — would indicate ChatView was unmounted (M4 4th gap regression)',
+      'recovery-in-flight must NOT appear during streaming window — would indicate ChatView was unmounted',
     ).toBe(false);
     // Verify strict monotonicity (this is the load-bearing
     // assertion — a non-monotonic sequence means the renderer

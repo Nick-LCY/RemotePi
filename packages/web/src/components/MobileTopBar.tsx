@@ -1,54 +1,20 @@
-// MobileTopBar — M5 task 07 gap fix (commit `a6fd9ef` 后).
+// MobileTopBar — mobile-only top bar with hamburger + view title.
 //
-// ## Why this component exists
+// Rendered exclusively on mobile (<768px) on the choiceLevel1 /
+// choiceLevel2 surfaces; the recovery branch renders
+// `<SessionStatusBar>` instead (which also carries a hamburger).
+// App dispatches by view, so the two top bars are mutually
+// exclusive — both share the same `hamburgerRef` instance so
+// `useFocusTrap`'s return-focus always lands on the visible one.
 //
-// M5 task 07 commit `a6fd9ef` 落地汉堡按钮 (sidebar-toggle testid)
-// 仅位于 `SessionStatusBar` 左侧。但 `SessionStatusBar` 只在
-// recovery 分支挂载（`App.tsx` 中 `sessionForSessionBar !== null`
-// 才渲染）→ **移动端 <768px 在 choiceLevel1 / choiceLevel2 视图
-// 下没有入口打开抽屉** → 用户无法选择工作目录 / 会话，
-// 功能性死路。
+// `useIsMobile()` is the gate: desktop returns `null` (no DOM
+// contribution; doesn't touch desktop layout).
 //
-// 修法：本组件提供 mobile-only top bar（含汉堡 + 视图标题），
-// 在 `App.tsx` 内按 view 分派——
-//   - `view === 'recovery'` → 渲染 `<SessionStatusBar>`
-//     （既有路径，含汉堡 + phase + queue + session 名）；
-//   - `view === 'choiceLevel1' || 'choiceLevel2'` → 渲染
-//     `<MobileTopBar>`（本组件）。
-//
-// 两者**互斥**渲染（按 view 分派），共享同一个 `hamburgerRef`
-// `useRef` 实例（`App.tsx` 持有 + 透传）—— focus 归还永远指向
-// 当前可见的那个汉堡按钮。
-//
-// ## 渲染策略
-//
-// `useIsMobile()` 内置判定：
-//   - desktop (≥768px)：返回 `null`，不参与 DOM（不动桌面端布局）；
-//   - mobile (<768px)：渲染 hamburger + view title。
-//
-// AppShell 的 grid 模板在 mobile 下是 `1fr` 单列——本组件
-// 是 right-rail 第一行（位于 mainContent 顶部，与既有
-// SessionStatusBar 位置对齐）。
-//
-// ## testid
-//
-//   - `mobile-top-bar`           — 根容器（M5 task 07 新增 testid；
-//     任务 06 brief 明示「新组件新 testid 不计入本约束」）。
-//   - `sidebar-toggle`           — 汉堡按钮（与 SessionStatusBar
-//     复用同一 testid；render by view 分派保证 per view 唯一
-//     渲染实例）。
-//
-//   「testid 零增零删」约束：本组件不删除任何既有 testid；新增
-//   testid（mobile-top-bar）显式标注为 M5 task 07 新增，
-//   走既有「新组件新 testid」惯例。`sidebar-toggle` 复用既有，
-//   不视为新增。
-//
-// ## Tailwind only
-//
-// 新组件——Tailwind utilities only（task 04 已就绪：
-// `bg-surface` / `text-text` / `border-border` 等已映射到 13
-// 存量 CSS var via `@theme inline` 块）。本组件无 module.css，
-// 无新 CSS 规则引入。
+// testids:
+//   - `mobile-top-bar` — root container.
+//   - `sidebar-toggle` — hamburger button (shared with
+//     `SessionStatusBar`; per-view exclusivity means one DOM
+//     instance at a time).
 
 import type { RefObject } from 'react';
 
@@ -59,28 +25,24 @@ import { useIsMobile } from '../hooks/useIsMobile.js';
 // ---------------------------------------------------------------------------
 
 export interface MobileTopBarProps {
-  /** 视图标题——level1 显「选择工作目录」，level2 显「选择会话」。
-   *  Mobile 顶栏右侧仅显示该文字（与 SessionStatusBar 把 session
-   *  名放在汉堡右侧的布局对齐）。 */
+  /** View title — "选择工作目录" / "选择会话" depending on
+   *  decideView. Shown to the right of the hamburger. */
   title: string;
-  /** 抽屉是否已展开。`isMobile === false` 时忽略。传入供按钮
-   *  aria-label 动态切换（展开 → "关闭侧边栏"，收起 →
-   *  "打开侧边栏"）。 */
+  /** Drawer open state. Drives the hamburger's aria-label and
+   *  data-open attribute. */
   sidebarOpen?: boolean;
-  /** 汉堡按钮 click 回调（移动端）。`isMobile === false` 时
-   *  按钮不渲染。 */
+  /** Hamburger click handler (mobile only — button doesn't
+   *  render on desktop). */
   onToggleSidebar?: () => void;
-  /** 汉堡按钮 ref——抽屉关闭时 `AppShell` 的 `useFocusTrap` 调
-   *  `returnFocusRef.focus()` 归还焦点至此按钮。仅移动端使用；
-   *  桌面端忽略。本 ref **与 SessionStatusBar 共享同一对象**
-   *  （App 层持有 → 透传），ref.current 永远指向当前可见
-   *  汉堡按钮（recovery → SessionStatusBar / level1+2 →
-   *  MobileTopBar）。 */
+  /** Hamburger ref — `AppShell`'s `useFocusTrap` calls
+   *  `returnFocusRef.focus()` on drawer close. Shared object
+   *  identity with `SessionStatusBar`'s hamburger (App-level
+   *  holds the ref). */
   hamburgerRef?: RefObject<HTMLButtonElement>;
 }
 
 // ---------------------------------------------------------------------------
-// Component
+// component
 // ---------------------------------------------------------------------------
 
 export function MobileTopBar(props: MobileTopBarProps): JSX.Element | null {
@@ -92,9 +54,8 @@ export function MobileTopBar(props: MobileTopBarProps): JSX.Element | null {
   } = props;
   const isMobile = useIsMobile();
 
-  // 桌面端不渲染——保持桌面布局（无顶栏）与 pre-fix 一致；
-  // App.tsx 的 mainContent 槽位里本组件 conditional mount
-  // 不会被 main grid 触达。
+  // Desktop: no contribution (keeps desktop layout identical
+  // to pre-fix).
   if (!isMobile) return null;
 
   return (
@@ -103,13 +64,12 @@ export function MobileTopBar(props: MobileTopBarProps): JSX.Element | null {
       data-testid="mobile-top-bar"
       data-view-title={title}
     >
-      {/* 汉堡按钮——与 SessionStatusBar 内的汉堡按钮同 testid
-          `sidebar-toggle`。两组件按 view 分派，互斥渲染：
-          App.tsx 同一时刻只挂载一个，故 e2e selector
-          `page.locator('[data-testid="sidebar-toggle"]')` 在
-          移动端始终命中唯一实例。
-          aria-label 动态切换 + aria-controls 指向 AppShell 内
-          `<aside id="app-sidebar">`；data-open 反映抽屉状态。 */}
+      {/* Hamburger button — shares `sidebar-toggle` testid with
+          `SessionStatusBar`. The two are dispatched by view, so
+          only one is mounted at a time and the e2e locator
+          always hits a single instance. aria-label flips
+          between open / closed; aria-controls points at the
+          AppShell `<aside id="app-sidebar">`. */}
       <button
         ref={hamburgerRef}
         type="button"
@@ -121,11 +81,9 @@ export function MobileTopBar(props: MobileTopBarProps): JSX.Element | null {
         data-testid="sidebar-toggle"
         data-open={sidebarOpen ? 'true' : 'false'}
       >
-        {/* Simple hamburger icon — three horizontal bars.
-            Inline SVG keeps it self-contained (no asset path
-            to manage). aria-label already conveys semantic so
-            aria-hidden on the SVG. 与 SessionStatusBar 内的
-            SVG 保持一致——视觉外观统一。 */}
+        {/* Three horizontal bars — inline SVG keeps it self-
+            contained. aria-label carries the semantic so the
+            SVG itself is aria-hidden. */}
         <svg
           width="16"
           height="16"
@@ -143,8 +101,6 @@ export function MobileTopBar(props: MobileTopBarProps): JSX.Element | null {
         </svg>
       </button>
 
-      {/* 视图标题——仅 mobile 渲染。Tailwind utility: text-text
-          font-semibold + 截断 ellipsis（防御极长 title）。 */}
       <span
         className="min-w-0 flex-1 truncate font-semibold text-text"
         data-testid="mobile-top-bar-title"
