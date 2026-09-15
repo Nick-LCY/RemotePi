@@ -1,10 +1,7 @@
 // Bridge configuration loader — JSON file + zod validation + work_dir
-// strict check. Replaces the M2-era `--worker-url` CLI flag and
-// `REMOTEPI_WORKER_URL` env var with a single declarative file
-// ([[prds/m3-single-session.md#§2-1|M3 PRD §2.1]]). All four
-// connection-related inputs (worker URL, web base URL, work directory,
-// optional persistent token) now live in one place; the bridge never
-// reaches for env vars on its own.
+// strict check. The four connection-related inputs (worker URL, web
+// base URL, work directory, optional persistent token) live in one
+// place; the bridge never reaches for env vars on its own.
 //
 // Loading flow (one attempt, fail-fast):
 //   1. read file as UTF-8
@@ -53,8 +50,7 @@ import { generateToken, shareUrl } from './token.js';
  *  only used when present + non-empty (see `readTokenOrGenerate`);
  *  `work_dir` is the M3 compatibility field that becomes **optional**
  *  in M4 — operators who have fully migrated to `state.json` can
- *  omit it (PRD §2.1 文件分离 + getting-started §3.5「M4 起 work_dir
- *  可选」). When omitted, `state.json` is the sole source of truth for
+ *  omit it. When omitted, `state.json` is the sole source of truth for
  *  `work_dirs` (or the bridge boots with an empty work_dirs list if
  *  `state.json` is also absent). The three-piece `statSync` /
  *  `isDirectory` / `accessSync` validation only fires when

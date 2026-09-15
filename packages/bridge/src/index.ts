@@ -7,15 +7,13 @@
 // CLI:
 //   bridge [--config <path>]
 //
-// M3 task 03 ([prds/m3-single-session.md#§2-1]): the bridge no longer
-// accepts `--worker-url` or `REMOTEPI_WORKER_URL`. All four
-// connection-related inputs (worker URL, web base URL, work directory,
-// optional persistent token) come from a single JSON file. The only
-// remaining CLI flag is `--config <path>` (with `--config=<path>`
-// accepted as an equivalent form for wrappers). Unknown flags are
-// silently ignored — systemd-style supervisors may pass arbitrary
-// extra flags and the bridge must not refuse to start because of them
-// (PRD §2.2: "未知 flag 静默忽略").
+// All four connection-related inputs (worker URL, web base URL, work
+// directory, optional persistent token) come from a single JSON file.
+// The only remaining CLI flag is `--config <path>` (with
+// `--config=<path>` accepted as an equivalent form for wrappers).
+// Unknown flags are silently ignored — systemd-style supervisors may
+// pass arbitrary extra flags and the bridge must not refuse to start
+// because of them (PRD §2.2: "未知 flag 静默忽略").
 //
 // Config path resolution: `--config` flag → `XDG_CONFIG_HOME` env var
 // → `~/.config/remotepi/bridge.json`. Loaded and validated by
@@ -57,11 +55,11 @@ function toError(value: unknown): Error {
 
 /** Parse `--config <value>` out of an argv slice. Returns undefined
  *  when the flag is absent. Stops scanning at `--` so unknown flags
- *  aren't treated as the flag's value. Only recognised CLI flag as of
- *  M3 task 03 — everything else is silently ignored (PRD §2.2
- *  "未知 CLI flag 静默忽略"). The next-token check uses `startsWith('-')`
- *  (not `startsWith('--')`) so systemd-style single-dash flags like
- *  `-D` are not swallowed as the `--config` value. */
+ *  aren't treated as the flag's value. Everything else is silently
+ *  ignored (PRD §2.2 "未知 CLI flag 静默忽略"). The next-token check
+ *  uses `startsWith('-')` (not `startsWith('--')`) so systemd-style
+ *  single-dash flags like `-D` are not swallowed as the `--config`
+ *  value. */
 function parseConfigPathFlag(argv: readonly string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -86,15 +84,6 @@ function parseConfigPathFlag(argv: readonly string[]): string | undefined {
 }
 
 /** Install the bridge's crash handlers exactly once at module load.
- *
- *  Without these, two failure modes are silently fatal:
- *   - top-level `start()` throws synchronously (e.g. a future seam
- *     surfaces a bug). Node prints + exits, but our logger format
- *     never fires — operators see a raw stack instead of the
- *     `[bridge] error` line every other lifecycle event uses.
- *   - an async rejection / sync exception during the connect loop
- *     throws out of a timer callback. The reconnect timer chain
- *     dies and the bridge sits idle with no log evidence of why.
  *
  *  Behaviour:
  *   - `unhandledRejection`: log + keep running. Reconnects stay alive.
@@ -209,11 +198,11 @@ export function start(options: StartOptions = {}): {
   try {
     config = loadBridgeConfig(configPath);
   } catch (err) {
-    // We swallow the stack because (a) the message we already print
-    // names the failing field / file, and (b) the auto-run entry
-    // guard below also catches + prints + sets exitCode 1. This
-    // branch fires when tests drive `start()` directly: they want
-    // a clean throw-without-stack for assertion convenience.
+    // Swallow the stack — the message we print names the failing
+    // field / file, and the auto-run entry guard below also catches
+    // + prints + sets exitCode 1. This branch fires when tests drive
+    // `start()` directly: they want a clean throw-without-stack for
+    // assertion convenience.
     if (err instanceof ConfigError) {
       log.error(describeConfigError(err));
     } else {
@@ -226,15 +215,11 @@ export function start(options: StartOptions = {}): {
         // `ConfigError` to switch on the failure mode. The `cause`
         // preserves the original `ConfigError` (with its `code` +
         // underlying Zod/SyntaxError cause) for diagnostics, while
-        // the wrapper Error keeps the auto-run message clean. The
-        // `process.exitCode = 1` path in the CLI guard catches the
-        // same situation for the auto-run entry.
+        // the wrapper Error keeps the auto-run message clean.
         new Error(describeConfigError(err), { cause: err })
       : err;
   }
 
-  // M4 task 04: load + M3-migrate the runtime work_dirs state.
-  //
   // Path resolution: explicit `statePath` option (test seam) →
   // XDG_CONFIG_HOME env / `~/.config/remotepi/state.json` default.
   // The same XDG env var governs both files (bridge.json + state.json)
@@ -243,16 +228,6 @@ export function start(options: StartOptions = {}): {
   // `statePath` as a CLI flag (PRD §2.2 — "不新增 CLI 参数"):
   // hand-editing a state file is not a supported workflow, and a
   // second config file with its own flag would be operator-confusing.
-  //
-  // `migrateFromBridgeConfig` does:
-  //   - state.json exists → return its work_dirs (no migration).
-  //   - state.json missing + bridge.json has work_dir → write
-  //     `[work_dir]` to state.json + log the migration line +
-  //     return `[work_dir]`.
-  //   - state.json missing + bridge.json has empty work_dir →
-  //     write `[]` to state.json (so the file exists for future
-  //     restarts) and return `[]`. No migration log line because
-  //     there was nothing to migrate.
   const statePath = options.statePath ?? resolveDefaultStatePath();
   let initialWorkDirs: string[];
   try {
@@ -269,18 +244,13 @@ export function start(options: StartOptions = {}): {
       : err;
   }
   // The in-memory WorkDirStore owns the work_dirs list for the
-  // lifetime of the bridge process. `add` / `remove` (tasks 05/06
-  // wiring) go through it; the on-disk file is the atomic write
-  // + rollback seam that keeps the in-memory and on-disk states
-  // consistent across crash + restart.
+  // lifetime of the bridge process.
   const workDirStore = new WorkDirStore(initialWorkDirs, statePath);
 
   // Resolve token: explicit `token` option (test seam) wins over
-  // config file's `token`; otherwise delegate to `readTokenOrGenerate`
-  // (which honours a non-empty config token or generates a fresh
-  // one). Per PRD §2.1, a generated token is NOT persisted to the
-  // config file — callers wanting persistence must edit the JSON
-  // themselves. The share URL is always rebuilt from the resolved
+  // config file's `token`; otherwise delegate to `readTokenOrGenerate`.
+  // Per PRD §2.1, a generated token is NOT persisted to the
+  // config file. The share URL is always rebuilt from the resolved
   // token + `config.web_base_url` so the banner can never print a
   // blank line even when the test seam supplies a token directly.
   const token = options.token ?? readTokenOrGenerate(config).token;
@@ -290,24 +260,16 @@ export function start(options: StartOptions = {}): {
 
   // Multi-line banner so it's trivially `grep`-able / paste-able for
   // users running the bridge in a terminal or under a wrapper
-  // script. The `worker URL:` line makes the actually-resolved
-  // endpoint visible — without it, an operator staring at the
-  // banner would have to inspect the config file to know which
-  // environment they're connected to. The `state:` line (M4 task
-  // 04) makes the resolved state.json path visible so the
-  // operator can grep for atomic-write failures / migration lines
-  // against the same path the runtime actually wrote to.
+  // script.
   log.info(`config: ${configPath}`);
   log.info(`state: ${statePath}`);
   log.info(`token: ${token}`);
   log.info(`share URL: ${shareLink}`);
   log.info(`worker URL: ${workerUrl}`);
-  // M4: `work_dir` is optional. When the operator has fully migrated
-  // to state.json (deleted the field from bridge.json) the
-  // single-M3-work_dir banner line prints "<none>" so the operator
-  // doesn't see a confusing `work_dir: undefined`. The
-  // `work_dirs: [...]` line right below it is always present and
-  // is the real source of truth for M4 multi-session.
+  // `work_dir` is optional (M4). When absent, the banner prints
+  // "<none>" so the operator doesn't see `work_dir: undefined`.
+  // The `work_dirs: [...]` line right below it is always present
+  // and is the real source of truth for M4 multi-session.
   log.info(`work_dir: ${config.work_dir ?? '<none>'}`);
   log.info(`work_dirs: ${JSON.stringify(workDirStore.list())}`);
 
@@ -323,20 +285,12 @@ export function start(options: StartOptions = {}): {
   // activeClient).
   activeClient = client;
 
-  // M3 task 04: bring up the pi subprocess manager after the WSS
-  // client is up so any session_state broadcast emitted during the
-  // handshake reaches the cloud (the client.sendEnvelope path may
-  // silently drop frames if the socket isn't open yet, but the
-  // bridge is single-tenant and the worker buffer absorbs any blip).
+  // Bring up the pi subprocess manager after the WSS client is up
+  // so any session_state broadcast emitted during the handshake
+  // reaches the cloud (the client.sendEnvelope path may silently
+  // drop frames if the socket isn't open yet, but the bridge is
+  // single-tenant and the worker buffer absorbs any blip).
   //
-  // Agent dir: bridge uses the operator's own pi profile (no
-  // isolated copy next to the config file — that approach was
-  // retired on 2026-09-05). `resolvePiAgentDir` honours
-  // `PI_CODING_AGENT_DIR` if set, otherwise falls back to
-  // `~/.pi/agent` — the same path the host's `pi` TUI writes
-  // sessions + auth.json to. Result: web sessions and the
-  // operator's terminal sessions land in the same directory, so
-  // web can pick up whichever was most recent on restart.
   // M4 task 06: bridge routes inbound + outbound envelopes through
   // a `BridgeSessionLayer` that owns a `Map<sessionKey, manager>`
   // plus the control commands (work_dir_*, list_directories,
@@ -354,8 +308,6 @@ export function start(options: StartOptions = {}): {
     // exactly one slot. We hand-wire it under a synthetic M3
     // sentinel key (`m3-legacy`) so the layer's M3-compat branch
     // (map.size === 1) forwards envelopes to the injected manager.
-    // Existing M3 tests that drove `result.manager.handleEnvelope(...)`
-    // keep working without rewriting.
     sessionLayer = new BridgeSessionLayer({
       agentDir,
       workDirStore,
@@ -373,25 +325,18 @@ export function start(options: StartOptions = {}): {
       }) => unknown;
     };
     const internals = sessionLayer as unknown as LayerInternals;
-    // M4: `config.work_dir` is optional. The back-compat single-
-    // manager seam (`options.piProcessManager` injection) is a
-    // test-only pathway — production callers never set it. If a
-    // caller pairs the injection with an absent `work_dir`, fall
-    // back to a sentinel `'<unset>'` so the synthetic M3-legacy
-    // manager is still registered (the layer's `defaultWorkDir`
-    // propagation is what the M3-compat auto-spawn uses in
-    // production; here we just need a stable string for the test
-    // seam to keep working). Real session-less commands routed to
-    // this manager will fail at `manager.start()` (no real pi
-    // path), which is the same surface the test would see in M3
-    // with an empty `work_dir: ''`.
+    // `config.work_dir` is optional. The back-compat single-manager
+    // seam (`options.piProcessManager` injection) is a test-only
+    // pathway — production callers never set it. If a caller
+    // pairs the injection with an absent `work_dir`, fall back to
+    // a sentinel `'<unset>'` so the synthetic M3-legacy manager is
+    // still registered (we just need a stable string for the test
+    // seam to keep working).
     //
-    // 验收期第 3 缺口修复 (2026-09-09): sessionJsonlPath 改传
-    // `undefined` 而非 `null` —— 这里是 M3-compat auto-spawn
-    // (M3_LEGACY_KEY / branch 5+6) 的调用点, 应走 ADR-0007 的
-    // "取最新" 语义 (spawnNow 落到 sessionArgv(subdir)), 不是
-    // 全新 (`null` = no --session). 旧实现传 `null` 是顺手错误
-    // 默认, 借本轮纠正; 详见 `spawnManager` JSDoc 的三态裁定段。
+    // sessionJsonlPath is `undefined` (NOT `null`) so the M3-compat
+    // auto-spawn path keeps using the ADR-0007 "取最新" semantics
+    // (spawnNow → sessionArgv(subdir)); `null` is reserved for the
+    // pending-key explicit-fresh path. See `spawnManager` JSDoc.
     internals.spawnManager({
       mapKey: 'm3-legacy',
       workDir: config.work_dir ?? '<unset>',
@@ -416,9 +361,6 @@ export function start(options: StartOptions = {}): {
   // WSS → session layer: every envelope the client doesn't handle
   // internally (everything except ping/pong/bridge_status/error/
   // handshake) lands here. The layer routes by `kind` + `type` and
-  // hands the rest to the right per-session manager. → session layer: every envelope the client doesn't handle
-  // internally (everything except ping/pong/bridge_status/error/
-  // handshake) lands here. The layer routes by  +  and
   // hands the rest to the right per-session manager.
   client.setEnvelopeSink((env) => sessionLayer.handleEnvelope(env));
   // Note: per-session managers only spawn pi on the first §2.7
@@ -428,8 +370,6 @@ export function start(options: StartOptions = {}): {
   // `manager` is the legacy single-manager field. In M4 the layer
   // owns the per-session managers; `manager` is null by default and
   // only set when the caller injected a back-compat `piProcessManager`.
-  // Existing M3 tests that use `result.manager.handleEnvelope(...)`
-  // continue to work via the legacy layer wiring above.
   const legacyManager = options.piProcessManager ?? null;
 
   return {
@@ -444,8 +384,6 @@ export function start(options: StartOptions = {}): {
   };
 }
 
-// ----- CLI entry guard -----
-//
 // Only auto-run when this file is the program's main entry. We compare
 // `process.argv[1]` (the path Node executed) against our own module URL,
 // resolved to an absolute filesystem path, so symlinks and the various
@@ -462,21 +400,9 @@ if (argv1 !== undefined) {
   // both set argv[1] to the `.ts` path.
   const argvBase = argv1.endsWith('.ts') ? argv1.replace(/\.ts$/, '.js') : argv1;
   if (argvBase === resolvedArgv1 || argv1 === resolvedArgv1) {
-    // Top-level safety net: if anything in `start()` throws
-    // synchronously (a bad factory call, a config validation
-    // error, etc.), Node would print + exit with the raw stack. The
-    // `tsx watch` parent would see non-zero exit and restart, but the
-    // operator wouldn't see it through our `[bridge] error` log format
-    // — they'd see a stack trace. Catch + log + set exitCode so the
-    // process exits with code 1 (for tsx watch to detect) AND the log
-    // line matches the format the rest of the daemon uses.
     try {
       start();
     } catch (err) {
-      // start() already logged a friendly line for ConfigError. For
-      // any other error (impossible in current code but defensive),
-      // emit a fallback so the auto-run entry still gives the
-      // operator a useful message.
       const e = toError(err);
       logger.error(`bridge start failed: ${e.message}`);
       process.exitCode = 1;

@@ -135,11 +135,7 @@ import {
  *  the web multi-session store ships and all web envelopes carry
  *  the `session` field (裁定 A: every M4 web envelope tags itself
  *  with the current session), there is no longer any inbound that
- *  could trigger the M3-compat auto-spawn path. The pre-M3 e2e
- *  suite is the only thing that still relies on session-less
- *  command arrival today; once task 08 wires its per-session
- *  routing, the e2e suite should be migrated to pass an explicit
- *  `session` field and this branch should be removed.
+ *  could trigger the M3-compat auto-spawn path.
  *
  *  ## 已知限制 (M4 任务 06 review C2 文档化)
  *
@@ -148,14 +144,9 @@ import {
  *  first), subsequent session-less commands will be routed to the
  *  first spawned manager because `getOrCreateManagerForSession`
  *  checks `this.managers.size === 1` and returns the only manager.
- *  If the auto-spawned M3-legacy manager is the only one in the
- *  map, that path is fine (one manager → one manager). The
- *  problem surfaces when an explicit session manager coexists with
- *  the M3-legacy one: a session-less command will pick whichever
- *  manager happens to be at `map.values().next().value` (insertion
- *  order). M4 doesn't fix this — the web multi-session store
- *  (task 08) makes this a non-issue by always tagging envelopes
- *  with the session field.
+ *  M4 doesn't fix this — the web multi-session store (task 08)
+ *  makes this a non-issue by always tagging envelopes with the
+ *  session field.
  *
  *  The exported constant is used in three places in this file:
  *    1. `getOrCreateManagerForSession` (Branch 5+6 zero-managers
@@ -343,22 +334,15 @@ interface SessionKeyHolder {
  *  For the M3-compat auto-spawned manager (see `M3_LEGACY_KEY`
  *  JSDoc), `holder.current === M3_LEGACY_KEY` ('m3-legacy').
  *  Result: the auto-spawned manager's outbound session_state
- *  envelopes carry `session: 'm3-legacy'`. This is intentional —
- *  web stores this as a real bucket ID so subsequent commands can
- *  reference it via `session: 'm3-legacy'` for the lifetime of the
- *  bridge process. Task 08 (web multi-session store) will retire
- *  this behaviour entirely. */
+ *  envelopes carry `session: 'm3-legacy'`. Task 08 (web
+ *  multi-session store) will retire this behaviour entirely. */
 function makeOutboundWrapper(
   holder: SessionKeyHolder,
   layer: BridgeSessionLayer,
 ): (env: Envelope) => void {
   return (env: Envelope): void => {
     if (env.kind === 'control' && env.type === 'session_state') {
-      // Inject the current map key as the session field. We rebuild
-      // the envelope so the structural type matches
-      // SessionStateEnvelope; spreading preserves v/kind/type/id and
-      // payload, adds `session` if not already present (it's the
-      // manager's job to carry it from now on).
+      // Inject the current map key as the session field.
       const withSession: Envelope = {
         ...env,
         ...(env.session === undefined ? { session: holder.current } : {}),
@@ -366,13 +350,11 @@ function makeOutboundWrapper(
       layer.broadcast(withSession);
       return;
     }
-    // W4 (M4 任务 06 review): non-session_state envelopes
-    // (pi events, command_results, snapshots) are passed through
-    // WITHOUT session injection. The web routes them by
-    // `currentSessionKey` (single-active-session model). Any future
-    // change to inject session here MUST be coordinated with the
-    // web's bucket-routing semantics (see makeOutboundWrapper JSDoc
-    // in the original M4 task 06 implementation for the trade-off).
+    // Non-session_state envelopes (pi events, command_results,
+    // snapshots) are passed through WITHOUT session injection.
+    // Web routes them by `currentSessionKey` (single-active-session
+    // model). Any future change to inject session here MUST be
+    // coordinated with the web's bucket-routing semantics.
     layer.broadcast(env);
   };
 }
@@ -480,16 +462,11 @@ export class BridgeSessionLayer {
    *
    *  Returns `true` when the wrapper's subsequent passthrough
    *  should be SKIPPED — currently this only happens on the
-   *  pending → stem migration (W3 review fix; before this, the
-   *  layer broadcast a session_state AND the wrapper passed
-   *  through the manager's session_state, producing two frames
-   *  on the wire). All other branches return `false` (normal
-   *  passthrough). */
+   *  pending → stem migration. */
   onManagerSessionState(
     manager: PiProcessManager,
     sessionState: SessionStatePayload,
   ): { migrated: boolean; broadcastedPhase: boolean } {
-    // Locate the manager's current map key.
     const mapKey = this.findMapKeyForManager(manager);
     if (mapKey === null) return { migrated: false, broadcastedPhase: false };
 
@@ -501,13 +478,6 @@ export class BridgeSessionLayer {
     // (the manager isn't in the map), matching the "M4 multi
     // manager 后歧义" guard.
     if (sessionState.phase === 'exited') {
-      // The manager already broadcast its own exited session_state;
-      // we just clean the map key. The wrapper does NOT inject a
-      // session field on this frame (the manager's broadcast
-      // happens through the wrapper, which would normally inject;
-      // for exited cleanup we let the wrapper's normal flow emit
-      // the broadcast — but then we drop the map key so future
-      // commands referencing this stem get rejected).
       this.managers.delete(mapKey);
       this.managerKeys.delete(manager);
       return { migrated: false, broadcastedPhase: false };
@@ -523,15 +493,6 @@ export class BridgeSessionLayer {
     // by definition produced a stdout frame (otherwise we wouldn't
     // be here).
     if (mapKey.startsWith('new:')) {
-      // Returns `{migrated, broadcastedPhase}`; the wrapper uses
-      // `broadcastedPhase` to short-circuit the duplicate
-      // broadcast when the layer just broadcast a session_state
-      // (W3 fix). On the non-session_state path the layer does
-      // NOT broadcast a session_state — the manager's NEXT
-      // session_state (e.g. on a phase transition) carries the
-      // real stem via `holder.current`, so the wrapper must
-      // forward the current event (e.g. agent_start /
-      // agent_settled) for web's per-event routing.
       return this.attemptPendingMigration(manager, mapKey, sessionState.phase);
     }
     return { migrated: false, broadcastedPhase: false };
@@ -549,12 +510,12 @@ export class BridgeSessionLayer {
    *
    *  Returns `{migrated, broadcastedPhase}`. The wrapper uses
    *  `broadcastedPhase === true` to short-circuit the
-   *  duplicate broadcast on the session_state path (W3 review
-   *  fix). On the non-session_state path (phase === null) the
-   *  layer doesn't broadcast, so `broadcastedPhase` is `false`
-   *  and the wrapper FORWARDS the original event — important
-   *  because events like `agent_settled` carry no session field
-   *  and web relies on them for lifecycle routing. */
+   *  duplicate broadcast on the session_state path. On the
+   *  non-session_state path (phase === null) the layer doesn't
+   *  broadcast, so `broadcastedPhase` is `false` and the wrapper
+   *  FORWARDS the original event — important because events like
+   *  `agent_settled` carry no session field and web relies on
+   *  them for lifecycle routing. */
   private tryPendingMigration(
     manager: PiProcessManager,
     mapKey: string,
@@ -581,11 +542,11 @@ export class BridgeSessionLayer {
     );
     if (stem === null) {
       // No un-snapshotted file yet: keep retrying on every outbound
-      // frame, but throttle this warning per work_dir. Never fall back
-      // to an unfiltered derivation — that would reintroduce binding to
-      // an old or concurrently active session. The manager's 60s
-      // spawning watchdog and 裁定 C recycling are the eventual
-      // cleanup fallbacks if pi never creates a file.
+      // frame, but throttle this warning per work_dir. Never fall
+      // back to an unfiltered derivation — that would reintroduce
+      // binding to an old or concurrently active session. The
+      // manager's 60s spawning watchdog and 裁定 C recycling are
+      // the eventual cleanup fallbacks if pi never creates a file.
       const now = Date.now();
       const lastWarning = this.missingStemWarningAt.get(workDir);
       if (lastWarning === undefined || now - lastWarning >= 5_000) {
@@ -596,39 +557,21 @@ export class BridgeSessionLayer {
       }
       return { migrated: false, broadcastedPhase: false };
     }
-    // Atomic migration (PRD §钉子 2: 三步原子 = 删旧键 + 设新键 + 广播，期间命令不误路由). JS single-threadedness makes
-    // this naturally atomic — no command can be processed between
-    // the delete and the set.
+    // Atomic migration (PRD §钉子 2: 三步原子 = 删旧键 + 设新键 + 广播).
+    // JS single-threadedness makes this naturally atomic — no
+    // command can be processed between the delete and the set.
     this.managers.delete(mapKey);
     this.managers.set(stem, manager);
     const holder = this.managerKeys.get(manager);
     if (holder !== undefined) {
       holder.current = stem;
     }
-    // Broadcast the session_state with the real session field when
-    // invoked from a session_state envelope (so the inbound and
-    // outbound session_states carry the same payload shape, just
-    // with the real session key). When invoked from a non-state
-    // outbound (e.g. the first agent_start event), the manager
-    // will emit its own session_state on the next phase transition
-    // carrying the holder.current (now the real stem) — so we
-    // don't double-broadcast.
-    //
-    // W3 (M4 任务 06 review): the wrapper that called us also
-    // broadcasts the original envelope via `wrapper(env)`. Before
-    // this fix, the session_state emitted by the manager during
-    // the migration tick reached web TWICE — once as the layer's
-    // migration broadcast and once as the wrapper's normal
-    // passthrough. We now return `{migrated:true, broadcastedPhase:true}`
-    // on a session_state-path migration so the wrapper's outbound
-    // step short-circuits (see the `onOutboundEnvelope` closure in
-    // `spawnManager`). For the non-state path (e.g. agent_start),
-    // we return `{migrated:true, broadcastedPhase:false}` so the
-    // wrapper FORWARDS the event — events like `agent_settled`
-    // carry no session field and web relies on them for the
-    // lifecycle; dropping them would break the multi-event
-    // fixture and the agent_settled wait pattern in
-    // `tests/integration/05-multi-session.test.ts`.
+    // When invoked from a session_state envelope, broadcast a
+    // session_state with the real session field. When invoked
+    // from a non-state outbound (e.g. the first agent_start event),
+    // the manager will emit its own session_state on the next
+    // phase transition carrying the holder.current (now the real
+    // stem) — so we don't double-broadcast.
     if (phase !== null) {
       this.onOutbound({
         v: PROTOCOL_VERSION,
@@ -776,11 +719,8 @@ export class BridgeSessionLayer {
         return { ok: true, manager: hit };
       }
       // Map miss: scan the agent dir tree for a jsonl with this
-      // stem. The scan walks ALL work_dirs in `work_dir_store` and
-      // looks for `<agentDir>/sessions/--<encodedWorkDir>--/<stem>.jsonl`.
-      // The first match wins. (A truly unique stem could only live
-      // in one place — pi's sessionKey encoding is per-workDir — so
-      // we don't worry about collisions across work_dirs.)
+      // stem. A truly unique stem could only live in one place —
+      // pi's sessionKey encoding is per-workDir.
       const workDir = this.findWorkDirForSessionStem(sessionField);
       if (workDir === null) {
         return {
@@ -821,7 +761,7 @@ export class BridgeSessionLayer {
       }
       // Miss → spawn fresh, no --session, cwd = workDir. Pi will
       // create the jsonl on first write; we derive the stem later
-      // from the agent_dir scan (see onManagerSessionState).
+      // from the agent_dir scan.
       const m = this.spawnManager({
         mapKey: pendingKey,
         workDir: validWorkDir,
@@ -830,11 +770,7 @@ export class BridgeSessionLayer {
       return { ok: true, manager: m };
     }
 
-    // Branch 5+6: no session field, no new intent. M3 compat path:
-    // forward to the only manager if there is exactly one. If zero
-    // managers exist AND a defaultWorkDir was configured, spawn
-    // an implicit M3-compat manager (token-only URL hash from M3
-    // keeps working — the e2e suite relies on this behaviour).
+    // Branch 5+6: no session field, no new intent. M3 compat path.
     if (sessionField === undefined) {
       if (this.managers.size === 1) {
         const only = this.managers.values().next().value;
@@ -844,16 +780,11 @@ export class BridgeSessionLayer {
       }
       if (this.managers.size === 0 && this.defaultWorkDir !== undefined) {
         // M3-compat auto-spawn: synthesise a manager under the
-        // legacy `M3_LEGACY_KEY` sentinel key (same key index.ts uses
-        // for the back-compat `piProcessManager` injection). The
-        // manager handles all subsequent session-less commands.
-        // See `M3_LEGACY_KEY` JSDoc for the transition plan and
-        // known order-dependent routing limitation.
-        //
-        // 验收期第 3 缺口修复 (2026-09-09): sessionJsonlPath 显式
-        // 传 `undefined` (不是 `null`) —— M3_LEGACY 走的是 ADR-0007
-        // "取最新" 语义 (spawnNow → sessionArgv(subdir)), 不是
-        // "全新无 --session"。`null` 是钉子 2 pending key 专用的。
+        // legacy `M3_LEGACY_KEY` sentinel key.
+        // sessionJsonlPath is `undefined` (NOT `null`) so the M3-compat
+        // auto-spawn path keeps using the ADR-0007 "取最新" semantics
+        // (spawnNow → sessionArgv(subdir)); `null` is reserved for the
+        // pending-key explicit-fresh path.
         // 借本轮纠正原顺手错误默认; 详见 `spawnManager` JSDoc。
         const m = this.spawnManager({
           mapKey: M3_LEGACY_KEY,
@@ -890,13 +821,7 @@ export class BridgeSessionLayer {
      *
      *  - **string** — clicked-old-session (branch 2): the exact
      *    jsonl path was scanned + joined by the caller; spawn
-     *    resumes THIS file across restarts. This is the path that
-     *    was being **silently dropped** pre-fix — `spawnManager`
-     *    used to destructure `sessionJsonlPath` out of `opts` and
-     *    never put it into `piOpts`, so every spawn fell back to
-     *    `sessionArgv(subdir)` = "latest" inside `spawnNow`. Result:
-     *    clicking any old session in the UI would still land on the
-     *    newest file. (验收期第 3 缺口根因, 2026-09-09.)
+     *    resumes THIS file across restarts.
      *
      *  - **null** — pending key (branch 3, `session:'new'` +
      *    `payload.work_dir`): no `--session` flag, pi creates a
@@ -907,13 +832,10 @@ export class BridgeSessionLayer {
      *  - **undefined** — M3-compat auto-spawn (branch 5+6,
      *    `M3_LEGACY_KEY`): the legacy "取最新" semantics per
      *    ADR-0007 — every spawn picks the then-latest file in
-     *    the subdir (or nothing, if empty). Preserves the M3 token-
-     *    only URL hash behaviour the e2e harness relies on. We
-     *    intentionally keep this `undefined` (NOT `null`) so the
-     *    `spawnNow` branch keeps falling through to
-     *    `sessionArgv(subdir)` instead of spawning fresh — that
-     *    is the documented M3 behaviour and changing it would be a
-     *    silent semantic shift hidden inside a session-pinning fix.
+     *    the subdir (or nothing, if empty). We intentionally keep
+     *    this `undefined` (NOT `null`) so the `spawnNow` branch
+     *    keeps falling through to `sessionArgv(subdir)` instead of
+     *    spawning fresh — that is the documented M3 behaviour.
      */
     sessionJsonlPath: string | null | undefined;
   }): PiProcessManager {
@@ -927,13 +849,6 @@ export class BridgeSessionLayer {
     const piOpts: PiProcessOptions = {
       agentDir: this.agentDir,
       workDir: opts.workDir,
-      // FORWARD the per-manager session pin — this is the fix for
-      // 验收期第 3 缺口 (2026-09-09): previously destructured out
-      // of `opts` and dropped on the floor, so every spawn inside
-      // `spawnNow` silently fell back to `sessionArgv(subdir)`
-      // = "always latest". Three-state value passes through verbatim;
-      // see `PiProcessOptions.sessionJsonlPath` JSDoc for the
-      // branching semantics in `spawnNow`.
       sessionJsonlPath: opts.sessionJsonlPath,
       baseEnv,
       onOutboundEnvelope: (env) => {
@@ -950,19 +865,16 @@ export class BridgeSessionLayer {
         // transition. The migration is idempotent: once migrated,
         // subsequent attempts find no pending key and become no-ops.
         //
-        // W3 (M4 任务 06 review): when the manager emits a
-        // session_state during the migration tick, the layer
-        // itself broadcasts a session_state with the new stem
-        // (see `attemptPendingMigration`) AND the wrapper would
-        // also forward the original session_state — producing
-        // two session_state frames on the wire for the same phase
-        // tick. We now skip the wrapper's passthrough ONLY when
-        // the layer just broadcast a session_state (the
-        // `broadcastedPhase` flag). On the non-session_state path
-        // (agent_start, agent_settled, message_update, etc.) the
-        // wrapper MUST forward the event — web routes those by
-        // their own fields and dropping agent_settled would break
-        // the integration test wait predicate.
+        // When the manager emits a session_state during the
+        // migration tick, the layer itself broadcasts a session_state
+        // with the new stem (see `attemptPendingMigration`) AND the
+        // wrapper would also forward the original session_state —
+        // producing two session_state frames on the wire. We skip
+        // the wrapper's passthrough ONLY when the layer just
+        // broadcast a session_state (the `broadcastedPhase` flag).
+        // On the non-session_state path the wrapper MUST forward
+        // the event — dropping agent_settled would break the
+        // integration test wait predicate.
         let skipWrapperPassthrough = false;
         if (env.kind === 'control' && env.type === 'session_state') {
           skipWrapperPassthrough = onSessionState(env.payload).broadcastedPhase;
@@ -1041,11 +953,11 @@ export class BridgeSessionLayer {
     entries = entries.filter((name) => !exclude.has(name));
     if (entries.length === 0) return null;
 
-    // Enrich and stat each surviving filename exactly once. Filtering
-    // by the immutable filename snapshot above avoids the old mtime
-    // filter's second statSync and its clock/granularity assumptions.
-    // Latest = highest ISO timestamp prefix, tiebreak mtime, tiebreak
-    // uuid desc — matches `findLatestSession` semantics verbatim.
+    // Enrich and stat each surviving filename exactly once.
+    // Filtering by the immutable filename snapshot above avoids
+    // the mtime filter's clock/granularity assumptions. Latest =
+    // highest ISO timestamp prefix, tiebreak mtime, tiebreak uuid
+    // desc — matches `findLatestSession` semantics.
     const enriched = entries
       .map((name) => {
         const stem = name.slice(0, -'.jsonl'.length);
@@ -1087,13 +999,11 @@ export class BridgeSessionLayer {
    *  name. Two distinct work_dirs whose encoded names collide
    *  (e.g. `/a/b-c` and `/a/b:c` both encode to `--a-b-c--`) will
    *  write into the SAME session subdirectory and produce jsonl
-   *  files with overlapping stems. The current-state `cc00a3f`
-   *  lesson (PRD §非目标 / [[architecture/decisions/0008-fake-llm-isolated-pi-integration-tests.md|ADR-0008]]
-   *  §关键 wire 发现) establishes that we must accept pi's
-   *  encoding as-is rather than try to outsmart it. M4 inherits
-   *  this; user-supplied work_dirs that collide on encoding will
-   *  silently share a session subdirectory. The WorkDirStore
-   *  doesn't currently detect this collision.
+   *  files with overlapping stems. ADR-0008 establishes that we
+   *  must accept pi's encoding as-is rather than try to outsmart
+   *  it. M4 inherits this; user-supplied work_dirs that collide
+   *  on encoding will silently share a session subdirectory. The
+   *  WorkDirStore doesn't currently detect this collision.
    *
    *  ## 行为确定性 (M4 任务 06 review W5)
    *
@@ -1106,12 +1016,9 @@ export class BridgeSessionLayer {
    *  fresh XDG state-file load this is the order the user added
    *  the work_dirs (web ChoicePage level=1 list order, which is
    *  also stable across bridge restarts because WorkDirStore
-   *  persists the order in `state.json`). M4 accepts this
-   *  first-match-wins semantics; the alternative (scanning every
-   *  matching work_dir and picking by some heuristic) adds
-   *  complexity without improving the realistic case (zero or
-   *  one match). Tests assert this determinism by stubbing two
-   *  work_dirs with the same stem file. */
+   *  persists the order in `state.json`). Tests assert this
+   *  determinism by stubbing two work_dirs with the same stem
+   *  file. */
   private findWorkDirForSessionStem(stem: string): string | null {
     for (const workDir of this.workDirStore.list()) {
       const subdir = sessionSubdir(this.agentDir, workDir);
@@ -1143,9 +1050,7 @@ export class BridgeSessionLayer {
 
   /** `control/get_state` — per-session. Replies with the matching
    *  manager's phase + blocked_on (or invalid_envelope if no
-   *  manager exists for the given session). The M3 manager had a
-   *  get_state handler that emitted from memory; the M4 layer
-   *  wraps it because each session is its own manager now.
+   *  manager exists for the given session).
    *
    *  M3-compat: when no session field is present, route to the
    *  M3-legacy manager (auto-spawn one if the map is empty and a
@@ -1194,22 +1099,18 @@ export class BridgeSessionLayer {
    *
    *  ## 过渡性设计 (M4 任务 06 review C2 文档化)
    *
-   *  This is the M3-compat auto-spawn used by `handleGetState`
-   *  (the only control command that currently accepts a
-   *  session-less request — web's M3 handshake). Same transition
-   *  plan and order-dependent routing caveat as `M3_LEGACY_KEY`:
-   *  task 08 will retire this branch. See `M3_LEGACY_KEY` JSDoc. */
+   *  This is the M3-compat auto-spawn used by `handleGetState`.
+   *  Same transition plan and order-dependent routing caveat as
+   *  `M3_LEGACY_KEY`: task 08 will retire this branch. */
   private resolveM3CompatManager(): PiProcessManager | undefined {
     if (this.managers.size === 1) {
       return this.managers.values().next().value;
     }
     if (this.managers.size === 0 && this.defaultWorkDir !== undefined) {
       // See M3_LEGACY_KEY JSDoc — same transitional seam.
-      //
-      // 验收期第 3 缺口修复 (2026-09-09): sessionJsonlPath 显式
-      // 传 `undefined` (不是 `null`) —— 同 getOrCreateManagerForSession
-      // branch 5+6: M3_LEGACY 走 ADR-0007 "取最新" 语义,
-      // 详见 `spawnManager` JSDoc 的三态裁定段。
+      // sessionJsonlPath is `undefined` (NOT `null`) so the
+      // M3-compat auto-spawn path keeps using the ADR-0007
+      // "取最新" semantics; see `spawnManager` JSDoc.
       return this.spawnManager({
         mapKey: M3_LEGACY_KEY,
         workDir: this.defaultWorkDir,
@@ -1234,9 +1135,8 @@ export class BridgeSessionLayer {
     session: string | undefined,
   ): void {
     if (workDir === undefined) {
-      // Schema-optional M3 compat path: scan ALL work_dirs. We
-      // deliberately don't reject this — M4 web UI never sends it,
-      // but a future diagnostic tool might. Emit a unified list.
+      // Schema-optional M3 compat path: scan ALL work_dirs. M4
+      // web UI never sends this, but a future diagnostic tool might.
       const allEntries: SessionListEntry[] = [];
       for (const wd of this.workDirStore.list()) {
         allEntries.push(...this.scanSessionsForWorkDir(wd));

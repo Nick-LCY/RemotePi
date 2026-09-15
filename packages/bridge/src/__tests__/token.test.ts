@@ -14,8 +14,6 @@ const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 
 describe('token (3 cases per M2 PRD §6)', () => {
   it('1. generateToken() returns a 32-char base64url string', () => {
-    // Run the helper a handful of times — the property must hold for
-    // every draw, not just one lucky one.
     for (let i = 0; i < 8; i++) {
       const token = generateToken();
       expect(token).toMatch(TOKEN_PATTERN);
@@ -36,18 +34,12 @@ describe('token (3 cases per M2 PRD §6)', () => {
     expect(a).not.toBe(b);
   });
 
-  it('3. shareUrl(token, base) builds the expected URL — base is required (M3 task 03)', () => {
-    // M3 task 03: the `base` parameter is now required — the bridge
-    // pulls it from the config file's `web_base_url` field. The
-    // production default constant was retired alongside the
-    // `--worker-url` CLI flag; callers must explicitly pass the
-    // origin they want.
+  it('3. shareUrl(token, base) builds the expected URL', () => {
     expect(shareUrl('abc', 'https://remote-pi.sankabox.com')).toBe(
       'https://remote-pi.sankabox.com/#abc',
     );
 
-    // The `base` arg lets dev callers point at the local Vite server
-    // (PRD §2 + task completion criterion: "dev 默认 `http://localhost:5173`").
+    // The `base` arg lets dev callers point at the local Vite server.
     expect(shareUrl('abc', 'http://localhost:5173')).toBe('http://localhost:5173/#abc');
 
     // Defensive: a trailing slash on the base must NOT produce `//#`.

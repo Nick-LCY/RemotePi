@@ -64,14 +64,14 @@ describe('integration smoke (fixtures + fake server + real pi subprocess)', () =
   });
 
   it('completes a single prompt → SSE → idle round-trip', () => {
-    // 1. State machine reaches idle (via spawning → ready → running → idle).
+    // State machine reaches idle (via spawning → ready → running → idle).
     const phases = sessionStates(mgr.outbound);
     expect(phases).toContain('spawning');
     expect(phases).toContain('ready');
     expect(phases).toContain('running');
     expect(phases[phases.length - 1]).toBe('idle');
 
-    // 2. Fake server received the prompt as a POST /v1/messages.
+    // Fake server received the prompt as a POST /v1/messages.
     expect(fakeServer.requests.length).toBeGreaterThan(0);
     const last = fakeServer.requests[fakeServer.requests.length - 1];
     expect(last).toBeDefined();
@@ -80,8 +80,8 @@ describe('integration smoke (fixtures + fake server + real pi subprocess)', () =
     const userMsg = (last!.body.messages as Array<{ role?: string }>)[0];
     expect(userMsg?.role).toBe('user');
 
-    // 3. Bridge emitted a command_result whose reply_to matches the
-    //    original prompt id.
+    // Bridge emitted a command_result whose reply_to matches the
+    // original prompt id.
     const results = mgr.outbound.filter(
       (e) => e.kind === 'pi' && e.type === 'command_result' && e.reply_to === promptEnvelope.id,
     );

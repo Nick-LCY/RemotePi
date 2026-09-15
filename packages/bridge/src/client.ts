@@ -45,7 +45,7 @@
 //      timer. The guard makes "this is my current socket" the only
 //      condition under which state changes are accepted.
 //
-// We use the global `WebSocket` constructor (Node 22 ships one). It's
+// `WebSocket` is the global constructor (Node 22 ships one). It's
 // injectable via the `createSocket` option for unit tests; otherwise the
 // real global is used.
 import { Envelope, PROTOCOL_VERSION, type Envelope as EnvelopeT } from '@remotepi/shared';
@@ -77,10 +77,7 @@ export function computeBackoff(
   baseMs: number = BACKOFF_BASE_MS,
   capMs: number = BACKOFF_CAP_MS,
 ): number {
-  // Exponential growth, capped. 2^(attempt-1): 1, 2, 4, 8, 16, 32, 64…
-  // then `min(_, capMs)` flattens the tail at 30000 ms from attempt 6 on.
   const raw = Math.min(baseMs * 2 ** (attempt - 1), capMs);
-  // ±20% jitter: rng() ∈ [0, 1) → factor ∈ [0.8, 1.2).
   const factor = 0.8 + rng() * 0.4;
   return raw * factor;
 }
@@ -110,12 +107,8 @@ export interface BridgeClientOptions {
   /** Optional inbound-envelope sink. Fires for every envelope the
    *  client does NOT handle internally (i.e. anything that isn't
    *  `ping`, `pong`, `bridge_status`, or `error`). The wiring seam
-   *  that connects the WSS loop to the pi subprocess manager — M3
-   *  tasks 04 + 05 set this to `manager.handleEnvelope`, which
-   *  then routes by `kind` + `type` (control/get_state, the entire
-   *  pi family — prompt/steer/follow_up/abort/get_messages/
-   *  extension_ui_response). Defaults to a no-op so this option
-   *  is opt-in (M2 client had no downstream consumer). */
+   *  that connects the WSS loop to the pi subprocess manager.
+   *  Defaults to a no-op so this option is opt-in. */
   onEnvelope?: (env: EnvelopeT) => void;
 }
 
@@ -179,10 +172,7 @@ export class BridgeClient {
   }
 
   /** Set (or clear) the inbound envelope sink after construction.
-   *  Used by `index.ts` to wire the BridgeClient → PiProcessManager
-   *  hook once both objects exist (the manager needs to be created
-   *  after the client so we can hand it a `client.sendEnvelope`
-   *  closure for outbound). Pass `undefined` to detach. */
+   *  Pass `undefined` to detach. */
   setEnvelopeSink(sink: ((env: EnvelopeT) => void) | undefined): void {
     this.opts.onEnvelope = sink;
   }
@@ -212,19 +202,15 @@ export class BridgeClient {
     // throw bubbles out of the reconnect timer callback and the
     // bridge sits idle: the timer has fired but no replacement is
     // scheduled, so no further retries happen until the process is
-    // restarted externally (which is the silent-death the fix is
-    // about). Catch → log → route through the same backoff path a
-    // normal close uses, so a malformed URL is just another reason
-    // to retry with the next backoff slot.
+    // restarted externally. Catch → log → route through the same
+    // backoff path a normal close uses, so a malformed URL is just
+    // another reason to retry with the next backoff slot.
     let ws: WebSocketLike;
     try {
       ws = this.opts.createSocket(this.url, ['remotepi.v1', this.token]);
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
       logger.error(`socket construction failed: ${e.message}`);
-      // `this.ws` was never assigned, but be defensive — if a future
-      // refactor leaves a stale handle behind, handleClose should
-      // still see null and skip the close() call.
       this.ws = null;
       // Synthesise a close so we re-enter the same backoff path a
       // remote-initiated drop would take. handleClose's own log line
@@ -266,18 +252,7 @@ export class BridgeClient {
     // because close never comes to drive the backoff. handleError
     // checks `readyState === 0` and routes CONNECTING failures
     // through the same handleClose path; OPEN-state errors stay
-    // log-only. We DO log in either case so an unexplained 1006
-    // with zero preceding output is the exact "why isn't this
-    // connecting?" symptom users hit when pointed at the wrong
-    // host.
-    //
-    // Identity guard matches the other three handlers: after
-    // `stop()` clears `this.ws`, a stale `sock.onerror` —
-    // typically a platform event arriving after the bridge has
-    // been told to wind down — short-circuits without logging or
-    // scheduling. The CONNECTING branch in handleError also has
-    // its own `this.ws === null` defensive guard; this is the
-    // outer one.
+    // log-only.
     ws.onerror = (ev) => {
       if (ws !== this.ws) return;
       this.handleError(ev);
@@ -313,9 +288,7 @@ export class BridgeClient {
    *  successfully-parsed inbound envelope (so any byte of traffic
    *  refreshes the window). If a deadline is already armed we tear it
    *  down first — the new window starts from "now", not from the
-   *  original arm time. This is intentionally the opposite of the old
-   *  pong-deadline's "don't reset an armed timer" rule: a deadline
-   *  that never resets would defeat the purpose of an idle detector. */
+   *  original arm time. */
   private armIdleDeadline(): void {
     this.clearIdleDeadline();
     this.idleDeadline = setTimeout(() => this.handleIdleTimeout(), this.opts.idleTimeoutMs);
@@ -347,10 +320,6 @@ export class BridgeClient {
    *  inbound stream IS the death signal (see JSDoc item 4 at
    *  the top of this file). */
   private handleIdleTimeout(): void {
-    // Belt-and-braces: `stop()` already cleared the deadline and
-    // nulled `this.ws`, but if a residual timer fires (e.g. the
-    // deadline was armed in a previous `start()` cycle and never
-    // cleared), bail without driving any further state.
     if (this.stopped) return;
     this.idleDeadline = null;
     logger.warn(`no inbound frame for ${this.opts.idleTimeoutMs}ms, closing`);
@@ -375,9 +344,6 @@ export class BridgeClient {
   private handleMessage(ev: MessageEvent): void {
     let raw: unknown;
     try {
-      // `ev.data` is typed `any` in the DOM lib (it can be a string,
-      // ArrayBuffer, or Blob depending on the socket's binaryType).
-      // We narrow it ourselves to keep the JSON.parse path safe.
       const data: unknown = ev.data;
       raw = typeof data === 'string' ? JSON.parse(data) : data;
     } catch {
@@ -386,8 +352,6 @@ export class BridgeClient {
     }
     const result = Envelope.safeParse(raw);
     if (!result.success) {
-      // Log first Zod issue for triage; the server's own sender already
-      // had its chance to validate.
       const issue = result.error.issues[0];
       const where = issue ? `${issue.path.join('.')}: ${issue.message}` : result.error.message;
       logger.warn(`dropping invalid envelope (${where})`);
@@ -397,11 +361,7 @@ export class BridgeClient {
     // First successfully-parsed inbound envelope = worker has confirmed
     // the handshake end-to-end. This is the gate that gates the
     // backoff-reset: until it fires, a 1008 from the server must count
-    // as a failed connection and feed into the next backoff slot. We
-    // log explicitly so an operator scanning the bridge log can tell
-    // at a glance which reconnects actually completed the handshake
-    // protocol (vs. those that opened the TCP/TLS socket but were then
-    // 1008'd by the worker — typically auth_failed or duplicate_bridge).
+    // as a failed connection and feed into the next backoff slot.
     if (!this.handshakeConfirmed) {
       this.handshakeConfirmed = true;
       this.attempt = 0;
@@ -422,8 +382,7 @@ export class BridgeClient {
         // MUST reply — the worker DO pings every 20s as its liveness
         // signal (worker/src/heartbeat.ts); not replying would let the
         // DO declare US dead and tear the bridge down from the other
-        // side. We don't drive any state of our own from this — the
-        // refresh above already handled the idle timer.
+        // side.
         this.replyToPing(env.payload.nonce ?? '');
         break;
       case 'pong':
@@ -431,13 +390,8 @@ export class BridgeClient {
         // nonce to match against. Inbound pongs are either (a) the
         // server replying to a ping we never sent (no-op noise) or
         // (b) a forwarded peer's pong (likewise irrelevant to us).
-        // Either way the right thing is to silently drop them. Note
-        // that the inbound `pong` frame STILL refreshed the idle
-        // detector above — the refresh is type-agnostic on purpose,
-        // so even unsolicited traffic counts as "not dead".
         break;
       case 'bridge_status':
-        // bridge_status is server-originated metadata; we just log it.
         logger.info(`bridge_status: online=${env.payload.online} reason=${env.payload.reason}`);
         break;
       case 'error':
@@ -447,15 +401,6 @@ export class BridgeClient {
         );
         break;
       default:
-        // M3 tasks 04 + 05: forward every other envelope
-        // (control/get_state, control/session_state from a
-        // misbehaving peer, the entire pi family —
-        // prompt/steer/follow_up/abort/get_messages/
-        // extension_ui_response) to the inbound sink. The manager
-        // routes by `kind` + `type` and handles extension UI
-        // requests via the ExtensionUIRouter. The sink defaults to
-        // a no-op so M2 consumers (no `onEnvelope` set) see no
-        // behaviour change.
         this.opts.onEnvelope?.(env);
         break;
     }
@@ -471,15 +416,13 @@ export class BridgeClient {
     });
   }
 
-  /** Public send path — exposed so the PiProcessManager (constructed
-   *  after the client by `start()`) can forward outbound envelopes
-   *  through the same socket-ready gate. Tests can drive the WSS
-   *  loop with a mock socket and assert on outbound frames. */
+  /** Public send path — exposed so the PiProcessManager can forward
+   *  outbound envelopes through the same socket-ready gate. Tests
+   *  can drive the WSS loop with a mock socket and assert on outbound
+   *  frames. */
   sendEnvelope(env: EnvelopeT): void {
     const ws = this.ws;
     if (ws === null) return;
-    // readyState 1 === OPEN. Anything else (CONNECTING / CLOSING /
-    // CLOSED) means the send would just queue / throw silently.
     if (ws.readyState !== 1) {
       logger.warn(`dropping outgoing ${env.type} — socket not open (state=${ws.readyState})`);
       return;
@@ -513,18 +456,13 @@ export class BridgeClient {
     this.cleanupTimers();
     this.ws = null;
     if (this.stopped) return;
-    // `code` and `reason` come from the CloseEvent when the platform
-    // provides one (browser, Node 22 global WebSocket). They're
-    // `undefined` when the event is fabricated — e.g. unit tests pass
-    // `undefined as unknown as CloseEvent` to drive the lifecycle
-    // without standing up a real socket. The `synthetic` parameter
-    // overrides both: callers that synthesise a close (currently
+    // The `synthetic` parameter overrides the CloseEvent's
+    // code/reason: callers that synthesise a close (currently
     // `handleError` on a CONNECTING error and `handleIdleTimeout`)
     // pass a `{code, reason}` object so the log line carries
     // diagnostic value rather than the bare "code=undefined,
     // reason=''" the unspecified path produces. We surface whatever
-    // we got rather than masking it: an unexplained 1006 is exactly
-    // the symptom that the new format is meant to triage.
+    // we got rather than masking it.
     const code = synthetic?.code ?? ev?.code;
     const reason = synthetic?.reason ?? ev?.reason ?? '';
     this.attempt++;
@@ -544,17 +482,6 @@ export class BridgeClient {
   }
 
   private handleError(ev: Event): void {
-    // Best-effort message extraction. The DOM `ErrorEvent` carries
-    // `message` directly; some platforms only expose the underlying
-    // `Error` via `error`. We surface whatever we can find rather
-    // than swallowing the event — see the connect() comment for why.
-    let message: string | undefined;
-    const maybeErrorEvent = ev as { message?: unknown; error?: unknown };
-    if (typeof maybeErrorEvent.message === 'string' && maybeErrorEvent.message.length > 0) {
-      message = maybeErrorEvent.message;
-    } else if (maybeErrorEvent.error instanceof Error) {
-      message = maybeErrorEvent.error.message;
-    }
     // CONNECTING → drive reconnect. Undici emits `error` without a
     // follow-up `close` when the socket can't complete the TCP/TLS
     // handshake (DNS failure, ECONNREFUSED, SYN blackhole, ...).
@@ -564,19 +491,14 @@ export class BridgeClient {
     // log-only: undici reliably fires close after error in that
     // state (and the 90s read-idle detector covers the silent
     // case), so we don't want to race the close handler by also
-    // scheduling a reconnect from here. The `this.ws === null`
-    // guard is defense-in-depth — the identity guard in connect()
-    // already rejects stale onerror handlers post-handleClose.
-    //
-    // Read `this.ws` BEFORE the log call: the empty-event fallback
-    // log distinguishes CONNECTING (no close will follow; we're
-    // about to drive the backoff) from every other state (close
-    // WILL follow — undici in OPEN reliably fires it, and the 90s
-    // read-idle detector covers the silent OPEN case). This is the
-    // operator-facing seam that prevents the old misleading line
-    // ("socket error (close will follow)") from printing on the
-    // canonical "wrong host" failure mode where close never arrives
-    // — the misread that fed the original incident's confusion.
+    // scheduling a reconnect from here.
+    let message: string | undefined;
+    const maybeErrorEvent = ev as { message?: unknown; error?: unknown };
+    if (typeof maybeErrorEvent.message === 'string' && maybeErrorEvent.message.length > 0) {
+      message = maybeErrorEvent.message;
+    } else if (maybeErrorEvent.error instanceof Error) {
+      message = maybeErrorEvent.error.message;
+    }
     const ws = this.ws;
     if (message) {
       logger.warn(`socket error: ${message}`);
@@ -604,10 +526,5 @@ export class BridgeClient {
  *  `globalThis.WebSocket` lazily (so test code that stubs the global
  *  after construction is picked up on the next reconnect). */
 function defaultCreateSocket(url: string, protocols: string[]): WebSocketLike {
-  // TS's lib types `new WebSocket(url, protocols?: string | string[])`
-  // — a `string[]` argument is accepted as-is, no cast needed. The
-  // returned `WebSocket` is structurally wider than `WebSocketLike`
-  // (extra methods, event-target parent), so the result needs no cast
-  // either: every required property on `WebSocketLike` is present.
   return new WebSocket(url, protocols);
 }

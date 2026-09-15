@@ -46,7 +46,7 @@
 //                       errno"的情况；开发者不应该能从这条路径上
 //                       走出来。
 //
-// 映射发生在 dispatcher（`pi-process.ts` 中 `handleListDirectories`）。
+// 映射发生在 dispatcher（`session-layer.ts` 中 `handleListDirectories`）。
 // 本函数只暴露 domain-level outcome，让 dispatcher 决定 wire 形态
 // —— 这是 M3 既有 `result.error.code` 翻译（`normalizeCommandError` 等）
 // 的同类做法。
@@ -74,9 +74,7 @@
 // 手段"的实现（web 在 ChoicePage level=1 点"浏览添加"时调用），
 // 调成功后 web 才用返回的 path 触发 `work_dir_add` 把目录加进清单。
 // 任务 06 才把 `list_directories` + `work_dir_*` 三个 control type
-// 一起接线进 `BridgeSessionLayer`；本任务只把 list_directories 接线
-// 进 `pi-process.ts handleEnvelope`（与 get_state 同级，因为
-// list_directories 也不需要 pi 进程）。
+// 一起接线进 `BridgeSessionLayer`。
 
 import { accessSync, constants, readdirSync, statSync } from 'node:fs';
 import os from 'node:os';
@@ -93,7 +91,7 @@ import { logger } from './logger.js';
 // ---------------------------------------------------------------------------
 
 /** Domain-level error code returned by `listDirectories` to its
- *  caller (the bridge dispatcher in `pi-process.ts`). Distinct from
+ *  caller (the bridge dispatcher in `session-layer.ts`). Distinct from
  *  the wire-level `ErrorCode` set — the dispatcher maps each domain
  *  code to the closest `ErrorCode` (see header table). */
 export type ListDirectoriesDomainCode =
@@ -159,9 +157,7 @@ export type ListDirectoriesOutcome =
 
 /** `path.resolve(undefined)` would throw TypeError; map undefined to
  *  `$HOME` first so the caller-side schema (which types `path?:
- *  string`) sees an unambiguous string here. `os.homedir()` reads
- *  `$HOME` on POSIX and `USERPROFILE` on Windows; the test environment
- *  is Linux, but the call is identical on both. */
+ *  string`) sees an unambiguous string here. */
 function resolveOrHome(inputPath: string | undefined): string {
   if (inputPath === undefined) {
     return os.homedir();
@@ -191,14 +187,6 @@ function preflight(
   // understanding permission semantics, so the distinction matters).
   let stat: import('node:fs').Stats;
   try {
-    // Static import at module top binds `statSync` to the real
-    // `node:fs` module. Tests that want to inject an EACCES-style
-    // failure use `vi.doMock('node:fs', ...)` + `vi.resetModules()` +
-    // dynamic `import('../list-directories.js')` — the dynamic import
-    // goes through the loader registry which has the doMock'd fs
-    // installed, so this `statSync` call observes the mocked version.
-    // See config.test.ts case 7 / state.test.ts case 15 / 9c for the
-    // exact pattern.
     stat = statSync(resolvedPath);
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
@@ -259,8 +247,7 @@ function preflight(
  *  不含文件"); hidden files (`.foo`) are NOT special-cased — if
  *  they're directories they're listed, matching the unix convention
  *  `ls -l` does NOT filter dotfiles by default but the listing still
- *  includes them. (Web UI may want to filter dotfiles in a future
- *  polish pass; that's a UI concern, not a wire contract one.)
+ *  includes them.
  *
  *  Sort: locale-independent lexicographic (code-point) order; see
  *  module header "Sort order" note for rationale.
@@ -269,13 +256,13 @@ function preflight(
  *
  *  The preflight above is best-effort — between stat + readdir
  *  the path could be deleted (ENOENT) or replaced with a file
- *  (ENOTDIR). These are handled in the catch block below (the
- *  ENOTDIR branch around line 290+), mapped to `path_not_found`
- *  and `path_not_directory` respectively so the operator sees
- *  the same message regardless of which syscall surfaced the
- *  failure. These branches are **not** unit-tested (synthesising
- *  the precise race is impractical in a hermetic tmpdir); the
- *  integration / e2e suite is the right place to exercise them. */
+ *  (ENOTDIR). These are handled in the catch block below, mapped
+ *  to `path_not_found` and `path_not_directory` respectively so
+ *  the operator sees the same message regardless of which syscall
+ *  surfaced the failure. These branches are **not** unit-tested
+ *  (synthesising the precise race is impractical in a hermetic
+ *  tmpdir); the integration / e2e suite is the right place to
+ *  exercise them. */
 function readDirectoryEntries(resolvedPath: string): {
   kind: 'ok';
   entries: { name: string; path: string }[];
@@ -310,8 +297,8 @@ function readDirectoryEntries(resolvedPath: string): {
     }
     if (e.code === 'ENOTDIR') {
       // ENOTDIR at readdir time means the path became a non-directory
-      // between preflight and readdir — extremely rare (TOCTOU),
-      // but the dispatcher surfaces a stable error message either way.
+      // between preflight and readdir (TOCTOU). The dispatcher surfaces
+      // a stable error message either way.
       return {
         kind: 'err',
         code: 'path_not_directory',
@@ -330,9 +317,6 @@ function readDirectoryEntries(resolvedPath: string): {
     if (!dirent.isDirectory()) continue;
     entries.push({
       name: dirent.name,
-      // Build the entry path by joining resolvedPath + dirent.name.
-      // `path.join` normalises a trailing slash on resolvedPath
-      // (e.g. when $HOME is `/`); the result is always absolute.
       path: path.join(resolvedPath, dirent.name),
     });
   }
@@ -357,14 +341,9 @@ function readDirectoryEntries(resolvedPath: string): {
 export function listDirectories(
   inputPath: string | undefined,
 ): ListDirectoriesOutcome {
-  // Step 1: resolve input → absolute path (or $HOME if absent).
-  // Done up front so every error message below can quote the
-  // canonical, normalised path the operator should grep their
-  // filesystem for. Empty-string input falls through to
-  // `path.resolve('')` → cwd (POSIX); not an error per se, just
-  // a weird user input — schema validation already rejects
-  // null/non-string, and the empty-string path is operator-
-  // diagnosed (cwd is a real directory that lists just fine).
+  // Resolve input → absolute path (or $HOME if absent). Done up
+  // front so every error message below can quote the canonical,
+  // normalised path the operator should grep their filesystem for.
   const resolved = resolveOrHome(inputPath);
 
   // Step 2: preflight (stat + isDirectory + R_OK). Each failure
@@ -374,26 +353,19 @@ export function listDirectories(
     return { ok: false, code: pre.code, message: pre.message };
   }
 
-  // Step 3: readdir + filter + sort. Failure branches mirror
-  // the preflight ones for consistency (operator sees the same
-  // message whether the failure surfaced at stat-time or at
-  // readdir-time — TOCTOU between the two is rare but the
-  // contract is stable).
+  // readdir + filter + sort. Failure branches mirror the preflight
+  // ones for consistency (operator sees the same message whether the
+  // failure surfaced at stat-time or at readdir-time — TOCTOU between
+  // the two is rare but the contract is stable).
   const read = readDirectoryEntries(resolved);
   if (read.kind === 'err') {
     return { ok: false, code: read.code, message: read.message };
   }
 
-  // Step 4: defensive revalidation against the shared
-  // `ListDirectoriesResultSchema`. Constructing `{ entries }`
-  // from local variables is unlikely to drift from the schema,
-  // but the cost of `safeParse` is microseconds and the value
-  // of catching a future refactor that breaks the wire contract
-  // is high — the dispatcher would otherwise emit a malformed
-  // `result.data` that fails the web's zod refine silently.
-  // Failure here is `internal` — by construction, the schema
-  // only fails if our own code produced an unexpected shape,
-  // which is a bridge bug.
+  // Defensive revalidation against the shared
+  // `ListDirectoriesResultSchema`. Failure here is `internal` — by
+  // construction, the schema only fails if our own code produced an
+  // unexpected shape, which is a bridge bug.
   const data: ListDirectoriesResult = { entries: read.entries };
   const revalidated = ListDirectoriesResultSchema.safeParse(data);
   if (!revalidated.success) {

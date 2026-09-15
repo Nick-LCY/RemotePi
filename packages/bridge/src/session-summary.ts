@@ -90,12 +90,6 @@
 //     (well within the first 64 KB chunk), and (b) when a prompt
 //     straddles a chunk boundary the `remainder` carryover stitches
 //     it back together before `extractFirstUserMessageText` runs.
-//     For messageCount the worst case is a `{"type":"message",…}`
-//     line whose first byte falls in the previous chunk and whose
-//     replacement is inserted at the head — JSON.parse then fails
-//     and the line is skipped, so an off-by-one under-count is
-//     possible but the cap (50k) keeps it invisible at the wire
-//     level.
 
 import { closeSync, openSync, readSync } from 'node:fs';
 
@@ -197,22 +191,11 @@ export function readSessionSummary(jsonlPath: string): SessionSummary {
   let messageCount = 0;
   let messageCountCapped = false;
   // `windowBytesSeen` is the file offset (in bytes) of the
-  // start byte of the line currently being processed — i.e.
-  // the cumulative number of bytes consumed by all PREVIOUS
-  // lines (each contributing `line.length + 1` for the line
-  // body + the trailing '\n' stripped by the split). Tracked
+  // start byte of the line currently being processed. Tracked
   // PER LINE rather than per chunk so a user prompt whose
   // start byte lives in the first 64 KB but whose body extends
-  // past it is still captured (the bug we're fixing was
-  // chunk-level `bytesRead`, which jumped to 65536 the moment
-  // the first 64 KB chunk was read — even if the actual user
-  // prompt sat at byte ~400 of that chunk, the chunk-aligned
-  // check fired on line 1 and closed the window for every
-  // line in the chunk). This cursor advances across chunks
-  // (the IO split is irrelevant to byte accounting) and is
-  // independent of the `n` byte counter, which we no longer
-  // keep. See the window check JSDoc below for the exact
-  // semantics.
+  // past it is still captured. See the window check JSDoc below
+  // for the exact semantics.
   let windowBytesSeen = 0;
   let linesSeen = 0;
   let firstMessageWindowClosed = false;
@@ -257,58 +240,23 @@ export function readSessionSummary(jsonlPath: string): SessionSummary {
         remainder = chunkText.slice(lastNl + 1);
       }
       for (const line of lines) {
-        // Per-line scan-window check (runs BEFORE the parse AND
-        // before any per-line bookkeeping, so `windowBytesSeen`
-        // reflects this line's start byte position — the file
-        // offset where this line's first character lives).
-        //
-        // Semantic: a line is "in the scan window" iff its
-        // start byte position is `<= FIRST_MESSAGE_BYTE_LIMIT`.
-        // - `linesSeen > FIRST_MESSAGE_LINE_LIMIT` — the line
-        //   is past the line budget (1-indexed: after the 200th
-        //   line, the 201st closes the window).
-        // - `windowBytesSeen > FIRST_MESSAGE_BYTE_LIMIT` — the
-        //   line starts past the byte budget. The strict `>`
-        //   (not `>=`) matches the user's "行起始游标 ≤ limit
-        //   即在窗口内" semantic: a line whose start byte IS
-        //   exactly the byte-limit byte is still in the window.
-        //
+        // Per-line scan-window check. Semantic: a line is "in the
+        // scan window" iff its start byte position is `<=
+        // FIRST_MESSAGE_BYTE_LIMIT`. The strict `>` (not `>=`)
+        // matches the user-spec semantic: a line whose start byte
+        // IS exactly the byte-limit byte is still in the window.
         // A line whose START is in the window but whose BODY
         // extends past the byte limit is fully processed — the
-        // check gates on line-START position, not line-END. So
-        // a user prompt straddling the 64 KB boundary (start
-        // at ~65530, end at ~65600) is captured as long as its
-        // first byte lives in the first 64 KB. This is the
-        // regression钉子 behaviour we want for the 64 KB
-        // bug-fix acceptance: lines starting just past the
-        // chunk-aligned 64 KB cut should still get scanned.
-        //
-        // `windowBytesSeen` is incremented for EVERY line
-        // (including empty ones, which still consume the '\n'
-        // byte) AFTER the window check, so the byte counter
-        // stays a faithful file-offset cursor for the next
-        // iteration. We still increment after the window has
-        // closed for consistency, even though the value is
-        // then unused — keeping a single unconditional update
-        // path makes the byte math easier to reason about
-        // than two branches.
+        // check gates on line-START position, not line-END.
         if (
           !firstMessageWindowClosed &&
           (linesSeen > FIRST_MESSAGE_LINE_LIMIT || windowBytesSeen > FIRST_MESSAGE_BYTE_LIMIT)
         ) {
           firstMessageWindowClosed = true;
-          // Drop any partial-line carryover past the window —
-          // we no longer care about firstMessage, and the
-          // carryover would only inflate the next chunk's split
-          // logic. messageCount tally keeps running; the
-          // carryover is irrelevant to it.
           remainder = '';
         }
         // +1 accounts for the trailing '\n' that was stripped
-        // by the split — for a line "abc\n" of length 3, the
-        // start of the next line is byte 4. For an empty line
-        // (just a stray '\n'), length is 0 and the next line
-        // starts 1 byte further along.
+        // by the split.
         windowBytesSeen += line.length + 1;
         if (line.length === 0) continue;
         linesSeen++;
@@ -345,9 +293,7 @@ export function readSessionSummary(jsonlPath: string): SessionSummary {
       // Early exit when both goals are saturated: firstMessage
       // resolved (or window closed) AND messageCount hit the cap.
       // We do NOT exit on "firstMessage found" alone — we still
-      // need to count messages for the rest of the file. Only
-      // when both goals are done do we save the rest of the
-      // read.
+      // need to count messages for the rest of the file.
       if (firstMessageWindowClosed && messageCountCapped) break;
     }
   } finally {
@@ -392,14 +338,11 @@ function extractFirstUserMessageText(parsed: unknown): string | null {
   const joined = parts.join('');
   if (joined.length === 0) return null;
   return joined.length > FIRST_MESSAGE_TEXT_MAX_CHARS
-    ? // Code-point truncation (Array.from on a string yields one
-      // entry per Unicode codepoint, so a surrogate pair like
-      // 😀 counts as 1 not 2). A naïve `slice(0, 200)` on the
-      // UTF-16 string can cut between the high and low surrogate
-      // and yield an isolated surrogate — invalid as a JS string
-      // for downstream consumers (zod schema parse, JSON.stringify,
-      // IndexedDB write). Spreading via Array.from guarantees the
-      // boundary lands on a complete codepoint.
+    ? // Code-point truncation (Array.from yields one entry per
+      // Unicode codepoint, so a surrogate pair counts as 1 not 2).
+      // A naïve `slice(0, 200)` on the UTF-16 string can cut
+      // between the high and low surrogate and yield an isolated
+      // surrogate — invalid for downstream consumers.
       Array.from(joined).slice(0, FIRST_MESSAGE_TEXT_MAX_CHARS).join('')
     : joined;
 }

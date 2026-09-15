@@ -50,15 +50,13 @@
 //   removal and dismiss their copy. A late submission from the losing
 //   web hits an empty Map → request_expired.
 //
-// ## Stdin write failure
-//
-//   The router calls back into the manager via `forceExited` which
-//   logs + transitions phase to 'exited' + broadcasts. The router
-//   itself doesn't own the phase state machine — the manager does.
-//   Splitting the responsibilities this way keeps the router testable
-//   in isolation (no manager dependency) and makes the "force exited"
-//   semantics identical to any other reason for transitioning to
-//   exited (e.g. crash restart path).
+// The router calls back into the manager via `forceExited` which
+// logs + transitions phase to 'exited' + broadcasts. The router
+// itself doesn't own the phase state machine — the manager does.
+// Splitting the responsibilities this way keeps the router testable
+// in isolation (no manager dependency) and makes the "force exited"
+// semantics identical to any other reason for transitioning to
+// exited (e.g. crash restart path).
 
 import { randomUUID } from 'node:crypto';
 import {
@@ -356,16 +354,12 @@ export class ExtensionUIRouter {
       // log + surface the inconsistency and still clear the entry
       // (so a stuck entry doesn't leak into the broadcast).
       //
-      // S2 review: also emit `command_result{success: false, error:
-      // {code: "invalid_response", ...}}` keyed by the WEB envelope
-      // id (reply_to = env.id) so the web side surfaces the failure
+      // Also emit `command_result{success: false, error: {code:
+      // "invalid_response", ...}}` keyed by the WEB envelope id
+      // (reply_to = env.id) so the web side surfaces the failure
       // via its §4.5 "提交失败 UX" toast + dialog-dismiss path.
       // Without this, the entry clears + the broadcast drops
-      // blocked_on, and the web dialog vanishes with zero feedback
-      // — the user sees the dialog disappear but never learns the
-      // response was rejected. The reply_to rule mirrors the
-      // request_expired branch above (web envelope id, not the
-      // request_id), so web can correlate by its own outbound id.
+      // blocked_on, and the web dialog vanishes with zero feedback.
       logger.error(
         `extension_ui_response translation failed for ${requestId}: no pi-native form derivable`,
       );
@@ -425,12 +419,7 @@ export class ExtensionUIRouter {
     this.timeouts.delete(requestId);
 
     if (!this.pending.delete(requestId)) {
-      // Loser — web already submitted and cleared this entry. The
-      // bridged handler removed the timeout handle via clearTimer
-      // (so the OS timer is dead too); the only thing left is the
-      // stale entry in our local `timeouts` Map, which we just
-      // cleared above. No broadcast, no log — silently no-op so
-      // operator logs aren't polluted by race-no-ops.
+      // Loser — web already submitted and cleared this entry.
       return;
     }
     // Winner — entry is gone, broadcast so web sees the timeout
@@ -500,11 +489,7 @@ export class ExtensionUIRouter {
     // If a request with the same id is already pending, the new one
     // replaces it (defensive — pi should never emit duplicates, but
     // the schema doesn't constrain id uniqueness across requests so
-    // we handle it here to avoid Map corruption). S1 review: emit
-    // a `logger.warn` symmetric to the unknown-method warn above so
-    // a pi upgrade that starts duplicating ids is visible in
-    // operator logs (correlated by the same id across the dropped
-    // entry and the new one).
+    // we handle it here to avoid Map corruption).
     if (this.pending.has(data.id)) {
       logger.warn(
         `extension_ui_request duplicate id=${data.id} method=${data.method} — replacing prior pending entry (pi upgrade or upstream bug?)`,
@@ -532,13 +517,11 @@ export class ExtensionUIRouter {
     // methods that have a timeout.
     this.emitEventEnvelope('extension_ui_request', data);
 
-    // Mirror the timeout locally. PRD §2.4: "若 entry 带 timeout
-    // → 起本地 setTimeout(timeout, () => this.timeoutFired
-    // (requestId)) (I 决策: 镜像契约)". Editor has no timeout
-    // field — we accept this as known behaviour per PRD §2 已敲定
-    // 决策 8 ("editor 无 timeout"). We use a type narrow on the
-    // blocking payload kind because the BlockedOnEntryPayload
-    // discriminated union omits `timeout` from the editor variant.
+    // Mirror the timeout locally. Editor has no timeout field — we
+    // accept this as known behaviour per PRD §2 已敲定 决策 8
+    // ("editor 无 timeout"). We use a type narrow on the blocking
+    // payload kind because the BlockedOnEntryPayload discriminated
+    // union omits `timeout` from the editor variant.
     const timeoutMs = extractTimeout(data);
     if (timeoutMs !== undefined) {
       const handle = this.setTimer(() => this.timeoutFired(data.id), timeoutMs);
@@ -580,7 +563,7 @@ export class ExtensionUIRouter {
     if (originalMethod === 'confirm') {
       // Confirm: value is always boolean. `value: false` is the
       // "no" path on a confirm dialog (the only way to express
-      // decline — PRD §1.6 决策 1 + §2.4 wire translation).
+      // decline).
       return {
         type: 'extension_ui_response',
         id: payload.request_id,

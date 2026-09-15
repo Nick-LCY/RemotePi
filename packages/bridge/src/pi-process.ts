@@ -202,9 +202,7 @@ export function normalizePiError(raw: unknown): NormalizedCommandError | undefin
   }
   if (Array.isArray(raw)) {
     // Arrays are typeof === 'object' in JS but not `{code, message}`
-    // shaped — JSON-stringify so the original elements survive the
-    // conversion. Web renders the message verbatim, so `[1,2,3]`
-    // becomes `[1,2,3]` in the UI rather than an empty string.
+    // shaped — JSON-stringify so the original elements survive.
     return { code: PI_ERROR_CODE, message: JSON.stringify(raw) };
   }
   if (typeof raw === 'object') {
@@ -212,12 +210,6 @@ export function normalizePiError(raw: unknown): NormalizedCommandError | undefin
     if (typeof obj.code === 'string' && typeof obj.message === 'string') {
       return { code: obj.code, message: obj.message };
     }
-    // Defensive coercion for partial object shapes (pi could emit
-    // a numeric code, null message, etc. — see upstream tolerance
-    // for unknown JSON shapes). We use JSON.stringify for the
-    // non-string message fallback rather than String() to avoid the
-    // eslint `no-base-to-string` rule (String() on a plain object
-    // would yield `[object Object]`, losing the original value).
     const coercedCode = typeof obj.code === 'string' ? obj.code : PI_ERROR_CODE;
     const coercedMessage =
       typeof obj.message === 'string'
@@ -227,8 +219,6 @@ export function normalizePiError(raw: unknown): NormalizedCommandError | undefin
           : JSON.stringify(obj.message);
     return { code: coercedCode, message: coercedMessage };
   }
-  // Primitive non-string (number / boolean / bigint / symbol) →
-  // JSON-stringify so the original value survives the conversion.
   return { code: PI_ERROR_CODE, message: JSON.stringify(raw) };
 }
 
@@ -307,8 +297,8 @@ export interface SessionStatePayload {
  *  retained here as a web-wire passthrough (forward-compat for M+
  *  incremental recovery per PRD §非目标), but `translateToPiWire`
  *  drops it — pi's `get_messages` does NOT accept `since` (that's
- *  pi's `get_entries` command); passing an unknown field is harmless
- *  but bloats the wire, so we strip it at the bridge boundary.
+ *  pi's `get_entries` command); passing an unknown field bloats
+ *  the wire, so we strip it at the bridge boundary.
  *
  *  The translation step is centralized in `translateToPiWire` so
  *  the wire-shape difference is reviewable in one place and
@@ -330,10 +320,7 @@ type DeferredCommand =
  *  the optional `id` for reply correlation.
  *
  *  Exported so unit tests can assert on the exact wire shape
- *  without constructing a full manager; production code receives
- *  a concrete `PiStdinCommand` value from `translateToPiWire` (the
- *  `extension_ui_response` variants live in `extension-ui.ts` and
- *  already match this contract by construction). */
+ *  without constructing a full manager. */
 export type PiStdinCommand =
   | { type: 'prompt'; id: string; message: string }
   | { type: 'steer'; id: string; message: string }
@@ -356,10 +343,7 @@ export type PiStdinCommand =
  *      bridge `{content}` → pi `{message}`. Without this rename
  *      pi reads `command.message` as `undefined` and crashes with
  *      `TypeError: Cannot read properties of undefined (reading
- *      'startsWith')` on the first content-bearing command
- *      (regression observed in M3 task 06 dev; root-caused against
- *      `rpc-types.d.ts` `RpcCommand` prompt / steer / follow_up
- *      variants).
+ *      'startsWith')` on the first content-bearing command.
  *
  *  - `abort`:
  *      identity translation (no fields to rename); the bridge's
@@ -370,9 +354,7 @@ export type PiStdinCommand =
  *      it — PRD §非目标 defers to M+ — but the passthrough was
  *      retained for forward compat); pi's `get_messages` does NOT
  *      accept `since` (that's `get_entries`'s field), so we drop
- *      it. The cursor survives in the `DeferredCommand` queue so
- *      a future M+ build that switches to `get_entries` won't
- *      need to re-touch the queue type.
+ *      it.
  *
  *  - `get_state`:
  *      only constructed by the bridge handshake writer; included
@@ -380,10 +362,7 @@ export type PiStdinCommand =
  *      reachable through `DeferredCommand` (which holds web-
  *      originated commands only).
  *
- *  Exported for direct unit-test coverage. Production code path:
- *  `writeCommand` → `translateToPiWire` → JSON.stringify → stdin.
- *  `extension-ui.ts` writes its own three-state shape directly
- *  (no translation needed — see `PiExtensionUIResponse` JSDoc). */
+ *  Exported for direct unit-test coverage. */
 export function translateToPiWire(cmd: DeferredCommand): PiStdinCommand {
   switch (cmd.type) {
     case 'prompt':
@@ -396,8 +375,7 @@ export function translateToPiWire(cmd: DeferredCommand): PiStdinCommand {
       return { type: 'abort', id: cmd.id };
     case 'get_messages':
       // Drop `since`: pi's `get_messages` doesn't accept it (that's
-      // `get_entries`); unknown fields are harmless but the bridge
-      // shouldn't forward them.
+      // `get_entries`).
       return { type: 'get_messages', id: cmd.id };
   }
 }
@@ -447,21 +425,13 @@ export interface PiProcessOptions {
   onStderr?: (chunk: string) => void;
 
   /** Pin the spawned pi to a particular session jsonl file via
-   *  `--session <path>`. Three-state semantics (验收期第 3 缺口
-   *  修复, 2026-09-09) — bridges the gap between
-   *  `session-layer.ts spawnManager` (which already computed the
-   *  exact path for clicked-old-session routing, see branch 2)
-   *  and `spawnNow` (which previously always called
-   *  `sessionArgv(subdir)` = `--session <latest>`, making every
-   *  user click land on the newest session regardless of intent):
+   *  `--session <path>`. Three-state semantics:
    *
    *  - **`undefined` (M3-compat)** — caller does not pin a
    *    specific session; `spawnNow` falls back to
    *    `sessionArgv(subdir)` which picks the latest file in
    *    `<agentDir>/sessions/--<encodeCwd>--/` (or omits `--session`
-   *    entirely if the subdir is empty). This is the legacy M3
-   *    behaviour and the ADR-0007 "取最新" semantics for the
-   *    M3_LEGACY_KEY auto-spawn path. Sessions spawned this way
+   *    entirely if the subdir is empty). Sessions spawned this way
    *    may be **replaced** by a newer file between spawns (each
    *    restart picks the then-latest). Callers that need a stable
    *    binding MUST use `string` instead.
@@ -484,9 +454,7 @@ export interface PiProcessOptions {
    *    failure path). Crash-restart reuses the same value because
    *    the field is captured at construction and the same path
    *    still points to the same session — recovery preserves the
-   *    binding across spawns, which is the desired semantics
-   *    (see ADR-0007 "取最新" *exception*: an explicitly-pinned
-   *    session survives restarts). */
+   *    binding across spawns. */
   sessionJsonlPath?: string | null;
 }
 
@@ -514,13 +482,12 @@ export interface PiProcessOptions {
  *    `agent_settled` (idle timer trigger) and `extension_ui_request`
  *    (popup router) dead. See `handleStdoutFrame` for the fix.
  *
- *  W3 review follow-up: `response.id` is the id of the command the
- *  bridge sent to pi — pi echoes it back so the bridge can correlate
- *  the reply with the originating web envelope. We mark it optional
- *  so a pi build that omits it (or a stale reply from a crashed
- *  previous child) still parses; the lookup in `handlePiResponse`
- *  falls back to a fresh UUID when the id isn't in our outstanding
- *  table. */
+ *  `response.id` is the id of the command the bridge sent to pi —
+ *  pi echoes it back so the bridge can correlate the reply with the
+ *  originating web envelope. We mark it optional so a pi build that
+ *  omits it (or a stale reply from a crashed previous child) still
+ *  parses; the lookup in `handlePiResponse` falls back to a fresh
+ *  UUID when the id isn't in our outstanding table. */
 type StdoutFrame =
   | {
       type: 'response';
@@ -607,18 +574,16 @@ export class PiProcessManager {
    *  completes. Drained in arrival order on `ready` transition. */
   private deferredCommands: DeferredCommand[] = [];
 
-  /** W3 review follow-up: outstanding-commands table that maps the
-   *  id we sent to pi → the web envelope id (or a `bridgeInitiated`
-   *  flag for handshake `get_state`).
+  /** Outstanding-commands table that maps the id we sent to pi →
+   *  the web envelope id (or a `bridgeInitiated` flag for handshake
+   *  `get_state`).
    *
    *  pi's RPC protocol echoes the command `id` on every response,
    *  which is what lets web correlate `command_result.reply_to`
    *  with the original prompt/steer/follow_up/abort/get_messages
-   *  envelope (envelope.md 锁版: `reply_to` 是回执配对键;
-   *  task 07 恢复仪式需要 `snapshot{reply_to: <get_messages 的 id>}`).
+   *  envelope (envelope.md 锁版: `reply_to` 是回执配对键).
    *  Since the bridge passes the web envelope id straight through
-   *  to pi as the command id (`handlePrompt`/`handleSteer`/...
-   *  construct `cmd.id = env.id`), the pi-side key equals the
+   *  to pi as the command id, the pi-side key equals the
    *  web-side key — we only need to flag which entries were
    *  bridge-initiated (no corresponding web envelope, so a
    *  matching pi response is consumed by the bridge itself rather
@@ -633,9 +598,7 @@ export class PiProcessManager {
    *  (task 05 split). The router owns the Map, the timeout handles,
    *  and the wire translation; the manager queries
    *  `extensionUIRouter.getBlockedOn()` whenever it needs to
-   *  build a `session_state` payload. The router is constructed
-   *  in `buildExtensionUIRouter()` (lazy because it closes over
-   *  the manager instance via callbacks). */
+   *  build a `session_state` payload. */
   private extensionUIRouter!: ExtensionUIRouter;
 
   /** Monotonic counter of spawn attempts (the first spawn counts as
@@ -654,18 +617,12 @@ export class PiProcessManager {
    *  (mirrors BridgeClient's idempotent start()). */
   private started = false;
   /** Whether `stop()` has been called. Once set, the manager stops
-   *  scheduling new work and tears down the child (used by index.ts
-   *  during uncaughtException cleanup — the bridge doesn't currently
-   *  call this but the seam is there for completeness). */
+   *  scheduling new work and tears down the child. */
   private stopped = false;
 
   constructor(options: PiProcessOptions) {
     this.agentDir = options.agentDir;
     this.workDir = options.workDir;
-    // auth.json lives directly under the agent dir. Derived here so
-    // the caller only has to know the one `agentDir` knob; the
-    // bridge does not own a separate config file (per decision
-    // 2026-09-05: bridge no longer maintains an isolated pi profile).
     this.authJsonPath = path.join(this.agentDir, 'auth.json');
     this.spawnFn = options.spawn ?? defaultSpawn;
     this.setTimer = options.setTimeout ?? setTimeout;
@@ -688,12 +645,7 @@ export class PiProcessManager {
    *  wins semantics; the manager owns the phase state machine, the
    *  outbound sink, and the stdin writer. The split keeps the router
    *  testable in isolation (no manager instance needed) and the
-   *  manager testable without instantiating a router.
-   *
-   *  We initialise the router AFTER the field assignments because the
-   *  closures reference `this.broadcastSessionState` (private) and
-   *  `this.writeToPiCommand` etc. — those methods don't read `this`
-   *  until invocation time, so constructor ordering is safe. */
+   *  manager testable without instantiating a router. */
   private buildExtensionUIRouter(options: PiProcessOptions): ExtensionUIRouter {
     return new ExtensionUIRouter({
       broadcastSessionState: () => this.broadcastSessionState(),
@@ -738,12 +690,7 @@ export class PiProcessManager {
 
   /** Write the translated `extension_ui_response` to pi stdin.
    *  Returns `false` when the child is dead (no live process) so
-   *  the router can route through `forceExited`. We use the same
-   *  try/catch-then-false pattern as `writeCommand` but expose the
-   *  boolean to the router so it can trigger the force-exited
-   *  broadcast explicitly (otherwise the entry would already be
-   *  cleared from pending and the manager would only learn about
-   *  the failure via a delayed exit event). */
+   *  the router can route through `forceExited`. */
   private writeExtensionUIResponseToPi(cmd: PiExtensionUIResponse): boolean {
     const child = this.child;
     if (child === null) {
@@ -761,14 +708,7 @@ export class PiProcessManager {
 
   /** Force phase = 'exited' on stdin write failure from the
    *  extension UI path. The router invokes this when
-   *  `writeToPi` returns false; we log + transitionTo so the
-   *  phase state machine records the new phase and broadcasts
-   *  `session_state{phase:'exited'}`. The router's own
-   *  broadcastSessionState callback then fires the second
-   *  broadcast (post-cleared blocked_on); both broadcasts are
-   *  idempotent from web's perspective (the second one carries
-   *  the cleared blocked_on, the first one carries it too since
-   *  the router cleared it before calling forceExited). */
+   *  `writeToPi` returns false. */
   private forceExitedForExtensionUIFailure(reason: string): void {
     logger.error(`forcing exited due to extension UI stdin failure: ${reason}`);
     this.transitionTo('exited');
@@ -787,51 +727,23 @@ export class PiProcessManager {
     if (this.started) return;
     this.started = true;
     if (!authJsonExists(this.authJsonPath)) {
-      // W4 review follow-up: route the auth.json hint to stderr
-      // directly via `console.error`. We deliberately do NOT use
-      // `logger.warn` here — that path goes through the shared
-      // logger which is also used for `client.ts` reconnect
-      // warnings; switching its sink to stderr would silently flip
-      // every other warn in the daemon. The auth.json nudge is
-      // a one-shot operator hint at startup, so a direct console
-      // call with a [bridge] prefix keeps the format consistent
-      // with everything else the bridge prints while restricting
-      // the stream change to this single site.
+      // Route the auth.json hint to stderr directly via `console.error`
+      // rather than `logger.warn` — the latter goes through the shared
+      // logger (also used for `client.ts` reconnect warnings); flipping
+      // its sink would silently change every other warn in the daemon.
+      // The auth.json nudge is a one-shot operator hint at startup.
       //
-      // Decision 2026-09-05: bridge no longer maintains an isolated
-      // pi profile — sessions + auth are shared with the host's
-      // ~/.pi/agent. The hint therefore points at the host's
-      // pi TUI (`pi` in any terminal) rather than asking the
-      // operator to run a one-off `PI_CODING_AGENT_DIR=...` pi
-      // instance. If the operator has a custom PI_CODING_AGENT_DIR
-      // set in their env, `resolvePiAgentDir` will reflect that
-      // here too — the print line is diagnostic, not prescriptive.
-      //
-      // W3 review follow-up: surface the env-var fallback so operators
-      // who deliberately prefer NOT to persist an auth.json (e.g.
-      // CI runners, ephemeral containers, air-gapped setups that
-      // inject secrets via env) still have a working escape hatch.
-      // pi's credential priority is auth.json > provider *_API_KEY
-      // env > --api-key; setting e.g. `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
-      // (whatever the provider calls it) in the bridge's process
-      // environment is sufficient for pi to skip the auth.json check.
-      // The provider name varies, so the hint names the convention
-      // rather than enumerating keys.
+      // pi's credential priority is auth.json > provider *_API_KEY env
+      // > --api-key; setting the provider's *_API_KEY env var is
+      // sufficient for pi to skip the auth.json check (e.g. CI runners
+      // or air-gapped setups that prefer env-injected secrets). The
+      // hint names the convention rather than enumerating keys.
       console.error(
         `[bridge] auth.json not found at ${this.authJsonPath}. Authenticate via the pi TUI (run \`pi\` and type /login) so it writes ${this.authJsonPath}, or set the provider's *_API_KEY env var (pi auth priority: auth.json > env > --api-key).`,
       );
     }
-    // Diagnostic banner so operators can confirm the bridge and pi
-    // agree on the same agent directory. The line is grep-able + the
-    // value comes from `resolvePiAgentDir()` (env first, default
-    // ~/.pi/agent) so a mismatch with what the operator expects
-    // (e.g. PI_CODING_AGENT_DIR set to a different path) shows up
-    // immediately on startup instead of as a confusing
-    // session-not-found error on first prompt.
     logger.info(`pi agent dir: ${this.agentDir}`);
     logger.info(`work_dir=${this.workDir}`);
-    // Phase starts at `exited`; no spawn yet. The first
-    // spawn-trigger command will call spawnNow().
   }
 
   /** Stop the manager: clear all timers, kill the child, mark
@@ -842,18 +754,18 @@ export class PiProcessManager {
     this.clearIdleTimer();
     this.clearSigkillTimer();
     this.clearSpawnTimer();
-    // W3: clear outstanding commands. Without this, late responses
+    // Clear outstanding commands. Without this, late responses
     // from the dying child (e.g. one that flushes a queued reply
     // right before SIGTERM delivery) could still match a stale
     // entry and emit an envelope after `stop()` has been signalled.
     // Combined with `handleExit`'s own clear, this guarantees no
     // outbound frame is produced after `stop()` returns.
     this.outstandingCommands.clear();
-    // Task 05: drop any pending extension UI requests + their
-    // timeout mirrors. clearAll() emits a final broadcast so web
-    // sees `blocked_on: []` (or absent) before the bridge shuts
-    // down — otherwise a stopping bridge could leave stale dialogs
-    // pinned in the UI for the duration of the WSS close handshake.
+    // Drop any pending extension UI requests + their timeout mirrors.
+    // clearAll() emits a final broadcast so web sees `blocked_on: []`
+    // before the bridge shuts down — otherwise a stopping bridge
+    // could leave stale dialogs pinned in the UI for the duration of
+    // the WSS close handshake.
     this.extensionUIRouter.clearAll();
     const child = this.child;
     if (child !== null) {
@@ -878,15 +790,11 @@ export class PiProcessManager {
    *  §2.7 semantics ("spawn 计数 +1" per triggered spawn).
    *
    *  Env: we pass `{...this.baseEnv}` verbatim — NO
-   *  `PI_CODING_AGENT_DIR` injection. Per decision 2026-09-05
-   *  the bridge no longer maintains an isolated pi profile; pi
-   *  sees the operator's own environment through passthrough, so
-   *  the agent dir the bridge scans (via `resolvePiAgentDir`)
-   *  and the agent dir pi itself uses are guaranteed to agree
-   *  (both consult the same `process.env.PI_CODING_AGENT_DIR`
-   *  with the same priority). An operator who wants a non-default
-   *  location sets the env var in the bridge's own process env —
-   *  no bridge-side configuration knob required. */
+   *  `PI_CODING_AGENT_DIR` injection. The bridge does not maintain
+   *  an isolated pi profile; pi sees the operator's own environment
+   *  through passthrough, so the agent dir the bridge scans (via
+   *  `resolvePiAgentDir`) and the agent dir pi itself uses are
+   *  guaranteed to agree. */
   private spawnNow(): void {
     if (this.stopped) return;
     this.spawnCount++;
@@ -906,35 +814,16 @@ export class PiProcessManager {
       }
     }
     const subdir = sessionSubdir(this.agentDir, this.workDir);
-    // Three-state session pinning (验收期第 3 缺口修复,
-    // 2026-09-09 — `spawnManager` had been dropping this field
-    // and `spawnNow` was unconditionally calling `sessionArgv(subdir)`
-    // = "always pick latest", making every user click land on the
-    // newest session regardless of intent). The decision is locked
-    // at construction; this branch is the only place `spawnNow`
-    // materialises it into actual argv. See
-    // `PiProcessOptions.sessionJsonlPath` JSDoc for the full
-    // three-state semantics.
-    //
-    //   undefined → legacy M3 `sessionArgv(subdir)` = latest
-    //               file in the subdir, or no --session if empty.
-    //               Preserves ADR-0007 "取最新" semantics for the
-    //               M3_LEGACY_KEY auto-spawn path.
-    //   null      → explicitly fresh — NO --session, even when
-    //               files exist on disk. The session-layer branch 3
-    //               (pending key / `session:'new'`) uses this so
-    //               pi creates a fresh jsonl on first write; the
-    //               layer later derives the real stem from the
-    //               agent_dir scan (钉子 2).
-    //   string    → exact pin --session <path>. Clicked-old-
-    //               session routing (session-layer branch 2);
-    //               restart-stable because the field is captured
-    //               at construction.
+    // Three-state session pinning. See `PiProcessOptions.sessionJsonlPath`
+    // JSDoc for the full three-state semantics:
+    //   undefined → legacy M3 `sessionArgv(subdir)` = latest or none.
+    //   null      → explicitly fresh — NO --session, even when files exist.
+    //   string    → exact pin --session <path>.
     let sessionFlags: string[];
     if (this.sessionJsonlPath === undefined) {
-      sessionFlags = sessionArgv(subdir); // M3-compat: latest or none
+      sessionFlags = sessionArgv(subdir);
     } else if (this.sessionJsonlPath === null) {
-      sessionFlags = []; // explicit fresh — never resume
+      sessionFlags = [];
     } else {
       sessionFlags = ['--session', this.sessionJsonlPath];
     }
@@ -963,8 +852,9 @@ export class PiProcessManager {
     // synchronously after spawn, otherwise both sides wait forever
     // (探针实证: pi stdout 8s 0 字节, bridge 等响应死锁). We write
     // IMMEDIATELY after spawn (do NOT wait for any first stdout
-    // output — pi 静默场景下会重新死锁; OS pipe buffer absorbs the
-    // handful of bytes we write before pi's reader is ready).
+    // output — a silent pi would deadlock otherwise; the OS pipe
+    // buffer absorbs the handful of bytes we write before pi's
+    // reader is ready).
     this.writeHandshakeGetState();
   }
 
@@ -975,20 +865,20 @@ export class PiProcessManager {
     // denied / etc.) or when the IPC pipe breaks post-spawn. Without
     // a handler, Node surfaces this as an uncaught exception and the
     // bridge dies. We translate it to an explicit exited transition
-    // + warn so the operator sees a useful log line and web sees a
-    // session_state{phase:'exited'} instead of a phantom zombie.
+    // so the operator sees a useful log line and web sees
+    // `session_state{phase:'exited'}` instead of a phantom zombie.
     //
-    // W-1 review follow-up: the 'error' closure captures `child`
-    // so the handler can identify whether the error came from the
-    // CURRENT child or a stale one. Without this identity check, a
-    // late 'error' event from child A arriving AFTER
-    // handleExit(code≠0) + spawnNow has replaced `this.child` with
-    // child B would tear down B via forceExitedAfterSpawnFailure
-    // (the reverse-order race: exit first, then late error). The
-    // `child === this.child` guard in `handleChildError` short-
-    // circuits that path. The simpler `this.child === null` guard
-    // alone is insufficient because by the time the late error
-    // arrives, this.child has been replaced with B (not null).
+    // The 'error' closure captures `child` so the handler can identify
+    // whether the error came from the CURRENT child or a stale one.
+    // Without this identity check, a late 'error' event from child A
+    // arriving AFTER handleExit(code≠0) + spawnNow has replaced
+    // `this.child` with child B would tear down B via
+    // forceExitedAfterSpawnFailure (the reverse-order race: exit
+    // first, then late error). The `child === this.child` guard in
+    // `handleChildError` short-circuits that path. The simpler
+    // `this.child === null` guard alone is insufficient because by
+    // the time the late error arrives, this.child has been replaced
+    // with B (not null).
     child.on('error', (err) => this.handleChildError(err, child));
     child.stdout.on('data', (chunk: Buffer | string) => this.feedStdout(chunk));
     child.stderr.on('data', (chunk: Buffer | string) => this.feedStderr(chunk));
@@ -1005,19 +895,16 @@ export class PiProcessManager {
    *  pipe is already broken (EPIPE on a child that died before the
    *  write landed — common with ENOENT / spawn failures). In that
    *  case we route through `forceExitedAfterSpawnFailure`, which
-   *  mirrors `extension-ui`'s `forceExited` callback (log + transition
-   *  to `exited`). ENOENT in particular is a persistent problem with
-   *  no built-in backoff, so we do NOT auto-restart — the next
-   *  §2.7 spawn-trigger command (or operator restart) is the right
-   *  recovery path.
+   *  mirrors `extension-ui`'s `forceExited` callback. ENOENT in
+   *  particular is a persistent problem with no built-in backoff, so
+   *  we do NOT auto-restart — the next §2.7 spawn-trigger command
+   *  (or operator restart) is the right recovery path.
    *
-   *  Note: this method runs synchronously inside `spawnNow`, BEFORE
-   *  the OS / Node event loop has had a chance to deliver an `error`
+   *  This method runs synchronously inside `spawnNow`, BEFORE the
+   *  OS / Node event loop has had a chance to deliver an `error`
    *  event. So if `child` was passed to `attachChild`, the `error`
    *  handler isn't going to fire and clobber `this.child` underneath
-   *  us mid-write. We still defensively bail if `this.child === null`
-   *  (shouldn't happen in production, but covers any future
-   *  refactor that makes spawnNow async). */
+   *  us mid-write. We still defensively bail if `this.child === null`. */
   private writeHandshakeGetState(): void {
     const child = this.child;
     if (child === null) return;
@@ -1077,8 +964,8 @@ export class PiProcessManager {
    *  outstanding / deferred state, and broadcast `session_state{
    *  phase: 'exited'}` so web sees the bridge is offline.
    *
-   *  Idempotency (W-1 review follow-up): two cases must short-circuit
-   *  without disturbing state:
+   *  Idempotency: two cases must short-circuit without disturbing
+   *  state:
    *    1. After `handleExit` clears `this.child`, subsequent `error`
    *       events from the SAME dying child see `this.child === null`
    *       and return. (Original guard.)
@@ -1092,8 +979,8 @@ export class PiProcessManager {
    *       (`this.phase === 'exited'`) cannot catch this scenario
    *       because after crash-restart the phase is `'spawning'`. */
   private handleChildError(err: Error, sourceChild?: PiChild): void {
-    // W-1: stale error from a previous child (e.g., late 'error'
-    // from child A after exit+crash-restart spawned child B).
+    // Stale error from a previous child (e.g., late 'error' from
+    // child A after exit+crash-restart spawned child B).
     if (sourceChild !== undefined && sourceChild !== this.child) {
       return;
     }
@@ -1106,19 +993,13 @@ export class PiProcessManager {
    *  handshake, child 'error' events). Distinct from `handleExit`:
    *    - Always takes the "no restart" path (ENOENT is persistent;
    *      auto-restart without backoff would loop forever).
-   *    - Drops the deferred queue with a warn (S6 alignment: web
-   *      will retry on the next §2.7 spawn trigger, but operators
-   *      need a sentinel to correlate "I sent X, then nothing").
+   *    - Drops the deferred queue with a warn (web will retry on
+   *      the next §2.7 spawn trigger, but operators need a sentinel
+   *      to correlate "I sent X, then nothing").
    *    - Runs the same bookkeeping as the exit path (clear
    *      outstanding + router + sigkill timer) so a subsequent
    *      `exit` event sees `this.child === null` and short-circuits
-   *      via the idempotency guard in `handleChildError`.
-   *
-   *  The `transitionTo('exited')` call emits a `session_state`
-   *  broadcast; the preceding `extensionUIRouter.clearAll()` emits
-   *  a second one (idempotent — both carry `blocked_on: []` /
-   *  omitted when nothing was pending). This mirrors the dual-
-   *  broadcast pattern in `handleExit`. */
+   *      via the idempotency guard in `handleChildError`. */
   private forceExitedAfterSpawnFailure(reason: string): void {
     if (this.child === null && this.phase === 'exited') {
       // handleExit already ran and transitioned to exited; nothing
@@ -1218,10 +1099,7 @@ export class PiProcessManager {
    *      `{type:"extension_ui_request", id, method, ...}`,
    *      `{type:"queue_update", steering, followUp}`, etc.
    *      There is NO `{type:"event", event:"...", data:...}`
-   *      wrapping. The earlier code dropped everything that didn't
-   *      carry `type === 'response'` or `type === 'event'` (wrapped),
-   *      which meant `agent_settled` never armed the idle timer and
-   *      `extension_ui_request` never reached the popup router.
+   *      wrapping.
    *
    *  Two events get internal handling; every other pi event is
    *  forwarded verbatim as a `pi/event` envelope so the web layer
@@ -1257,24 +1135,15 @@ export class PiProcessManager {
     const data: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
     delete data.type;
 
-    // Internal handling: `agent_settled` arms the idle timer (the
-    // one signal that means "this turn is done, no more work queued";
-    // `agent_end` fires on auto-retry too — see ADR-0003 §3). The
+    // Internal handling: `agent_settled` arms the idle timer. The
     // gate lives in `startIdleTimer` (only `running → idle` is
     // in-spec; ready/spawning/idle/exited are logged + ignored).
     if (t === 'agent_settled') {
       this.startIdleTimer();
-      // Forward verbatim as a `pi/event` envelope so the web layer
-      // can render the "agent 已就绪（5 分钟后自动休眠）" hint per
-      // PRD §4.3 (InputBar subscribes via `client.on('event', …)`
-      // and matches on `payload.event === 'agent_settled'`). The
-      // forward is unconditional — out-of-spec arrivals (e.g.
-      // duplicate settle while `idle`) reach web regardless; the
-      // hint UI's own `phase !== 'idle'` guard in ChatView.tsx
-      // prevents re-showing once phase has moved on, so a stale
-      // duplicate is harmless. The wire shape matches the general
-      // event forwarder below (`type` stripped into `payload.data`,
-      // `agent_settled` carries no payload → `data: {}`).
+      // Forward verbatim so the web layer can render the
+      // "agent 已就绪（5 分钟后自动休眠）" hint. The forward is
+      // unconditional — the web hint UI's own `phase !== 'idle'`
+      // guard prevents re-showing once phase has moved on.
       this.onOutbound({
         v: PROTOCOL_VERSION,
         kind: 'pi',
@@ -1289,8 +1158,7 @@ export class PiProcessManager {
     // ExtensionUIRouter (4-class blocking or 5-class fire-and-forget,
     // per PRD §2.4). The router's `handleEventFromPi` keeps its old
     // `{event, data}` shape — we just pass the raw event (minus
-    // `type`) as `data` so `data.method` / `data.id` line up with
-    // pi's native shape.
+    // `type`) as `data`.
     if (t === 'extension_ui_request') {
       this.extensionUIRouter.handleEventFromPi({
         event: 'extension_ui_request',
@@ -1299,11 +1167,9 @@ export class PiProcessManager {
       return;
     }
 
-    // Every other event — `message_start`, `message_update`,
-    // `message_end`, `agent_start`, `agent_end`, `turn_start`,
-    // `turn_end`, `queue_update`, etc. — forwards verbatim as a
-    // `pi/event` envelope. The web layer dispatches by
-    // `payload.event` name (WsClient.handlePiEvent).
+    // Every other event forwards verbatim as a `pi/event` envelope.
+    // The web layer dispatches by `payload.event` name
+    // (WsClient.handlePiEvent).
     this.onOutbound({
       v: PROTOCOL_VERSION,
       kind: 'pi',
@@ -1319,46 +1185,26 @@ export class PiProcessManager {
    *  wrapped in a `snapshot` envelope (PRD §1.5); every other reply
    *  is forwarded to the caller as a `command_result` envelope.
    *
-   *  W2 review follow-up: the snapshot envelope uses
-   *  `{ command 不存在, payload: { messages } }` per
-   *  `SnapshotEnvelope` in `protocol/pi.ts`. The `messages` array
-   *  is whatever pi sent in `frame.data.messages` (pi's native
-   *  `get_messages` returns the array directly; we don't reshape).
-   *
-   *  W3 review follow-up: the reply's `reply_to` field comes from
-   *  the outstanding-commands table keyed by pi's echoed `id`. When
-   *  the id matches a bridge-initiated entry (handshake get_state)
-   *  we consume the response locally; when it matches a web-initiated
-   *  entry we forward with `reply_to = webEnvelopeId`; when it
-   *  doesn't match (stale reply, or pi omitted the id) we fall back
-   *  to a fresh UUID so the envelope shape is still valid. */
+   *  The reply's `reply_to` field comes from the outstanding-commands
+   *  table keyed by pi's echoed `id`. When the id matches a
+   *  bridge-initiated entry (handshake get_state) we consume the
+   *  response locally; when it matches a web-initiated entry we
+   *  forward with `reply_to = webEnvelopeId`; when it doesn't match
+   *  (stale reply, or pi omitted the id) we fall back to a fresh
+   *  UUID so the envelope shape is still valid. */
   private handlePiResponse(frame: Extract<StdoutFrame, { type: 'response' }>): void {
-    // Look up the originating command before any branch decision —
-    // the handshake-get_state case consumes the entry without
-    // forwarding, every other branch reads the same entry for
-    // its `reply_to`.
     const matched = frame.id !== undefined ? this.outstandingCommands.get(frame.id) : undefined;
     if (matched !== undefined) {
       this.outstandingCommands.delete(frame.id as string);
     }
 
-    // S-7 review follow-up: bridge-initiated entries (the handshake
-    // `get_state` we sent in `writeHandshakeGetState`) MUST be
-    // consumed locally regardless of `frame.success`. The previous
-    // code only matched `frame.command === 'get_state' && frame.success`
-    // — a failure reply (success=false) fell through to the
-    // command_result forwarder below, which used `matched.webEnvelopeId`
-    // (a bridge-internal UUID generated in `writeHandshakeGetState`)
-    // as `reply_to`. Web could never match that — the reply was
-    // leaked as a phantom command_result pointing at a UUID nobody
-    // sent. The fix: if the matched entry is bridge-initiated, the
-    // reply is ours to consume — success drives the handshake
-    // completion, failure (the child couldn't answer a basic
-    // get_state request) forces the bridge into exited because
-    // such a child is effectively unusable.
+    // Bridge-initiated entries (the handshake `get_state` we sent in
+    // `writeHandshakeGetState`) MUST be consumed locally regardless
+    // of `frame.success`. A failure reply means the child couldn't
+    // answer a basic get_state request — such a child is effectively
+    // unusable, so we force exited.
     if (matched?.bridgeInitiated === true) {
       if (frame.command === 'get_state' && frame.success) {
-        // Handshake completion (PRD §2.3 + roadmap §4.1 ⚠).
         this.completeHandshake();
       } else {
         // Bridge-initiated failure: child can't even answer get_state,
@@ -1375,19 +1221,17 @@ export class PiProcessManager {
     }
 
     if (frame.command === 'get_state' && frame.success) {
-      // Handshake completion (PRD §2.3 + roadmap §4.1 ⚠). Reachable
-      // only when `matched` is undefined (stale get_state reply with
-      // no outstanding entry) — the bridge-initiated path above
-      // covers the live outstanding case. Keeping the check defensive:
-      // a stray success get_state from a previous child still
-      // completes the handshake rather than forwarding as
-      // command_result.
+      // Reachable only when `matched` is undefined (stale get_state
+      // reply with no outstanding entry) — the bridge-initiated
+      // path above covers the live outstanding case. A stray
+      // success get_state from a previous child still completes
+      // the handshake rather than forwarding as command_result.
       this.completeHandshake();
       return;
     }
     if (frame.command === 'get_messages') {
-      // W2: `get_messages` carries messages in `frame.data.messages`
-      // per pi's native shape; the bridge wraps it in a snapshot
+      // `get_messages` carries messages in `frame.data.messages` per
+      // pi's native shape; the bridge wraps it in a snapshot
       // envelope (no `command` field, just `{ messages: [...] }`).
       // When the id isn't in our outstanding table we still emit a
       // snapshot — the wire shape is fixed by `SnapshotEnvelope`,
@@ -1407,19 +1251,12 @@ export class PiProcessManager {
       });
       return;
     }
-    // Forward all other replies as `command_result` envelopes. The
-    // shared module's zod schema validates the shape (the bridge is
-    // allowed to pass through any string for `command`).
-    //
-    // error normalization: pi's RPC contract emits `error` as a raw
-    // string (verified against `@earendil-works/pi-coding-agent@
-    // 0.85.1` `dist/modes/rpc/rpc-mode.js:38`), but the shared
-    // `CommandResultPayloadSchema` requires `error: { code: string,
-    // message: string }`. Passing the raw string through verbatim
-    // caused worker to refuse the envelope with `payload.error
-    // expected object, received string`. `normalizePiError` handles
-    // all four shapes (undefined / string / `{code,message}` /
-    // other) and returns `undefined` so the field is omitted when
+    // Forward all other replies as `command_result` envelopes.
+    // Error normalization: pi's RPC contract emits `error` as a raw
+    // string, but the shared `CommandResultPayloadSchema` requires
+    // `error: { code: string, message: string }`. `normalizePiError`
+    // handles all four shapes (undefined / string / `{code,message}`
+    // / other) and returns `undefined` so the field is omitted when
     // the reply was actually successful.
     const replyTo = matched?.webEnvelopeId ?? randomUUID();
     const normalizedError = normalizePiError(frame.error);
@@ -1466,9 +1303,7 @@ export class PiProcessManager {
       // same 5min `IDLE_TIMEOUT_MS` countdown that the running
       // phase uses for `agent_settled`, so "user is sitting on a
       // ChatView but hasn't typed" reaps the child identically to
-      // "user typed something and pi went idle". The `idle` phase
-      // is excluded from this gate (already running the timer);
-      // spawning/exited are also excluded (no live child).
+      // "user typed something and pi went idle".
       this.startReadyIdleTimer();
     }
   }
@@ -1488,8 +1323,6 @@ export class PiProcessManager {
     }
     this.clearIdleTimer();
     this.idleTimer = this.setTimer(() => this.killIdleChild(), this.idleTimeoutMs);
-    // No phase transition here — ready → idle is what the timer
-    // firing achieves via killIdleChild → exited.
     logger.info(`ready-phase idle timer armed (${this.idleTimeoutMs}ms, 裁定 C)`);
   }
 
@@ -1530,23 +1363,15 @@ export class PiProcessManager {
     // after the child exited would call forceExitedAfterSpawnFailure
     // on a clean exited state.)
     this.clearSpawnTimer();
-    // W3: drop the outstanding-commands table — every entry it held
+    // Drop the outstanding-commands table — every entry it held
     // pointed at a command written to (or queued for) the now-dead
     // child. Carrying them across a crash-restart would let a future
-    // pi response for a DIFFERENT id accidentally match a stale key
-    // (e.g. the next session reuses the same uuid). Commands that
-    // are still meaningful to web are recovered via §2.7 spawn
-    // triggers on the next request, not via phantom replies.
+    // pi response for a DIFFERENT id accidentally match a stale key.
     this.outstandingCommands.clear();
-    // Task 05: drop any pending extension UI requests + their
-    // timeout mirrors. Without this, a crash-restarted child would
-    // inherit a stale blocked_on set (pointers to a dead child's
-    // request ids) and web would see ghost dialogs in the next
-    // session_state broadcast. clearAll() emits one final broadcast
-    // so web sees the cleared state immediately (the
-    // transitionTo('exited') below emits a SECOND broadcast — both
-    // are valid; the first carries `blocked_on: []`, the second
-    // carries `phase: 'exited'` + cleared blocked_on).
+    // Drop any pending extension UI requests + their timeout mirrors.
+    // Without this, a crash-restarted child would inherit a stale
+    // blocked_on set and web would see ghost dialogs. clearAll()
+    // emits one final broadcast (transitionTo below emits a second).
     this.extensionUIRouter.clearAll();
     // Drop the deferred queue (its commands never landed; web may
     // retry on the next spawn-trigger).
@@ -1564,12 +1389,11 @@ export class PiProcessManager {
       // so web sees the transition before the new process reports
       // `spawning`; otherwise the brief `exited` blip is invisible.
       //
-      // S6 review follow-up: if a crash happened while spawn-trigger
-      // commands were queued, web has no way to know those commands
-      // never landed — the bridge went exited → spawning → (crash)
-      // and the queue was silently cleared. Log a warn so operators
-      // can correlate "I sent X, then nothing" with a child crash,
-      // and so a future web retry logic has a sentinel to surface.
+      // If a crash happened while spawn-trigger commands were queued,
+      // web has no way to know those commands never landed — the
+      // bridge went exited → spawning → (crash) and the queue was
+      // silently cleared. Log a warn so operators can correlate
+      // "I sent X, then nothing" with a child crash.
       if (previousPhase === 'spawning' && droppedDeferred > 0) {
         logger.warn(
           `queued commands dropped during spawn crash, web should retry (${droppedDeferred} command(s))`,
@@ -1612,9 +1436,9 @@ export class PiProcessManager {
    *  the shared zod schema will accept it downstream.
    *
    *  `blocked_on` is read from the router, which is the single
-   *  source of truth for the pending set (task 05 split). When the
-   *  router has no pending entries we OMIT the field entirely so
-   *  the wire stays compact (PRD §1.2: "缺省视为空数组"). */
+   *  source of truth for the pending set. When the router has no
+   *  pending entries we OMIT the field entirely so the wire stays
+   *  compact (PRD §1.2: "缺省视为空数组"). */
   private broadcastSessionState(): void {
     const blockedOn = this.extensionUIRouter.getBlockedOn();
     const payload: SessionStatePayload = {
@@ -1622,9 +1446,7 @@ export class PiProcessManager {
       ...(blockedOn.length > 0 ? { blocked_on: blockedOn } : {}),
       // M4 (ADR-0010 §演进规则 (a)): session_state carries the
       // work_dir so the web's ChoicePage level=2 can render it
-      // directly without a separate session_list query. The
-      // SessionSessionLayer wrapper injects the `session` envelope
-      // field; we own the payload field here.
+      // directly without a separate session_list query.
       work_dir: this.workDir,
     };
     this.onOutbound({
@@ -1646,34 +1468,27 @@ export class PiProcessManager {
    *  shape evidence + the upstream source citation). Calling this
    *  twice replaces the previous timer (only one idle timer should
    *  be active at a time — PRD §2.3 says "计时窗口内收到新任务则重置").
-   *  previous timer (only one idle timer should be active at a time —
-   *  PRD §2.3 says "计时窗口内收到新任务则重置").
    *
-   *  W5/W6: gated on `phase === 'running'` only. Per PRD §2.3 the
+   *  Gated on `phase === 'running'` only. Per PRD §2.3 the
    *  state machine enumerates ONLY `running →(agent_settled)→ idle`;
    *  receiving `agent_settled` in `ready` is out-of-spec — `ready`
    *  means "no work has been done yet" (the first prompt hasn't been
    *  sent), so the idle-kill semantic ("we finished work, no one's
-   *  around") doesn't apply. We still log a debug line + transition
-   *  if it somehow arrives in `ready`, but no timer is armed: a
-   *  stale ready phase must not silently SIGTERM a perfectly idle
-   *  pi child. In `spawning` / `exited` / `idle` the event is also
-   *  ignored — there's no child to kill (exited), the timer is
-   *  already running and a second arm would double-fire (idle), or
-   *  we're mid-spawn and any SIGTERM would race the handshake
-   *  (spawning). Critically we must NOT call `clearIdleTimer`
-   *  before this gate: doing so would tear down a still-valid
-   *  timer (e.g. the first agent_settled armed it, the second
-   *  arrives while we're still `idle` and should be ignored). */
+   *  around") doesn't apply. In `spawning` / `exited` / `idle` the
+   *  event is also ignored — there's no child to kill (exited), the
+   *  timer is already running and a second arm would double-fire
+   *  (idle), or we're mid-spawn and any SIGTERM would race the
+   *  handshake (spawning). Critically we must NOT call
+   *  `clearIdleTimer` before this gate: doing so would tear down a
+   *  still-valid timer (e.g. the first agent_settled armed it, the
+   *  second arrives while we're still `idle` and should be ignored). */
   private startIdleTimer(): void {
     if (this.phase !== 'running') {
       // Out-of-spec arrival — log once + bail without touching
-      // any active timer. The original code would have armed a
-      // timer anyway, which could SIGTERM a freshly-spawned
-      // child that hasn't accepted its first prompt yet (PRD §2.3
-      // R1 修正: spawn 期到达的 agent_settled 误杀合法 running
-      // 进程) — OR cancel a still-valid idle timer when a duplicate
-      // `agent_settled` lands while we're already in `idle`.
+      // any active timer. This prevents a freshly-spawned child
+      // that hasn't accepted its first prompt yet from being
+      // SIGTERMed, and prevents a duplicate `agent_settled` from
+      // canceling a still-valid idle timer.
       logger.info(
         `agent_settled ignored — phase=${this.phase} (only armed in 'running' per PRD §2.3)`,
       );
@@ -1752,28 +1567,13 @@ export class PiProcessManager {
           this.handleGetState(env.id);
           break;
         case 'list_directories':
-          // M4 task 05: directory-browser control command. Pure fs
-          // operation — does NOT need a pi process, NEVER triggers a
-          // spawn. Lives in the manager temporarily until task 06
-          // moves control-family commands into the dedicated
-          // BridgeSessionLayer (the same refactor will move
-          // work_dir_* and session_list). For now, it sits next to
-          // get_state because both are "answer without spawn" control
-          // types whose semantics are independent of the pi state
-          // machine.
-          //
           // Defensive narrow-validate: the shared schema marks
-          // `path` as `string | undefined`, but the dispatcher
-          // sits before the schema's type assertions in some
-          // legacy code paths and after in others (task 06 will
-          // unify on a single schema gate). A future worker
-          // forwarding mode (e.g. JSON-with-comments envelopes,
-          // or a worker that serialises untyped payloads) could
-          // pass a non-string `path` here. Reject anything other
-          // than `string` or `undefined` with `invalid_envelope`
-          // — cheap to check, prevents `path.resolve(<number>)`
-          // from throwing a TypeError that would otherwise
-          // surface as a generic internal error.
+          // `path` as `string | undefined`, but we widen through
+          // `unknown` here. Reject anything other than `string` or
+          // `undefined` with `invalid_envelope` — cheap to check,
+          // prevents `path.resolve(<number>)` from throwing a
+          // TypeError that would otherwise surface as a generic
+          // internal error.
           const pathField = (env.payload as { path?: unknown }).path;
           if (pathField !== undefined && typeof pathField !== 'string') {
             this.onOutbound({
@@ -1793,9 +1593,9 @@ export class PiProcessManager {
             });
             break;
           }
-          // M4 task 06 migration: list_directories handler has moved
-          // to BridgeSessionLayer (alongside work_dir_* commands).
-          // Drop on the floor here; session-layer handles it.
+          // list_directories handler has moved to BridgeSessionLayer
+          // (alongside work_dir_* commands). Drop on the floor here;
+          // session-layer handles it.
           break;
         // Other control types (`handshake`, `ping`, `pong`,
         // `session_state`, `session_list`, `result`, `error`) are
@@ -1899,14 +1699,11 @@ export class PiProcessManager {
    *  read — per PRD §2.3 broadcasts are triggered by writes + state
    *  changes; get_messages is neither).
    *
-   *  W1 review follow-up: the optional `since` cursor is now passed
-   *  through to the pi-side command verbatim. The wire cost is one
-   *  optional field — `JSON.stringify` already drops `undefined`,
-   *  so the absence case is identical to before. M3 recovery
-   *  protocol stays at "full snapshot" (PRD §非目标 lists
-   *  incremental recovery as deferred to M+); this is just a
-   *  passthrough so a future build can flip on `since` without
-   *  re-touching the manager.
+   *  The optional `since` cursor is passed through to the pi-side
+   *  command verbatim. M3 recovery protocol stays at "full snapshot"
+   *  (PRD §非目标 lists incremental recovery as deferred to M+);
+   *  this is just a passthrough so a future build can flip on
+   *  `since` without re-touching the manager.
    *  // TODO(M+): since 增量同步，见 PRD §非目标 */
   private handleGetMessages(id: string, since: string | undefined): void {
     const cmd: DeferredCommand =
@@ -1925,24 +1722,15 @@ export class PiProcessManager {
    *  running transition. `get_messages` is a read — per PRD §2.3
    *  the state machine enumerates "首个 prompt / steer / follow_up"
    *  as the transition trigger; reads stay in whatever phase they
-   *  arrived in. The bridge-side broadcast principle (PRD §2
-   *  "广播原则: get_messages 不触发 session_state 广播") reinforces
-   *  this — a read should never cause a phase transition.
+   *  arrived in.
    *
-   *  W5 review follow-up: `clearIdleTimer()` runs at the top of
-   *  this handler as a defensive coverall. The `idle` branch below
-   *  also clears explicitly via `transitionTo('running')`'s
-   *  preconditions, but the early coverall catches any future
-   *  spawn-migration path that bypasses the transition (e.g. a
-   *  future "force respawn from idle" admin command). It is a
-   *  no-op when the timer is null. The `spawnNow()` path inside
-   *  the `exited` branch also benefits: even though the timer
-   *  is normally null at exited time, an admin-triggered path
-   *  (not implemented today) could leave it dangling across the
-   *  spawn transition — the coverall makes that class of bug
-   *  impossible. */
+   *  `clearIdleTimer()` runs at the top of this handler as a
+   *  defensive coverall. The `idle` branch below also clears
+   *  explicitly via the transition, but the early coverall catches
+   *  any future spawn-migration path that bypasses the transition.
+   *  It is a no-op when the timer is null. */
   private handleSpawnTrigger(cmd: DeferredCommand): void {
-    // W3: every web-initiated command gets an outstanding entry
+    // Every web-initiated command gets an outstanding entry
     // BEFORE we write to pi, so a pi response echoing the id can
     // always find its webEnvelopeId. The entry persists across
     // the spawning → ready transition (the command may be
@@ -1956,11 +1744,9 @@ export class PiProcessManager {
 
     const isWrite = isWriteCommand(cmd.type);
 
-    // W5 coverall: clear any active idle timer before any
-    // spawning-side effect. Idle-side writes do this explicitly
-    // via the transition below; this is a safety net for the
-    // exited/spawning paths and any future spawn-migration
-    // branches.
+    // Coverall: clear any active idle timer before any
+    // spawning-side effect. Safety net for the exited/spawning
+    // paths and any future spawn-migration branches.
     if (isWrite) this.clearIdleTimer();
 
     if (this.phase === 'exited') {
@@ -1995,7 +1781,7 @@ export class PiProcessManager {
    *  phase on abort (pi handles the actual transition via its
    *  internal abort handling + subsequent agent_settled).
    *
-   *  W3: the non-exited branch registers the abort id in the
+   *  The non-exited branch registers the abort id in the
    *  outstanding table so the pi response (when it arrives) can
    *  correlate `reply_to = webEnvelopeId`. The exited branch
    *  emits its own command_result synchronously with the right
@@ -2025,7 +1811,7 @@ export class PiProcessManager {
     this.writeCommand({ type: 'abort', id });
   }
 
-  /** `pi/extension_ui_response` — task 05 router delegation.
+  /** `pi/extension_ui_response` — router delegation.
    *  The router owns the wire translation (web shape → pi native
    *  three-state), the pending Map lookup with atomic-clear, the
    *  timeout cancellation, and the broadcast. The manager's only
@@ -2051,11 +1837,7 @@ export class PiProcessManager {
    *  Translation step: `DeferredCommand` carries the web-wire field
    *  names (`content`, optional `since`), but pi's stdin expects
    *  pi-native names (`message`, no `since`). `translateToPiWire`
-   *  performs the rename + drop before JSON.stringify — see that
-   *  function's JSDoc for the exact rules and the regression
-   *  rationale (writing `content` directly here was the M3 task
-   *  06 root cause of pi's `TypeError: Cannot read properties of
-   *  undefined (reading 'startsWith')` on first prompt). */
+   *  performs the rename + drop before JSON.stringify. */
   private writeCommand(cmd: DeferredCommand): void {
     const child = this.child;
     if (child === null) {
@@ -2102,7 +1884,7 @@ export class PiProcessManager {
 
   /** Currently blocked-on entries (snapshot, not a live reference).
    *  Reads from the router — the router is the single source of
-   *  truth for the pending set (task 05 split). */
+   *  truth for the pending set. */
   getBlockedOn(): BlockedOnEntryPayload[] {
     return this.extensionUIRouter.getBlockedOn();
   }

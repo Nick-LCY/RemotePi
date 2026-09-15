@@ -48,11 +48,9 @@
 // ## Atomic writes
 //
 // Every `saveStateFile` call writes to a `.tmp` sibling first, then
-// `rename`s over the destination. The two operations are
-// `fs.writeFileSync` + `fs.renameSync`; this relies on POSIX rename
-// replacement semantics (Linux), and on POSIX `rename` being atomic
-// for files on the same filesystem (the tmp + destination always
-// share a parent directory, so this holds by construction).
+// `rename`s over the destination. POSIX `rename` is atomic for files
+// on the same filesystem; the tmp + destination always share a parent
+// directory, so this holds by construction.
 //
 // Concurrency boundary: atomicity is a single-writer, single-process
 // guarantee. The bridge assumes one bridge process writes a given
@@ -74,28 +72,14 @@
 // either succeeds atomically on both sides, or fails atomically on
 // both sides.
 //
-// ## M3 migration
-//
 // `migrateFromBridgeConfig` runs at startup, AFTER `loadBridgeConfig`
-// has already validated `bridge.json` (the M3 three-piece check on
-// `work_dir` is the gate). When `state.json` is missing AND
-// `bridge.json` had a `work_dir` field, we:
-//   1. validate the `work_dir` still passes the M3 three-piece check
-//      (paranoid re-validation; M3 already did this, but a
-//      power-cycled disk / permissions change between bridge
-//      invocations could leave the previously-valid path
-//      unreadable),
-//   2. write a fresh `state.json` containing `[work_dir]`,
-//   3. log a one-time info line so operators can see the migration
-//      happened.
-//
-// `bridge.json` is NEVER written by the migration — the user's
-// hand-edited config stays untouched (PRD §2.1: "不回写 bridge.json
-// （用户手编配置不被运行时污染）"). Operators can delete `work_dir`
-// from their `bridge.json` after a successful migration; the next
-// startup will see the state file and skip the migration (idempotent
-// — `migrateFromBridgeConfig` only fires when `state.json` is
-// missing).
+// has already validated `bridge.json`. `bridge.json` is NEVER written
+// by the migration — the user's hand-edited config stays untouched
+// (PRD §2.1: "不回写 bridge.json （用户手编配置不被运行时污染）").
+// Operators can delete `work_dir` from their `bridge.json` after a
+// successful migration; the next startup will see the state file
+// and skip the migration (idempotent — `migrateFromBridgeConfig`
+// only fires when `state.json` is missing).
 
 import {
   accessSync,
@@ -234,9 +218,7 @@ export function loadStateFile(statePath: string): string[] {
  *  The parent directory of `statePath` is created with
  *  `mkdirSync({ recursive: true })` if it does not exist. This
  *  covers the "fresh install" path: a developer who has never run
- *  the bridge before will have no `~/.config/remotepi/` directory,
- *  and the M3 migration (or the first `work_dir_add` after a fresh
- *  install) is the first time the bridge touches the path.
+ *  the bridge before will have no `~/.config/remotepi/` directory.
  *  We deliberately do NOT create the directory during a load
  *  attempt — the loader is read-only and a missing file is the
  *  "first run" path (returns `[]`). Directory creation happens
@@ -251,17 +233,15 @@ export function loadStateFile(statePath: string): string[] {
  *  Atomicity is a single-writer, single-process guarantee: the bridge
  *  assumes one bridge process writes this state file. The fixed `.tmp`
  *  sibling is not protected against two bridge processes sharing an XDG
- *  root; inter-process locking is outside this task's scope.
- *
- *  This relies on POSIX rename replacement semantics (Linux). */
+ *  root; inter-process locking is outside this task's scope. */
 export function saveStateFile(statePath: string, workDirs: readonly string[]): void {
   const payload: StateFile = {
     schema_version: STATE_SCHEMA_VERSION,
     work_dirs: [...workDirs],
   };
-  // Two-space indentation is what the existing `bridge.json` examples
-  // in the docs use; matching that keeps the on-disk look
-  // consistent across the two config files.
+  // Two-space indentation matches the existing `bridge.json` examples
+  // in the docs; keeps the on-disk look consistent across the two
+  // config files.
   const json = JSON.stringify(payload, null, 2);
   const tmpPath = `${statePath}.tmp`;
   // Ensure the parent directory exists. `recursive: true` makes
@@ -349,12 +329,11 @@ export function validateWorkDir(workDir: string): void {
  *          migration happened.
  *       4. Return `[work_dir]`.
  *   - If `state.json` is missing AND `bridgeConfig.work_dir` is
- *     absent / empty (defensive input handling; M3's schema uses
- *     `min(1)` and therefore cannot produce an empty string) → return
- *     `[]` and write a fresh `state.json` containing `[]`. The empty
- *     state is the "post-migration, user-hasn't-added-anything-yet"
- *     baseline; writing it to disk means subsequent starts don't have
- *     to re-evaluate the "should I migrate?" question.
+ *     absent / empty → return `[]` and write a fresh `state.json`
+ *     containing `[]`. The empty state is the
+ *     "post-migration, user-hasn't-added-anything-yet" baseline;
+ *     writing it to disk means subsequent starts don't have to
+ *     re-evaluate the "should I migrate?" question.
  *
  *  `bridge.json` is NEVER written. PRD §2.1: "不回写 bridge.json
  *  （用户手编配置不被运行时污染）". The migration is a one-way
@@ -367,9 +346,6 @@ export function migrateFromBridgeConfig(
   log: Logger = logger,
 ): string[] {
   // Fast path: state.json already exists → no migration, just load.
-  // The file is parsed and shape-validated, then every persisted path
-  // is checked with the M3 three-piece directory validation before
-  // start() is allowed to continue.
   if (existsSync(statePath)) {
     const workDirs = loadStateFile(statePath);
     // A persisted state file may have been hand-edited or may point
@@ -419,10 +395,9 @@ export function migrateFromBridgeConfig(
 }
 
 /** In-memory store for the work_dirs list. Owns the atomic write +
- *  rollback semantics so callers (the eventual `BridgeSessionLayer`
- *  in tasks 05/06) can fire-and-forget `add` / `remove` and trust
- *  that the on-disk state matches the in-memory state on success,
- *  or neither is touched on failure.
+ *  rollback semantics so callers can fire-and-forget `add` / `remove`
+ *  and trust that the on-disk state matches the in-memory state on
+ *  success, or neither is touched on failure.
  *
  *  Construction:
  *   - `new WorkDirStore(initialWorkDirs, statePath)` — caller has
@@ -480,11 +455,7 @@ export class WorkDirStore {
    *  control.md §6.7 + task 04 "重复添加幂等 (no-op + ok:true)". */
   add(path: string): void {
     if (this.workDirs.includes(path)) {
-      // Idempotent no-op — the path is already saved. Skipping the
-      // save here means a duplicate add never touches the disk,
-      // which is what an operator would expect: "I told the bridge
-      // to add /home/me/code twice, why did it rewrite state.json
-      // the second time?"
+      // Idempotent no-op — the path is already saved.
       return;
     }
     validateWorkDir(path);
@@ -527,9 +498,7 @@ export class WorkDirStore {
     // Capture the original state for rollback before mutating, so
     // the splice is symmetric (re-insert at the same position, not
     // appended to the end). Position matters: the work_dirs list
-    // has a stable order on disk, and a remove-then-crash-then-
-    // restart cycle that re-appends the entry at the end would
-    // subtly change the order web clients see.
+    // has a stable order on disk.
     const removed = this.workDirs.splice(index, 1)[0]!;
     try {
       saveStateFile(this.statePath, this.workDirs);

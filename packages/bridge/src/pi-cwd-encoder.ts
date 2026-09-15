@@ -10,9 +10,8 @@
 // Authoritative algorithm: pi's
 // `@earendil-works/pi-coding-agent` `dist/core/session-manager.js`
 // `getDefaultSessionDirPath`. The precise transcription + step-by-step
-// rationale (and the bridge↔pi drift history this fix closes) is on
-// the `encodeCwdForPi` JSDoc below — read it before changing
-// anything in this file.
+// rationale is on the `encodeCwdForPi` JSDoc below — read it before
+// changing anything in this file.
 //
 // `sessionSubdir` wraps the encoded token with `--…--`,
 // `resolvePiAgentDir` mirrors pi's own `config.js getAgentDir()`,
@@ -119,14 +118,12 @@ export function resolvePiAgentDir(env: NodeJS.ProcessEnv = process.env): string 
  *  key that ties a bridge restart to an existing pi session: the
  *  bridge scans `<agentDir>/sessions/--<token>--/` for the latest
  *  `.jsonl` and passes it as `--session <path>` on the next spawn.
- *  The placeholder encoding `encodeURIComponent(cwd).replace(/%/g,'')`
+ *  A placeholder encoding like `encodeURIComponent(cwd).replace(/%/g,'')`
  *  produced tokens like `2Fhome2Fsankabox` while pi's real algorithm
- *  produces `home-sankabox` — the bridge scanned an empty directory
- *  and spawned without `--session`, so every idle kill / restart
- *  started a fresh session instead of resuming the latest one.
- *  The ground-truth regression test below pins this to the actual
- *  disk state of `~/.pi/agent/sessions/` so a future drift in either
- *  side (bridge OR pi) shows up immediately. */
+ *  produces `home-sankabox` — the bridge would scan an empty
+ *  directory and spawn without `--session`, so every idle kill /
+ *  restart started a fresh session instead of resuming the latest
+ *  one. */
 export function encodeCwdForPi(cwd: string): string {
   const resolved = path.resolve(cwd);
   const stripped = resolved.replace(/^[/\\]/, '');
@@ -136,14 +133,9 @@ export function encodeCwdForPi(cwd: string): string {
 /** Build the per-cwd session subdirectory inside pi's agent root:
  *  `<agentDir>/sessions/--<encoded>--/`.
  *
- *  The leading + trailing `--` are part of pi's convention (see
- *  roadmap §4.6) — they make the directory name unambiguous when
- *  scanned alphabetically and easy to recognise in `ls` output.
- *
- *  Parameter name was previously `isolationDir`; semantics are
- *  identical — it's just the directory the bridge + pi agree to
- *  share. Tests still pass a tmp dir here, the production caller
- *  passes `resolvePiAgentDir()`. */
+ *  The leading + trailing `--` are part of pi's convention — they
+ *  make the directory name unambiguous when scanned alphabetically
+ *  and easy to recognise in `ls` output. */
 export function sessionSubdir(agentDir: string, cwd: string): string {
   return path.join(agentDir, 'sessions', `--${encodeCwdForPi(cwd)}--`);
 }
@@ -155,21 +147,19 @@ export function sessionSubdir(agentDir: string, cwd: string): string {
  *
  *  We anchor on the `.jsonl` suffix (the stable shape) and split at
  *  the LAST `_` in the stem, so timestamps that happen to contain
- *  underscores (a real-pi regression / future format change) still
- *  parse cleanly and yield a sane uuid tiebreaker.
+ *  underscores still parse cleanly and yield a sane uuid tiebreaker.
  *
- *  S7 review follow-up: the timestamp prefix must look like an
- *  ISO date (`YYYY-MM-DD...`) before we trust it. Files like
- *  `strayname.jsonl` or `notadate_uuid.jsonl` previously parsed
- *  with `timestamp = "strayname"` / `"notadate"`, which then
- *  sorted lexicographically against real ISO timestamps — the
- *  non-ISO prefix could win the "latest" race and poison the
- *  session scanner with a garbage file. We now require the
- *  prefix to match `/^\d{4}-\d{2}-\d{2}/`; anything else is
- *  treated as unparseable and dropped from the ranking. The
- *  shape is intentionally narrow (digits + hyphens, no
- *  timezone letters) — real pi timestamps always start
- *  `YYYY-MM-DDTHH-MM-SS` and we only need to weed out operator
+ *  The timestamp prefix must look like an ISO date (`YYYY-MM-DD...`)
+ *  before we trust it. Files like `strayname.jsonl` or
+ *  `notadate_uuid.jsonl` would otherwise parse with
+ *  `timestamp = "strayname"` / `"notadate"`, which then sorted
+ *  lexicographically against real ISO timestamps — the non-ISO prefix
+ *  could win the "latest" race and poison the session scanner with a
+ *  garbage file. We require the prefix to match
+ *  `/^\d{4}-\d{2}-\d{2}/`; anything else is treated as unparseable
+ *  and dropped from the ranking. The shape is intentionally narrow
+ *  (digits + hyphens, no timezone letters) — real pi timestamps always
+ *  start `YYYY-MM-DDTHH-MM-SS` and we only need to weed out operator
  *  droppings. */
 function parseSessionFilename(name: string): { timestamp: string; uuid: string } | null {
   if (!name.endsWith('.jsonl')) return null;
@@ -192,8 +182,7 @@ function parseSessionFilename(name: string): { timestamp: string; uuid: string }
  *  "Most recent" = (1) latest timestamp prefix by lexicographic order
  *  (ISO timestamps sort the same as chronological), then (2) tiebreak
  *  by latest mtime, then (3) tiebreak by uuid descending (stable,
- *  deterministic, no random tiebreak). This matches PRD §2.5 / 已敲定
- *  决策 4 verbatim.
+ *  deterministic, no random tiebreak).
  *
  *  We use synchronous `fs` calls because the bridge only ever runs
  *  this once at spawn time and we want the spawn to wait until the
@@ -228,10 +217,7 @@ export function findLatestSession(subdir: string): string | null {
   if (enriched.length === 0) return null;
 
   // Sort: newest timestamp first; tiebreak by latest mtime; final
-  // tiebreak by uuid descending (deterministic across runs — without
-  // it, two files with the same timestamp + same mtime would pick
-  // based on the underlying sort's stability, which JS Array#sort
-  // doesn't guarantee).
+  // tiebreak by uuid descending (deterministic across runs).
   enriched.sort((a, b) => {
     if (a.timestamp < b.timestamp) return 1;
     if (a.timestamp > b.timestamp) return -1;
@@ -255,15 +241,9 @@ export function sessionArgv(subdir: string): string[] {
   return latest === null ? [] : ['--session', latest];
 }
 
-/** Convenience for the auth.json check at startup. Kept here (next to
- *  the other fs-based helpers) so the bridge has one fs touch-point
- *  for pi's agent directory tree. Returns true iff the file exists
- *  and is a regular file (or symlink to one) — a directory or broken
- *  symlink at this path is treated as missing.
- *
- *  Caller is expected to pass `<agentDir>/auth.json`; the helper
- *  itself is path-agnostic (it just stats whatever it's handed) so
- *  tests can drive it against arbitrary fixtures. */
+/** Convenience for the auth.json check at startup. Returns true iff
+ *  the file exists and is a regular file (or symlink to one) — a
+ *  directory or broken symlink at this path is treated as missing. */
 export function authJsonExists(authJsonPath: string): boolean {
   if (!existsSync(authJsonPath)) return false;
   try {
