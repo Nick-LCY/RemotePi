@@ -1,0 +1,290 @@
+# M6 — Web UI 全量视觉重做（reference 蓝本）
+
+> 状态：**已定稿**（2026-09-22 用户裁定 D1-D12 全部就位；前置 M5 第一块 + 第二块均 2026-09-22 用户口头确认全部完成，单测基线 **977** / 全仓 **1502** / 集成 **32** / e2e **9 spec × 2**）。本 PRD 范围：**packages/web + docs 增量**；**协议 / worker / bridge / shared 零改动**（M5 实施期挂账 M+ 候选 (a) Tailwind scanner 22 条精简 / (b) DirectoryBrowser 桌面端 backdrop / (d) HamburgerIcon 双处重复 / (g) 存量 ~1280 行 CSS 全量迁 Tailwind——M6 任务 02 / 04 兑现 (d) + (g)）。
+>
+> **决策记录 D1-D12 已全部定稿**（2026-09-22 用户裁定），写作时不再保留「待裁定」字样；细节值 / 颜色 token / 组件映射表落地见 [[tasks/m6/01-token-retranslation.md|任务 01]] / [[tasks/m6/02-css-full-migration.md|任务 02]] / [[tasks/m6/07-dialoghost-styling.md|任务 07]] / [[tasks/m6/09-statusbar-choice-recovery.md|任务 09]]。
+
+## 背景
+
+M1–M5 全 done（34 + 8 = 42 任务全部落地）。M5 第二块已实施收官（2026-09-12），10 个 web commit + 用户并行 ADR-0013 bridge 修复，单测基线 977 / 全仓 1502 / e2e 9 spec × 2 全绿；2026-09-22 用户口头确认全部完成（push 状态未独立核实）。web 端积累下列短板，构成本轮 M6 立项的动机：
+
+1. **色板偏冷蓝偏深（accent `#2c5cff` / `#6c8cff`）+ 暗色 token 命名零散**——M5 第二块 13 token 是「patch 化」历史延续，未走「reference 蓝本 + WCAG AA 校色」重做；视觉语言与 reference（线性冷蓝调 + 深石板暗色）有偏差。
+2. **AppShell 双 elevated 卡 + Sidebar 300px + 品牌双行块形态缺失**——M5 任务 06 的 Sidebar 是 280px + 顶部 `<h1>RemotePi</h1>` 单行品牌位，与 reference 的「深石板方块图标 + 副文」双行块差异显著。
+3. **MessageList 仍是旧垂直堆叠 plain row（无气泡 / 无头像 / 无时间戳）**——M5 任务 01 / 02 完成 markdown 渲染 + textarea 升级，但消息气泡 / AI 头像 / 时间戳格式未做；与 reference 的「AI size-8 深石板头像 + 气泡 rounded-2xl + 时间戳 10px 灰」形态差距明显。
+4. **Sidebar / MobileTopBar 双处内联汉堡 SVG 重复**（M5 M+ (d)）——M5 任务 06 + 07 各定义一份 `HamburgerIcon` SVG；本轮 M6 兑现 M+，引 `lucide-react` 单一图标库。
+5. **存量 ~1280 行 styles.css 散落各组件**（M5 M+ (g)）——M5 第二块触碰处顺手迁，**未**做全量迁移；本轮 M6 任务 02 兑现 M+，按组件分批**全量迁** Tailwind utilities（styles.css 收缩为 `@import` + `@theme` + `:root` / `@media dark` 20+ token + ~70 行不可 utility 化的 `@layer components` 语义类）。
+6. **Sidebar 双处内联 SVG + 4 类弹窗分色 + toast 等 6 组件参考 reference 风格化**（M5 D7 defer）——本轮 M6 任务 04 / 07 / 08 / 09 统一 reference 形态语言。
+7. **暗色 token 未按 WCAG AA 校色**（M5 M+ (R3)）——dark border `#2a3140` 与 surface `#1a2030` 边差仅 5.4:1，部分 UI 元素临界；本轮 M6 任务 11 兑现，统一校色 + 焦点可及性核对。
+
+## 目标
+
+- **G1** 全局 accent 切换 reference 冷蓝 `#245bc4` 全家族（hover `#194da9` / soft `#f0f5ff` / ring `#eef4ff` / focus 边 `#7da1df` / `#9eb9e9`），暗色 accent 提亮为 `#6f9bff` / hover `#8aaeff` / soft `#1c2742`（D1）。
+- **G2** styles.css token 13 → 20+，含新增灰阶 token（muted-2 ~ muted-5）+ 边框双层（border / border-2 / border-3）+ state 色完整（connecting #87919d / online #1f9d55 / offline #c0392b）——所有颜色按 reference 蓝本重写并 token 化（D1 / D2）。
+- **G3** 引入 `lucide-react`（D3，用户裁定）——唯一新增 npm 依赖；删除 Sidebar / MobileTopBar 双处内联汉堡 SVG；组件图标统一走 lucide。
+- **G4** 全量迁 ~1280 行 styles.css → Tailwind utilities（D4）——styles.css 收缩为 `@import "tailwindcss";` + `@theme` 完整 var() 引用 + `:root` / `@media (prefers-color-scheme: dark)` 20+ token + ~70 行 `@layer components` 不可 utility 化的语义类。
+- **G5** AppShell 桌面态改 reference 双 elevated 卡（外层 bg + sidebar rounded-2xl border shadow-sm + main rounded-2xl border shadow-sm bg-white），sidebar 280→**300px**（D5），testid 全保（app-shell / app-shell-main / sidebar-toggle / sidebar-backdrop）。
+- **G6** Sidebar 重做：72px brand 双行块（深石板 `#17202b` 方块 size-9 rounded-xl + Terminal 白图标 + 「RemotePi」加粗 + 「远程开发工作台」11px 灰副文）+ 11px uppercase tracking-[0.12em] 分组标题 + session 行 reference 形态 + WorkDirs tab 当前目录 `bg-[#f0f5ff] text-[#245bc4]` 高亮 + 底部 BridgeStatusBar reference「远端连接」卡（Globe2 / Server / Bot 三节点 size-7 rounded-lg 白底 shadow-sm + emerald-300 连线 + emerald-500 节点 + animate-ping 心跳 + 「链路正常」10px emerald-600）+ 设置按钮简化行。
+- **G7** MessageList 气泡化（D6 / D11）——保留 `message-row` 容器 class + `message-role-{user|assistant}` 角色 class + 全部 testid **零增零删**；AI 行 `flex items-start gap-3` + size-8 深石板头像方块（Zap 图标）+ 名字行 + 气泡 `rounded-2xl rounded-tl-sm bg-[#f5f7f9] px-4 py-3 text-sm leading-6 text-[#4d5966]` + 时间戳 `text-[10px] text-[#a2aab3]`；用户行 `flex justify-end` + max-w-[80%] + 气泡 `rounded-2xl rounded-tr-sm bg-[#245bc4] text-white`；`.message-body` 仍是 textContent 父容器（e2e 01 / 02 / 08 流式连续性 / 角色断言 / tool 归并兼容）。
+- **G8** InputBar reference 形态：外壳 rounded-2xl border 常驻 `0 4px 18px rgba(23,32,43,0.06)` shadow（token 化 `--shadow-card`）+ focus-within:border-accent + focus-within:ring-4（`--accent-ring`），移除旧 2px outline 双焦点指示（统一单一焦点指示，键盘 focus-visible 语义保留）；发送钮 size-8 rounded-xl 深石板（Send 图标）；abort 红色形态；底部 helper 文案。
+- **G9** TokenModal reference 形态（rounded-2xl p-7 shadow-2xl max-w-[420px]）+ backdrop `bg-[#17202b]/45 backdrop-blur-[3px]` + 头部 size-11 rounded-xl tinted icon block（Hash 图标）+ input `h-11 rounded-xl bg-[#fafbfc] focus:border-[#7da1df] focus:ring-4`（token 化）+ 提交钮蓝填充 + 底部隐私说明文案。两模式逻辑 / testid / z-400 零改动。
+- **G10** 4 类弹窗 + toast 统一 reference modal 形态（D7）——confirm 绿 `#ecfdf5` / `#1f9d55`、select 琥珀 `#fef3c7` / `#d97706`、input/editor 蓝 `#eef4ff` / `#245bc4` tinted icon block；footer 按钮 primary 蓝填充 / cancel 白底描边；props 接口 / dispatcher / 倒计时 / testid 全集零改动。
+- **G11** DirectoryBrowser modal 化 reference 形态 + 路径条 inline code + entry 行 rounded-xl + **桌面端新增 backdrop**（z-250，深石板族，兑现 M5 M+ (b)）；移动全屏 sheet 沿用；testid 全保。
+- **G12** SessionStatusBar（白卡 pill 条 + phase badge tinted 小方块 + queue pills 浅灰小 pill）/ ChoiceLevel1/2Panel（极简提示卡）/ RecoveryView（in-flight 卡 + error 卡，仅样式，逻辑零改动——D12 + 雷区）reference 形态化。
+- **G13** 暗色对比度 WCAG AA 校色（任务 11）——正文 ≥4.5:1 / UI ≥3:1 实测；R3 已知临界点微调（dark border / accent-on-soft 等，±5% L 授权）；focus 可及性核对（单一焦点指示 + focus-visible 键盘路径）。
+- **G14** 质量门（任务 10）：
+  - 单测 **977 不回归** + 任务 01-11 新增合计（预估 +25 ~ +35）；
+  - 集成 **32 零回归**；
+  - e2e **9 spec × 2 连跑全绿**（预期改动 ≤3 行：spec 09/04 className 字符串断言与新容器 class 对齐）；
+  - typecheck **4 包绿** / lint **0 error** / `pnpm -r build` **4 包绿** + **记录实测体积对比基线**（D8：不设门槛，只记录）；
+  - testid 锚点零增零删；
+  - 协议 / worker / bridge / shared 零改动（git diff 实证）；
+  - M4 雷区零字节 diff（grep `useRecoveryGateMap | handleRefill | gateMapRef | RecoveryView | stem-refilled watcher` 仍仅命中既有位置）。
+
+## 非目标
+
+- **不破协议 v3**（D 锁版，2026-09-08）；本轮 wire 协议不变。
+- **不破既有功能 / 交互语义**：侧边栏双 tab、TokenModal 两模式（required 不可关 / closable 三路关）、移动端抽屉（<768px / 焦点陷阱 / 滚动锁 / z-index 栈 toast(100) < sidebar(200) < dialog-host(300) < token-modal(400)）、4 类阻塞弹窗、恢复仪式、DirectoryBrowser、markdown 三件套、textarea 自动增高 + IME 守卫、thinking / tool 默认折叠、toolResult 归并 pill。
+- **testid 锚点零增零删**——data-* 属性也全保（M5 D13 既有承诺延续）。
+- **不引 Radix / Base UI / shadcn / cva**——`lucide-react` 是本轮**唯一新增**依赖（D3）。
+- **不动 worker / bridge / shared / 协议**（D 包边界承诺）——纯 packages/web + docs 增量。
+- **M4 雷区零字节 diff**（D12 / 雷区）——`useRecoveryGateMap` / `handleRefill` / `RecoveryView` effect / connect 语义 / stem-refilled watcher 五处代码块不动；本轮 RecoveryView 仅样式重做，逻辑零改动。
+- **RecoveryView 逻辑零改动**（D12）——autoStartConsumedRef / useEffect / gateRef.current.retry() 等语义全保留；样式层只动 className / styles.css 对应规则。
+- **build 体积不设硬门槛**（D8）——只记录实测对比；当前基线 entry 266.98 KB raw / 77.87 KB gzip、CSS 32.67 KB / 6.92 KB。
+- **暗色触发方式不变**（D9）——`@media (prefers-color-scheme: dark)`，不加切换按钮。
+
+## 方案
+
+### §1 token 翻译（reference 蓝本 → CSS 变量）
+
+| 层 | light token | dark token | 用途 |
+|----|------------|------------|------|
+| **bg** | `--bg #f6f7f9` | `--bg #0e1218` | 应用底色 |
+| **surface** | `--surface #ffffff` | `--surface #1a2030` | 卡 / 面板背景 |
+| **surface-2** | `--surface-2 #f5f7f9` | `--surface-2 #222837` | 二级表面（输入条 / hover 浅底） |
+| **text** | `--text #17202b` | `--text #e6e9ee` | 正文 |
+| **muted** | `--muted #687482` | `--muted #9aa3ad` | 次级文本 |
+| **muted-2** | `--muted-2 #4d5966` | `--muted-2 #cbd0d6` | 消息正文 |
+| **muted-3** | `--muted-3 #74808c` | `--muted-3 #a3acb5` | 三级 |
+| **muted-4** | `--muted-4 #87919d` | `--muted-4 #8b95a0` | 四级 |
+| **muted-5** | `--muted-5 #9aa3ad` | `--muted-5 #6f7a85` | 五级 |
+| **accent** | `--accent #245bc4` | `--accent #6f9bff` | 蓝 |
+| **accent-hover** | `--accent-hover #194da9` | `--accent-hover #8aaeff` | 蓝 hover |
+| **accent-soft** | `--accent-soft #f0f5ff` | `--accent-soft #1c2742` | 蓝软底 |
+| **accent-ring** | `--accent-ring #eef4ff` | `--accent-ring #1c2742` | 蓝 ring |
+| **border** | `--border #e4e8ed` | `--border #2a3140` | 一级边 |
+| **border-2** | `--border-2 #dfe4e9` | `--border-2 #353c4a` | 二级边 |
+| **border-3** | `--border-3 #edf0f3` | `--border-3 #202632` | 三级边 |
+| **code-bg** | `--code-bg #ffffff` | `--code-bg #222837` | 代码块底 |
+| **state-connecting** | `--state-connecting #87919d` | `--state-connecting #74808c` | 灰 |
+| **state-online** | `--state-online #1f9d55` | `--state-online #34d399` | 绿（emerald 调） |
+| **state-offline** | `--state-offline #c0392b` | `--state-offline #f87171` | 红 |
+| **shadow-card** | `--shadow-card 0 4px 18px rgba(23,32,43,0.06)` | `--shadow-card 0 4px 18px rgba(0,0,0,0.4)` | 卡片阴影 |
+| **sidebar-width** | `--sidebar-width 300px` | `--sidebar-width 300px` | 侧栏宽度（D5：280→300） |
+
+完整落地值（落地时可能微调但保持 reference 调性）见 [[tasks/m6/01-token-retranslation.md|任务 01]]。
+
+### §2 组件映射（reference 蓝本 → 现有组件）
+
+| reference 组件 | 本项目现有组件 | 任务文件 | testid 处理 |
+|----------------|----------------|----------|-------------|
+| Sidebar 双行 brand | Sidebar 顶部 | [[tasks/m6/04-sidebar-brand-lucide.md\|04]] | 沿用 / 新增 `sidebar-brand` |
+| Session row（reference 形态） | Sidebar Sessions tab 行 | 04 | `session-row` 沿用，容器 class 调整（视觉不可见） |
+| WorkDir row（高亮蓝块） | Sidebar WorkDirs tab 行 | 04 | `work-dir-row` 沿用，active 高亮换 token 化蓝 |
+| BridgeStatusBar（reference「远端连接」卡） | Sidebar 底部 BridgeStatusBar | 04 | `bridge-status[data-state]` 沿用，data-state 语义不变 |
+| MessageList bubble | ChatView MessageList | [[tasks/m6/05-chatview-bubbles-inputbar.md\|05]] | `message-row` / `message-role-{user\|assistant}` / `message-body` / `message-draft` 全保留；视觉不可见 |
+| AI 头像（size-8 深石板方块 + Zap 图标） | ChatView AI 行 | 05 | 新增 `message-avatar` 视觉装饰（非断言用），不计入 testid 锚点契约 |
+| 时间戳（10px 灰） | ChatView 每行底部 | 05 | 视觉装饰 |
+| InputBar（外壳 rounded-2xl shadow） | ChatView InputBar | 05 | `input-field` / `input-send` / `input-abort` 沿用 |
+| TokenModal（reference 卡片形态） | TokenModal | [[tasks/m6/06-token-modal.md\|06]] | `token-modal` / `token-modal-backdrop` / `token-modal-close` / `token-input` / `token-submit` 沿用 |
+| 4 类 DialogHost 弹窗 | DialogHost | [[tasks/m6/07-dialoghost-styling.md\|07]] | `dialog-host` / `dialog-{type}` / `dialog-{type}-{action}` 全集沿用 |
+| Toast | DialogHost toast | 07 | `dialog-host-toast` 沿用 |
+| DirectoryBrowser modal | DirectoryBrowser | [[tasks/m6/08-directory-browser-modal.md\|08]] | `directory-browser*` 全集沿用；桌面端新增 backdrop z-250 |
+| SessionStatusBar（白卡 pill 条） | SessionStatusBar | [[tasks/m6/09-statusbar-choice-recovery.md\|09]] | `phase-indicator[data-phase]` 沿用 |
+| ChoiceLevel1Panel / ChoiceLevel2Panel | ChoicePage 收口后的 Panel | 09 | `work-dir-list` / `session-list` / `new-session-button` 沿用 |
+| RecoveryView（仅样式） | RecoveryView | 09 | `recovery-in-flight` / `recovery-error-card[data-error]` 沿用；逻辑零改动（D12 / 雷区） |
+| AppShell 双 elevated 卡 | AppShell | [[tasks/m6/03-app-shell-rebuild.md\|03]] | `app-shell` / `app-shell-main` / `sidebar-toggle` / `sidebar-backdrop` 沿用 |
+
+> **核心约束（D6）**：保留 `message-row` 容器 class + `message-role-{user|assistant}` 角色 class + 全部 testid 零增零删；气泡化只在容器内部做；e2e 01 / 02 / 08 流式连续性 / 角色断言 / tool 归并兼容——实施后必须真跑 e2e 01 / 02 验证。
+
+### §3 CSS 全量迁（D4，~1280 行 → utilities + ~70 行 @layer components）
+
+按组件分批（任务 02 承载，组件序与写盘顺序）：
+
+1. **App** → 根层 + body + reset
+2. **ChatView** → `.message-row` / `.message-role-*` / `.message-body` / `.message-draft` / `.message-thinking-*` / `.message-tool-*`
+3. **AssistantMessageBody** → `.assistant-text-segment` / `.markdown-*`
+4. **dialogs 全套** → `.dialog-*` / `.dialog-host-*` / `.dialog-host-toast` / `.dialog-error`
+5. **DirectoryBrowser** → `.directory-browser-*`
+6. **ChoicePanels** → `.choice-page-*` / `.status-*`
+7. **壳层零散遗留** → BridgeStatusBar / SessionStatusBar / Sidebar / MobileTopBar / TokenModal / AppShell
+
+**保留 ~70 行 `@layer components` 语义类**（不可 utility 化）：
+
+- `.markdown` 自定义滚动条（`overflow: auto` + `::-webkit-scrollbar` 等需要伪元素选择器）；
+- 折叠箭头 `.details-arrow` 等的 `::before` 伪元素；
+- `<details><summary>` marker 隐藏（`summary::-webkit-details-marker { display: none }`）；
+- `.visually-hidden`（无障碍 sr-only）；
+- `.message-tool-result-error` / `.message-tool-result-orphan` 修饰符（M5 验收期 gap 修复沉淀的语义类）。
+
+**单测影响**：assistant-message-body.test.tsx 12 处 class 字面断言改 regex 形态；token-modal.test.ts 4 处 regex 核对。
+
+**顺手 `@source not` 精简 22 条未消费 utility**（M5 M+ (a) 兑现）。
+
+### §4 图标 lucide（D3）
+
+`pnpm --filter @remotepi/web add lucide-react`——**唯一新增**依赖。
+
+| 位置 | 现状 | 改为 |
+|------|------|------|
+| Sidebar 顶部 brand 双行块 | （新增） | `<Terminal size={18} />` |
+| Sidebar 新建按钮 | （手绘或无） | `<Plus size={16} />` |
+| Sidebar 底部 BridgeStatusBar | （手绘三节点） | `<Globe2 size={14} />` / `<Server size={14} />` / `<Bot size={14} />` + 自绘连接线 / 节点 / 心跳 |
+| Sidebar 设置按钮 | （手绘或无） | `<Settings size={16} />` |
+| MobileTopBar 汉堡 | 内联 SVG | `<Menu size={20} />` / 关闭 `<X size={20} />` |
+| MobileTopBar 关闭抽屉 | 内联 SVG | `<X size={20} />` |
+| ChatView AI 头像 | （新增） | `<Zap size={16} />` |
+| InputBar 发送钮 | （手绘或无） | `<Send size={16} />` |
+| InputBar abort 钮 | （手绘或无） | `<Square size={14} />` 或 `<StopCircle size={16} />` |
+| TokenModal 头部 icon block | （新增） | `<Hash size={20} />` |
+| DirectoryBrowser 头部 | （手绘或无） | `<FolderOpen size={18} />` |
+| 4 类 DialogHost icon block | （手绘或无） | `<HelpCircle />` / `<ListChecks />` / `<PenLine />` / `<Edit3 />`（按 dialog 类型映射） |
+| Toast icon | （手绘或无） | `<Info />` / `<AlertTriangle />` / `<CheckCircle2 />`（按 toast 类型映射） |
+
+> **M5 M+ 挂账 (d) 兑现**：删除 Sidebar / MobileTopBar 双处内联汉堡 SVG，统一 `lucide-react` 的 `Menu` / `X`。
+
+### §5 响应式（D9 沿用 M5 D12）
+
+断点 / 抽屉 / 焦点陷阱 / 滚动锁 / z-index 栈 / modal 全屏 sheet 全部沿用 M5 任务 07 落地形态；本轮 M6 **不修改响应式架构**——只重做组件视觉，按 reference 形态。
+
+### §6 暗色（D2 + D9）
+
+- 触发方式：`@media (prefers-color-scheme: dark)`，**不变**；
+- 20+ token 全部提供 dark 变体（见 §1 表）；
+- WCAG AA 校色由 [[tasks/m6/11-dark-contrast-a11y.md|任务 11]] 实测 + ±5% L 微调授权；
+- focus 可及性核对（单一焦点指示 + focus-visible 键盘路径）。
+
+### §7 testid 契约（D6 / 雷区）
+
+**零增零删**——所有现有 `data-testid` 属性与 `data-*` 属性全保；e2e 9 spec 全部沿用既有锚点。
+
+新增 testid（如 Sidebar `sidebar-brand` 装饰容器 / ChatView AI 头像 `message-avatar` 装饰）**不计入本契约**——这些是视觉装饰容器，不参与 e2e 断言。
+
+e2e 9 spec 预期改动 **≤3 行**：spec 04 / 09 在某些 `className` 字符串 evaluate 断言上需对齐新容器 class（不涉及 testid）。
+
+## 验收标准
+
+- [ ] styles.css token 13 → 20+ 落地（任务 01），全部按 reference 蓝本调性 + WCAG AA 校色
+- [ ] 引入 `lucide-react`（任务 04 落地），删除双处内联汉堡 SVG（M5 M+ (d) 兑现）
+- [ ] ~1280 行 styles.css 全量迁 Tailwind utilities（任务 02），styles.css 收缩为 `@import + @theme + :root + @media dark 20+ token + ~70 行 @layer components`
+- [ ] `@source not` 精简 22 条未消费 utility（M5 M+ (a) 兑现）
+- [ ] AppShell 桌面态双 elevated 卡（任务 03），sidebar 300px（D5）
+- [ ] Sidebar brand 双行块（任务 04，D5）
+- [ ] MessageList 气泡化（任务 05，D11）+ 全部 testid / message-row / message-role-* 沿用
+- [ ] InputBar reference 形态（任务 05）+ 单一焦点指示
+- [ ] TokenModal reference 形态（任务 06）+ 两模式逻辑 / testid / z-400 零改动
+- [ ] 4 类 DialogHost + toast 统一 reference modal（任务 07，D7 分色表）
+- [ ] DirectoryBrowser modal 化（任务 08）+ 桌面端新增 backdrop（M5 M+ (b) 兑现）
+- [ ] SessionStatusBar / ChoiceLevel1/2Panel / RecoveryView reference 形态（任务 09，RecoveryView 逻辑零改动——D12 / 雷区）
+- [ ] 全量验证（任务 10）：单测 977 不回归 + 新增 ≥25 / 集成 32 / e2e 9 spec × 2 全绿（spec 改动 ≤3 行）/ typecheck 4 包 / lint 0 error / build 4 包 / **实测体积对比基线（D8）**
+- [ ] 暗色对比度 WCAG AA 校色（任务 11）：正文 ≥4.5:1 / UI ≥3:1 实测
+- [ ] testid 锚点零增零删
+- [ ] 协议 / worker / bridge / shared 零改动（git diff 实证）
+- [ ] M4 雷区零字节 diff（grep 实证 `useRecoveryGateMap | handleRefill | gateMapRef | RecoveryView | stem-refilled watcher` 仍仅命中既有位置）
+
+## 任务拆分
+
+| # | 标题 | 依赖 |
+|---|------|------|
+| [[tasks/m6/01-token-retranslation.md\|01]] | styles.css token 13 → 20+（reference 蓝本翻译 + 灰阶 token 体系 + @theme var() 引用映射） | — |
+| [[tasks/m6/02-css-full-migration.md\|02]] | ~1280 行 styles.css 全量迁 Tailwind utilities（按组件分批）+ @source not 精简 | 01 |
+| [[tasks/m6/03-app-shell-rebuild.md\|03]] | AppShell 桌面态双 elevated 卡 + sidebar 300px（D5）+ 移动端 backdrop 风格化 | 01 / 02 |
+| [[tasks/m6/04-sidebar-brand-lucide.md\|04]] | 引 lucide-react（D3）+ Sidebar 重写（brand 双行块 + session row + BridgeStatusBar reference「远端连接」卡） | 01 / 02 / 03 |
+| [[tasks/m6/05-chatview-bubbles-inputbar.md\|05]] | MessageList 气泡化（D11）+ InputBar reference 形态 + 单一焦点指示（R4） | 01-04 |
+| [[tasks/m6/06-token-modal.md\|06]] | TokenModal reference 形态（卡片 + backdrop + tinted icon block + input token 化） | 01-04 |
+| [[tasks/m6/07-dialoghost-styling.md\|07]] | 4 类 DialogHost + toast 统一 reference modal（D7 分色表）+ footer 按钮形态 | 01-04 |
+| [[tasks/m6/08-directory-browser-modal.md\|08]] | DirectoryBrowser modal 化 + 路径条 inline code + 桌面端新增 backdrop（z-250） | 01-04 / 06 |
+| [[tasks/m6/09-statusbar-choice-recovery.md\|09]] | SessionStatusBar + ChoiceLevel1/2Panel + RecoveryView（仅样式，D12 / 雷区） | 01-04 |
+| [[tasks/m6/10-e2e-validation-docs.md\|10]] | 全量验证（单测 / 集成 / e2e 9 spec × 2 / typecheck / lint / build / 体积记录）+ 文档收尾 | 01-09 |
+| [[tasks/m6/11-dark-contrast-a11y.md\|11]] | 暗色对比度 WCAG AA 单测（styles-token-contrast ~10 条）+ R3 临界点校色 + focus 可及性 | 10 |
+
+**依赖链**：
+
+```
+01 → 02 → (03, 04)
+            ├─→ 05
+            ├─→ 06 ──→ 08
+            └─→ 07
+        (ChoicePanels/Sidebar 等)
+03 / 04 → 09
+01-09 → 10 → 11
+```
+
+- **01** 独立（CSS token 基础设施）；
+- **02 → 01**（全量迁前置 token 落地）；
+- **03 / 04 → 01 / 02**（双 elevated 卡 + Sidebar + lucide 引入）；
+- **05 → 01-04**（气泡化与 InputBar 引用 token + Sidebar 已就绪）；
+- **06 → 01-04**（TokenModal 引用 token）；
+- **07 → 01-04**（DialogHost 引用 token）；
+- **08 → 01-04 / 06**（DirectoryBrowser 引用 token + Modal 形态参考）；
+- **09 → 01-04**（StatusBar / ChoicePanel / RecoveryView 引用 token；RecoveryView 逻辑零改动——D12 / 雷区）；
+- **10 → 01-09**（全量验证 + 文档收尾）；
+- **11 → 10**（暗色对比度单测 + 校色 + a11y 核对）。
+
+**实施期串行执行**：`01 → 02 → (03 → 04) → 05 / 06 / 07 → 08 / 09 → 10 → 11`（避免 styles.css + App.tsx 冲突；03 / 04 逻辑独立但写盘顺序沿用先底层后上层）。
+
+总计 11 个任务（区间 8-12 内）。
+
+## 交付约定
+
+沿用 [[prds/m2-tunnel.md#交付约定|M2 / M3 / M4 / M5 交付约定]]：所有任务（01-11）只在本地 commit，不 push。10 落地后由用户本地验证（lint / typecheck / test / build + e2e 9 spec × 2 全绿 + 三端联调手测通过）→ 用户手动 `git push origin main` → Actions 首跑 CD（沿用 M5 deploy.yml）。
+
+## 用户操作清单
+
+- **新增配置项**：无（仅新增 `lucide-react` 一个 npm 依赖，由任务 04 落地）。
+- **验证**：访问 `https://remote-pi.sankabox.com/`（无 hash；旧书签 `#<token>` 形态仍直接失效）→ 首次弹 TokenModal required（reference 形态）→ 粘贴 token → reload → 进入 sidebar（reference brand 双行块 + 双 tab + 远端连接卡）→ 多会话切换走 sidebar → 输入框 reference 形态（气泡圆角外壳 + shadow + focus 蓝 ring）→ 弹窗 / DirectoryBrowser / StatusBar / RecoveryView 全部 reference 形态。
+- **联调手测**：在 PR / current-state 区确认 `pnpm run lint && pnpm run typecheck && pnpm -r build && pnpm test` + `pnpm test:e2e` 全绿；build 实测体积对比基线（entry 266.98 / CSS 32.67 raw，**不设门槛**，只记录）。
+- **新形态手测验收清单**（沿用 M5 §10 风格，11 任务 done 后由用户验收）：
+  - reference accent 蓝全家族视觉一致（按钮 / 链接 / focus ring / 弹窗分色）；
+  - Sidebar 300px + brand 双行块 + 远端连接卡三节点动画；
+  - MessageList AI / User 气泡布局 + AI 头像 + 时间戳；
+  - InputBar 圆角外壳 + shadow + focus 单一指示；
+  - 4 类弹窗 + toast + DirectoryBrowser reference 形态 + tinted icon block 分色；
+  - SessionStatusBar pill 条 + queue pills + phase badge tinted；
+  - RecoveryView 逻辑零改动 + 卡片样式；
+  - 暗色模式对比度（任意关键页目测 + Lighthouse a11y）；
+  - 移动端抽屉（<768px）所有视觉元素正常显示。
+
+## 风险与实现时核实
+
+- **M4 雷区零字节 diff 守护**（R1，D12）——`useRecoveryGateMap` / `handleRefill` / `RecoveryView` effect / connect 语义 / stem-refilled watcher 五处代码块不动；任务 09 明确不下移 gateMapRef 到 AppShell / Sidebar；RecoveryView 逻辑零改动。
+- **message-row / message-role-* / message-body / message-draft 锚点零增零删**（R2，D6）——气泡化只在容器内部做；e2e 01 / 02 / 08 流式连续性 / 角色断言 / tool 归并兼容——实施后必须真跑 e2e 01 / 02 / 08 验证。
+- **暗色 token 校色**（R3，D2 + 任务 11）——dark border `#2a3140` 与 surface `#1a2030` 边差仅 5.4:1 临界，UI 元素可能在 `#9aa3ad` muted 上 hover 时不够；任务 11 提供 ±5% L 微调授权（如 `#2a3140` → `#3a4255` 方向）。
+- **焦点指示单一化**（R4，任务 05）——移除旧 2px outline 双焦点指示，统一 focus-within:border-accent + focus-within:ring-4（`--accent-ring`）；键盘 focus-visible 语义保留（`:focus-visible` 与 `:focus-within` 区分）。
+- **build 体积**（R5，D8）——不设硬门槛，只记录；预估：lucide-react tree-shaking 后约 +5 ~ +10 KB gzip（仅使用 ~15 个图标）；token 翻译不增体积（仅变量名调整）；全量迁 CSS 后总 CSS 体积可能微降（utilities 与 @layer components 合并后更紧凑）。
+- **lucide-react tree-shaking**（R6）——v4 已支持 ESM tree-shaking；确认 Vite 默认按需打包。
+- **Dark 模式下 modal backdrop 透明度**（R7）——`bg-[#17202b]/45` 在 light 模式为深石板族；在 dark 模式视觉仍可识别（与 dark bg `#0e1218` 对比足够）；任务 11 实测确认。
+- **brand 双行块字号断点**（R8）——「RemotePi」加粗 + 「远程开发工作台」11px 灰副文；移动端 sidebar 300px 收纳完整，移动抽屉内沿用。
+- **CSS 不可 utility 化清单**（R9）——`.markdown` 自定义滚动条伪元素 + `.details-arrow` 的 `::before` + `<details><summary>` marker 隐藏 + `.visually-hidden` + `.message-tool-result-error` / `.message-tool-result-orphan` 共 ~70 行 @layer components 保留；任务 02 末尾清单必须落实。
+- **协议 / worker / bridge / shared 零改动**（硬约束）——本轮 wire 协议不变；与协议破锁无关。
+- **RecoveryView 逻辑零改动**（硬约束，D12）——`autoStartConsumedRef` / `useEffect` / `gateRef.current.retry()` 等语义全保留；样式层只动 className / styles.css 对应规则。
+
+## 相关
+
+[[architecture/protocol/README.md|协议 v3]] / [[architecture/protocol/envelope.md]] / [[architecture/protocol/control.md]] / [[architecture/protocol/pi.md]] / [[prds/m1-infrastructure.md|M1 PRD]] / [[prds/m2-tunnel.md|M2 PRD]] / [[prds/m3-single-session.md|M3 PRD]] / [[prds/m4-multi-session.md|M4 PRD]] / [[prds/m5-uiux.md|M5 PRD]] / [[roadmap.md]] / [[current-state.md]] / [[tasks/README.md|tasks/README]] / [[architecture/decisions/0009-headless-browser-e2e.md|ADR-0009]]（e2e 套路）/ [[conventions/README.md#data-testid-约定packages-web--testse2e|data-testid 约定]] / [[glossary.md]] / [[tasks/m4/08-web-multi-session-store.md|tasks/m4/08]] SessionBucket + 雷区代码基线。
+
+## 决策记录（D1-D12 全部定稿，2026-09-22 用户裁定）
+
+> **写作时不再保留「待裁定」字样**——D1-D12 全部已定稿。
+
+1. **D1 accent 统一 reference 蓝**（用户裁定）——accent `#245bc4` 全家族（hover `#194da9` / 浅底 `#f0f5ff` / focus 光晕 `#eef4ff` / focus 边 `#7da1df` / `#9eb9e9`）；替换现 `#2c5cff` / `#6c8cff`；暗色 accent 提亮为 `#6f9bff` / hover `#8aaeff` / soft `#1c2742` / ring `#1c2742`。
+2. **D2 暗色 20+ token 全表落地**（用户裁定）——按 planner 提案全表落地（深蓝调 `#0e1218` bg / `#1a2030` surface / `#222837` surface-2 / `#e6e9ee` text / `#9aa3ad` muted / `#2a3140` border 等）；WCAG AA 由任务 11 实测校色，±5% L 微调授权已给。
+3. **D3 引入 lucide-react**（用户裁定，否决 planner 手绘图标方案）——`pnpm --filter @remotepi/web add lucide-react`；各任务直接 `import { Terminal, ... } from 'lucide-react'`；顺带删除 Sidebar / MobileTopBar 双处重复的 HamburgerIcon 内联 SVG（M5 M+ 挂账 (d) 兑现）。
+4. **D4 存量 ~1280 行 styles.css legacy CSS 全量迁 Tailwind utilities**（用户裁定）——M5 M+ 挂账 (g) 兑现；styles.css 收缩为 `@import "tailwindcss";` + `@theme` 完整 var() 引用 + `:root` / `@media (prefers-color-scheme: dark)` 20+ token + ~70 行不可 utility 化的 `@layer components` 语义类。
+5. **D5 sidebar 280px→300px + brand 双行块**（用户裁定）——`--sidebar-width 300px`；brand 双行块 = size-9 rounded-xl 深石板 `#17202b` 方块 + Terminal 白图标 + 「RemotePi」加粗 + 「远程开发工作台」11px 灰副文。
+6. **D6 保留 message-row / message-role-* 容器 class + 全部 testid 零增零删**（用户裁定）——气泡化只在容器内部做；e2e 01 / 02 / 08 流式连续性 / 角色断言 / tool 归并兼容。
+7. **D7 reference 无对应物的组件用同套语言风格化**（用户裁定）——映射表见 [[tasks/m6/07-dialoghost-styling.md|任务 07]] / [[tasks/m6/09-statusbar-choice-recovery.md|09]]；SessionStatusBar（白卡 pill 条 + phase badge tinted + queue pills 浅灰小 pill）/ 4 类弹窗统一 reference modal + 按类型 tinted icon block 分色（confirm 绿 `#ecfdf5` / `#1f9d55`、select 琥珀 `#fef3c7` / `#d97706`、input/editor 蓝 `#eef4ff` / `#245bc4`）/ DirectoryBrowser modal / ChoicePage 极简提示卡 / RecoveryView 卡片。
+8. **D8 build 体积只记录实测值，不设硬门槛**（用户裁定 2026-09-22）——预算不需要太在意；基线 entry 266.98 KB raw / 77.87 gzip、CSS 32.67 KB / 6.92 gzip，交付时报告对比即可。
+9. **D9 暗色触发方式不变**（用户裁定）——`@media (prefers-color-scheme: dark)`，不加切换按钮。
+10. **D10 CSS 全量迁按组件分批**（用户裁定）——任务 02 承载，组件序：App→ChatView→AssistantMessageBody→dialogs→DirectoryBrowser→ChoicePanels→壳层组件。
+11. **D11 MessageList 完整仿 reference 气泡布局**（用户裁定）——AI 行 `flex items-start gap-3` + size-8 深石板头像方块（Zap 图标）+ 名字行 + 气泡 `rounded-2xl rounded-tl-sm bg-[#f5f7f9] px-4 py-3 text-sm leading-6 text-[#4d5966]` + 时间戳 `text-[10px] text-[#a2aab3]`；用户行 `flex justify-end` + max-w-[80%] + 气泡 `rounded-2xl rounded-tr-sm bg-[#245bc4] text-white`。
+12. **D12 RecoveryView 仅样式重做，逻辑零改动**（用户裁定）——`autoStartConsumedRef` / `useEffect` / `gateRef.current.retry()` 等零改动；M4 雷区五处（`useRecoveryGateMap` / `handleRefill` / `RecoveryView` effect / connect 语义 / stem-refilled watcher）零字节 diff。

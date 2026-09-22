@@ -29,7 +29,7 @@ status: todo        # todo | doing | done | blocked
 
 ## 任务索引
 
-按里程碑分组，每行一个任务文件 wikilink + 短标题。**M1–M5 共 42 个任务，全部 `done`**（M5 第一块 2026-09-11 实施收官 3/3 done 待 push 手测；M5 第二块 2026-09-12 实施收官 5/5 done，10 个 web commit + 用户并行 ADR-0013 bridge 修复，待 push + 新形态全量手测验收）。里程碑汇总见 [[current-state.md]]。
+按里程碑分组，每行一个任务文件 wikilink + 短标题。**M1–M5 共 42 个任务，全部 `done`**（M5 第一块 2026-09-11 实施收官 3/3 done，2026-09-22 用户口头确认全部完成；M5 第二块 2026-09-12 实施收官 5/5 done，10 个 web commit + 用户并行 ADR-0013 bridge 修复，2026-09-22 用户口头确认全部完成）；**M6 — Web UI 全量视觉重做（reference 蓝本） 11 个任务全部 `todo`**（2026-09-22 用户裁定 D1-D12 全部定档；前置 M5 第一块 + 第二块 2026-09-22 用户口头确认全部完成）。里程碑汇总见 [[current-state.md]]。
 
 ### M1 — 基建（5/5 done）
 
@@ -77,18 +77,32 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/m4/09-docs-sync.md|09 — docs 同步（envelope/control/pi 四文档 + ADR-0003 补注裁定 C + 钉子 4 + ADR-0007 关闭占用检测 + ADR-0010 校对 + current-state + getting-started「URL hash 三字段示例」）+ RECOVERY_TIMEOUT_MS 漂移更正（6 处文档常量名统一更正，grep 实证零残留）]]
 - [[tasks/m4/10-e2e-and-validation.md|10 — E2E 场景 (d) 目录浏览 + (e) 多端各看各的 + (f) 跨会话 blocked_on 隔离 + (g) 钉子 3 work_dir_remove 活会话 + (h) 钉子 2 pending 键控 + 既有 (a)(b)(c) retry 容错断言简化 + 三端联调手测清单]]
 
-### M5 — UIUX 优化轮（第一块 3/3 done + 第二块 5/5 done，2026-09-12 全部实施收官，待 push + 线上手测验收）
+### M5 — UIUX 优化轮（第一块 3/3 done + 第二块 5/5 done，2026-09-12 全部实施收官，2026-09-22 用户口头确认全部完成）
 
-#### 第一块（3/3 done，2026-09-11 实施收官，待用户 push + 线上手测验收）
+#### 第一块（3/3 done，2026-09-11 实施收官，2026-09-22 用户口头确认全部完成）
 
 - [[tasks/m5/01-web-markdown-render.md|01 — web 渲染层结构化 + markdown 渲染 + thinking/tool 可折叠（含流式分段存储）]] ✅ done
 - [[tasks/m5/02-web-input-textarea.md|02 — InputBar textarea 升级（换行 + 自动增高 + IME 守卫）]] ✅ done
 - [[tasks/m5/03-e2e-and-validation.md|03 — E2E × 2 + 全量验证 + 文档收尾]] ✅ done
 
-#### 第二块（5/5 done，2026-09-12 实施收官，待用户 push + 新形态全量手测验收）
+#### 第二块（5/5 done，2026-09-12 实施收官，2026-09-22 用户口头确认全部完成）
 
 - [[tasks/m5/04-tailwind-v4-intro.md|04 — Tailwind v4 引入（preflight 全开 + `@layer components` 包裹存量 CSS）]] ✅ done
 - [[tasks/m5/05-token-storage.md|05 — tokenStorage + TokenModal + hash 模型收缩（彻底删除 token 维度）]] ✅ done
 - [[tasks/m5/06-app-shell-sidebar.md|06 — AppShell 双栏 + Sidebar + SessionStatusBar + DirectoryBrowser modal 化 + ChoicePage 收口]] ✅ done（依赖 04 / 05）
 - [[tasks/m5/07-mobile-drawer.md|07 — 手机适配：抽屉 + 汉堡 + 焦点陷阱 + 滚动锁 + modal 全屏化]] ✅ done（依赖 04 / 05 / 06）
 - [[tasks/m5/08-e2e-and-validation.md|08 — e2e 改写（localStorage seeding）+ 移动端新 spec + 全量验证 + 文档收尾]] ✅ done（依赖 04 / 05 / 06 / 07）
+
+### M6 — Web UI 全量视觉重做（reference 蓝本，11/11 todo，2026-09-22 用户裁定 D1-D12 全部定档）
+
+- [[tasks/m6/01-token-retranslation.md|01 — styles.css token 翻译（13 → 20+，reference 蓝本 + WCAG AA 校色）]] `todo`（无依赖）
+- [[tasks/m6/02-css-full-migration.md|02 — ~1280 行 styles.css 全量迁 Tailwind utilities（按组件分批）+ `@source not` 精简 22 条未消费 utility]] `todo`（依赖 01）
+- [[tasks/m6/03-app-shell-rebuild.md|03 — AppShell 桌面态双 elevated 卡 + sidebar 300px + 移动端 backdrop 风格化]] `todo`（依赖 01 / 02）
+- [[tasks/m6/04-sidebar-brand-lucide.md|04 — 引 lucide-react + Sidebar 重写（brand 双行块 + session row + BridgeStatusBar reference「远端连接」卡）]] `todo`（依赖 01 / 02 / 03）
+- [[tasks/m6/05-chatview-bubbles-inputbar.md|05 — MessageList 气泡化 + InputBar reference 形态 + 单一焦点指示]] `todo`（依赖 01-04）
+- [[tasks/m6/06-token-modal.md|06 — TokenModal reference 形态（卡片 + backdrop + tinted icon block + input token 化）]] `todo`（依赖 01-04）
+- [[tasks/m6/07-dialoghost-styling.md|07 — 4 类 DialogHost + toast 统一 reference modal（D7 分色表）+ footer 按钮形态]] `todo`（依赖 01-04）
+- [[tasks/m6/08-directory-browser-modal.md|08 — DirectoryBrowser modal 化 + 路径条 inline code + 桌面端新增 backdrop（z-250）]] `todo`（依赖 01-04 / 06）
+- [[tasks/m6/09-statusbar-choice-recovery.md|09 — SessionStatusBar + ChoiceLevel1/2Panel + RecoveryView reference 形态（仅样式，D12 / 雷区）]] `todo`（依赖 01-04）
+- [[tasks/m6/10-e2e-validation-docs.md|10 — 全量验证（单测 / 集成 / e2e 9 spec × 2 / typecheck / lint / build / 体积记录）+ 文档收尾]] `todo`（依赖 01-09）
+- [[tasks/m6/11-dark-contrast-a11y.md|11 — 暗色对比度 WCAG AA 单测 + R3 临界点校色 + focus 可及性]] `todo`（依赖 10）

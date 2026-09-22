@@ -1,6 +1,6 @@
 # M5 — UIUX 优化轮（任务索引）
 
-> 详见 [[prds/m5-uiux.md|M5 PRD]]。本目录 8 个任务——**第一块 3 个全部 done**（2026-09-11 实施收官，5 commits 待 push + 1 gap 修复 → 单测基线 **790**）；**第二块 5 个全部 done**（2026-09-12 实施收官，10 个 web commit + 用户并行 ADR-0013 bridge 修复 → 单测基线 **977** / 全仓 **1502**），**待用户 push + 线上手测验收**（新形态全量手测：侧边栏双 tab / token 设置弹窗 / 手机抽屉 / 移动全流程）。
+> 详见 [[prds/m5-uiux.md|M5 PRD]]。本目录 8 个任务——**第一块 3 个全部 done**（2026-09-11 实施收官，2026-09-22 用户口头确认全部完成；5 commits + 1 gap 修复 → 单测基线 **790**）；**第二块 5 个全部 done**（2026-09-12 实施收官，2026-09-22 用户口头确认全部完成；10 个 web commit + 用户并行 ADR-0013 bridge 修复 → 单测基线 **977** / 全仓 **1502**）。
 
 ## 任务列表
 
@@ -10,7 +10,7 @@
 - [[tasks/m5/02-web-input-textarea.md|02 — InputBar textarea 升级（换行 + 自动增高 + IME 守卫）]] ✅ done（2026-09-11，commits `f28295f` + `0594767`）
 - [[tasks/m5/03-e2e-and-validation.md|03 — E2E × 2 + 全量验证 + 文档收尾]] ✅ done（2026-09-11，无新 commit，验证 + 文档收尾即本体）
 
-### 第二块（5/5 done，2026-09-12 实施收官，待 push + 线上手测验收）
+### 第二块（5/5 done，2026-09-12 实施收官，2026-09-22 用户口头确认全部完成）
 
 - [[tasks/m5/04-tailwind-v4-intro.md|04 — Tailwind v4 引入（preflight 全开 + `@layer components` 包裹存量 CSS）]] ✅ done（2026-09-12，commit `ec5b8e3`，CSS 16.68→25.37KB 远低于 +30KB 预算）
 - [[tasks/m5/05-token-storage.md|05 — tokenStorage + TokenModal + hash 模型收缩（彻底删除 token 维度）]] ✅ done（2026-09-12，commit `efe265f`，D9 用户裁定彻底删除 + D10 两模式 + W1 隐私模式移交任务 06）
