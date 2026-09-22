@@ -8,7 +8,7 @@
 // cancelled: true }` (no `value`).
 //
 // Countdown (when `entry.timeout` is present): render a header
-// showing "remaining Ns" + a progress bar. On expiry call
+// showing "remaining Ns" pill + a progress bar. On expiry call
 // `onTimeout()` — the bridge mirrors its own timeout; whichever
 // fires first wins and the loser is a no-op.
 //
@@ -19,9 +19,42 @@
 // background dialog the foreground — the countdown then resumes
 // at the correct point (remaining = (enqueuedAt + timeoutMs) -
 // now) instead of restarting from `timeoutMs`.
+//
+// ## Reference visual shape (M6 task 07 — D7 amber family)
+//
+//   - **Card** (desktop): `rounded-2xl bg-surface shadow-2xl
+//     w-full max-w-[420px]` (tokenized; matches TokenModal's
+//     T06 reference card shell).
+//   - **Header** tinted icon block:
+//     `size-11 rounded-xl bg-amber-soft text-amber` with a
+//     lucide `<ListChecks size={20} />` glyph (D7 amber family
+//     reserved for select — distinguishes "pick one of N" from
+//     confirm/input/editor).
+//   - **Title**: `text-base font-semibold tracking-tight`.
+//   - **Body**: `text-sm leading-6 text-muted` continuation
+//     of the entry message.
+//   - **Footer** buttons (shared across all 4 dialogs via the
+//     exported `DialogFooter`): primary `rounded-xl bg-accent
+//     h-10 px-4 text-sm font-semibold text-white
+//     hover:bg-accent-hover disabled:bg-accent-disabled
+//     disabled:cursor-not-allowed`; cancel `rounded-xl border
+//     border-border-2 bg-surface h-10 px-4 text-sm text-muted
+//     hover:bg-surface-2 disabled:bg-accent-disabled
+//     disabled:cursor-not-allowed`.
+//
+// ## testids (zero add / zero drop vs M5 baseline)
+//
+//   - `dialog-select` — container.
+//   - `dialog-select-option` — per-option label (and the radio
+//     input lives inside it).
+//   - `dialog-cancel` / `dialog-confirm-yes` — footer buttons
+//     (shared testid surface so DialogFooter can be reused).
+//   - `dialog-countdown*` / `dialog-error` — header countdown
+//     / error banner (D7 family of the existing testid surface).
 
 import { useEffect, useState } from 'react';
 import type { ChangeEvent } from 'react';
+import { ListChecks } from 'lucide-react';
 
 import type { BlockedOnEntryPayload } from '@remotepi/shared';
 
@@ -80,9 +113,10 @@ export function SelectDialog({
   };
 
   return (
-    <dialog
-      className="dialog dialog-select pointer-events-auto m-2 flex w-[min(420px,92vw)] flex-col rounded-lg border border-border bg-surface p-0 text-text shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
-      open
+    <div
+      className="dialog dialog-select pointer-events-auto m-2 flex w-[min(420px,92vw)] flex-col rounded-2xl bg-surface p-0 text-text shadow-2xl"
+      role="dialog"
+      aria-modal="true"
       aria-labelledby={`select-title-${entry.id}`}
       data-testid="dialog-select"
     >
@@ -92,14 +126,16 @@ export function SelectDialog({
         timeoutMs={entry.timeout}
         enqueuedAt={enqueuedAt}
         onTimeout={onTimeout}
+        icon={<ListChecks className="size-5" />}
+        iconClassName="size-11 rounded-xl flex items-center justify-center bg-amber-soft text-amber"
       />
       {errorMessage !== null ? (
-        <p className="dialog-error m-0 border-b border-border bg-state-offline/[0.12] px-3 py-2 text-[0.85rem] text-state-offline" role="alert" data-testid="dialog-error">
+        <p className="dialog-error m-0 border-b border-border bg-state-offline/10 px-4 py-2 text-[0.85rem] text-state-offline" role="alert" data-testid="dialog-error">
           {errorMessage}
         </p>
       ) : null}
-      <form onSubmit={handleSubmit} className="dialog-body flex flex-col gap-[0.65rem] px-[0.95rem] py-[0.85rem]">
-        <fieldset className="dialog-select-options m-0 flex flex-col gap-1 border-0 p-0" disabled={pending || errorMessage !== null}>
+      <form onSubmit={handleSubmit} className="dialog-body flex flex-col gap-3 px-5 pb-5 pt-1">
+        <fieldset className="dialog-select-options m-0 flex flex-col gap-1.5 border-0 p-0" disabled={pending || errorMessage !== null}>
           <legend className="visually-hidden">Options</legend>
           {entry.options.map((option, idx) => {
             const id = `select-${entry.id}-${idx}`;
@@ -113,7 +149,7 @@ export function SelectDialog({
                   // paint from the legacy rule is now expressed
                   // via Tailwind v4's arbitrary `:has()`
                   // descendant variant (`[&:has(input:checked)]:border-accent`).
-                  'dialog-select-option flex cursor-pointer items-center gap-2 rounded-md border border-border bg-surface-2 px-[0.55rem] py-[0.4rem] [&:has(input:checked)]:border-accent [&:has(input:checked)]:bg-[rgba(44,92,255,0.08)]'
+                  'dialog-select-option flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2.5 text-sm text-text [&:has(input:checked)]:border-accent [&:has(input:checked)]:bg-accent-soft'
                 }
                 data-testid="dialog-select-option"
               >
@@ -137,7 +173,7 @@ export function SelectDialog({
           submitDisabled={chosen === null || pending || errorMessage !== null}
         />
       </form>
-    </dialog>
+    </div>
   );
 }
 
@@ -155,14 +191,35 @@ export interface DialogHeaderProps {
    *  `session_state` (the WsClient stamps it on inbound). */
   enqueuedAt: number;
   onTimeout: () => void;
+  /** Lucide node rendered inside the tinted icon block (each
+   *  dialog passes the D7 family icon — HelpCircle /
+   *  ListChecks / PenLine / Edit3). Sized by the call site's
+   *  `iconClassName`; the header itself doesn't impose a size. */
+  icon: React.ReactNode;
+  /** Per-dialog tinted icon block classes (D7: bg-state-online/
+   *  10 text-state-online for confirm, bg-amber-soft text-amber
+   *  for select, bg-accent-soft text-accent for input/editor).
+   *  Kept per-call-site rather than centralised here because
+   *  D7 explicitly assigns a different colour family per
+   *  method. */
+  iconClassName: string;
 }
 
-export function DialogHeader({ id, title, timeoutMs, enqueuedAt, onTimeout }: DialogHeaderProps) {
+export function DialogHeader({ id, title, timeoutMs, enqueuedAt, onTimeout, icon, iconClassName }: DialogHeaderProps) {
   const remainingMs = useCountdown(timeoutMs, enqueuedAt, onTimeout);
   if (timeoutMs === undefined) {
     return (
-      <header className="dialog-header flex items-center gap-3 border-b border-border px-[0.95rem] py-[0.7rem]">
-        <h2 id={id} className="dialog-title m-0 flex-1 text-base">
+      // T07 reference header: tinted icon block + title row.
+      // When no timeout is set, we render the title-only variant
+      // (editor never carries a timeout per PRD §4.2 + ADR-0004).
+      <header className="dialog-header flex items-start gap-3 px-5 pb-3 pt-5">
+        <div
+          className={iconClassName}
+          aria-hidden="true"
+        >
+          {icon}
+        </div>
+        <h2 id={id} className="dialog-title m-0 flex-1 text-base font-semibold tracking-tight text-text">
           {title}
         </h2>
       </header>
@@ -173,16 +230,39 @@ export function DialogHeader({ id, title, timeoutMs, enqueuedAt, onTimeout }: Di
   const pct = Math.max(0, Math.min(100, (elapsedMs / totalMs) * 100));
   const remainingSec = Math.ceil(remainingMs / 1000);
   return (
-    <header className="dialog-header flex items-center gap-3 border-b border-border px-[0.95rem] py-[0.7rem]">
-      <h2 id={id} className="dialog-title m-0 flex-1 text-base">
-        {title}
-      </h2>
-      <div className="dialog-countdown flex min-w-[7.5rem] flex-col items-end gap-0.5" role="timer" aria-live="off">
-        <span className="dialog-countdown-label text-[0.7rem] uppercase tracking-[0.05em] text-muted">remaining</span>
-        <span className="dialog-countdown-value font-semibold tabular-nums">{remainingSec}s</span>
-        <div className="dialog-countdown-bar h-1 w-full overflow-hidden rounded-full bg-surface-2" aria-hidden="true">
-          <div className="dialog-countdown-bar-fill h-full bg-accent transition-[width] duration-[250ms] ease-linear" style={{ width: `${pct}%` }} />
+    // T07 reference header w/ countdown: tinted icon block on
+    // the left, title in the middle (truncates gracefully), and
+    // a `rounded-full` "remaining Ns" pill on the right (above
+    // the accent-filled progress bar that lives on the row
+    // below). The pill stays visually subordinate via the
+    // surface-2 background + tabular-nums + small text size,
+    // so it reads as a "timer chip" rather than a primary
+    // action.
+    <header className="dialog-header flex flex-col gap-2 px-5 pb-3 pt-5">
+      <div className="flex items-start gap-3">
+        <div
+          className={iconClassName}
+          aria-hidden="true"
+        >
+          {icon}
         </div>
+        <h2 id={id} className="dialog-title m-0 flex-1 text-base font-semibold tracking-tight text-text">
+          {title}
+        </h2>
+        <div
+          className="dialog-countdown inline-flex items-center gap-1 rounded-full bg-surface-2 px-2.5 py-1 text-xs font-medium tabular-nums text-muted"
+          role="timer"
+          aria-live="off"
+        >
+          <span className="dialog-countdown-label uppercase tracking-[0.05em] text-[0.65rem] text-muted-5">剩</span>
+          <span className="dialog-countdown-value font-semibold text-text">{remainingSec}s</span>
+        </div>
+      </div>
+      <div className="dialog-countdown-bar h-1 w-full overflow-hidden rounded-full bg-surface-2" aria-hidden="true">
+        <div
+          className="dialog-countdown-bar-fill h-full bg-accent transition-[width] duration-[250ms] ease-linear"
+          style={{ width: `${pct}%` }}
+        />
       </div>
     </header>
   );
@@ -196,11 +276,18 @@ export interface DialogFooterProps {
 
 export function DialogFooter({ onCancel, submitLabel, submitDisabled }: DialogFooterProps) {
   return (
-    <div className="dialog-footer flex justify-end gap-2">
+    // T07 reference footer: cancel (white outline) + submit
+    // (accent blue). Both buttons share `h-10 px-4 rounded-xl`
+    // for a consistent pair (cancel `border-border-2 bg-surface
+    // text-muted hover:bg-surface-2`; submit `bg-accent text-
+    // white hover:bg-accent-hover`; both flip to
+    // `bg-accent-disabled` when `disabled` to keep the disabled
+    // signal consistent with the rest of the chrome).
+    <div className="dialog-footer flex justify-end gap-2 pt-1">
       <button
         type="button"
         onClick={onCancel}
-        className="dialog-button dialog-button-cancel rounded-md border border-border bg-surface px-3 py-1.5 font-[inherit] text-text disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled"
+        className="dialog-button dialog-button-cancel inline-flex h-10 items-center justify-center rounded-xl border border-border-2 bg-surface px-4 text-sm font-medium text-muted transition hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:text-white"
         data-testid="dialog-cancel"
       >
         Cancel
@@ -208,7 +295,7 @@ export function DialogFooter({ onCancel, submitLabel, submitDisabled }: DialogFo
       <button
         type="submit"
         disabled={submitDisabled}
-        className="dialog-button dialog-button-submit rounded-md border border-accent bg-accent px-3 py-1.5 font-[inherit] text-white disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled"
+        className="dialog-button dialog-button-submit inline-flex h-10 items-center justify-center rounded-xl bg-accent px-4 text-sm font-semibold text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-accent-disabled"
         data-testid="dialog-confirm-yes"
       >
         {submitLabel}

@@ -86,6 +86,13 @@
   --color-state-online: var(--state-online);
   --color-state-offline: var(--state-offline);
   --color-state-connecting: var(--state-connecting);
+  /* M6 T07 — amber soft + foreground for the select dialog's
+     tinted icon block (D7 amber-tinted family: light `#fef3c7`
+     soft + `#d97706` foreground, dark mirror `#422006` soft +
+     `#fbbf24` foreground). Consumed as `bg-amber-soft` +
+     `text-amber` on the size-11 rounded-xl header block. */
+  --color-amber-soft: var(--amber-soft);
+  --color-amber: var(--amber);
   /* M6 T03 — deep slate backdrop family. Used by the mobile
      sidebar drawer backdrop (`bg-deep/20`) so the deep ink
      palette stays tokenised instead of hard-coded hex. Light
@@ -151,6 +158,13 @@
   --state-online: #1f9d55;
   --state-offline: #c0392b;
   --state-connecting: #87919d;
+
+  /* Amber — select dialog tinted icon block (D7 family, light
+     mirror of reference's `#fef3c7` soft + `#d97706` foreground;
+     values chosen so the soft reads as a warm cream against
+     the page ink without crowding the accent blue family). */
+  --amber-soft: #fef3c7;
+  --amber: #d97706;
 
   /* Deep slate — backdrop ink for mobile sidebar drawer
      (M6 T03) + chat AI avatar block + InputBar send button
@@ -252,6 +266,17 @@
     --state-connecting: #74808c;
     --state-online: #34d399;
     --state-offline: #f87171;
+
+    /* Amber — dark-mode companion to the select dialog amber
+       tinted icon block. Dark soft `#422006` is a deeply
+       desaturated coffee-brown that reads as a muted warm
+       tint against the dark slate surface; foreground
+       `#fbbf24` is the bright amber-400 reference step so
+       the icon stays perceptible inside the soft block.
+       Both values are within the ±5% L retune window D2
+       authorises for task 11. */
+    --amber-soft: #422006;
+    --amber: #fbbf24;
 
     /* Deep slate backdrop — dark-mode companion to `--deep`.
        Lifted slightly above the dark `--bg` so a `bg-deep/20`

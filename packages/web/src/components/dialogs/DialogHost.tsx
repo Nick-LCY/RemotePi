@@ -234,13 +234,26 @@ export function DialogHost() {
       );
       })}
       {timeoutToast !== null ? (
-        // `dialog-host-toast` retained as a semantic anchor. The
-        // toast paint uses the same "red = something failed"
-        // colour family as `.dialog-error` /
-        // `.input-bar-error` — achieved via `text-state-offline`
-        // + the canonical 16%-alpha shadow token.
-        <div className="dialog-host-toast pointer-events-none m-2 max-w-[min(360px,80vw)] self-end rounded-lg border border-border bg-surface px-3 py-2 text-[0.88rem] text-state-offline shadow-[0_6px_18px_rgba(0,0,0,0.16)]" role="status" aria-live="polite" data-testid="dialog-toast">
-          {timeoutToast}
+        // `dialog-host-toast` retained as a semantic anchor. T07
+        // reference shape: `rounded-xl bg-surface border shadow-lg`
+        // + a left red icon dot (state-offline family, matching
+        // `.dialog-error` / `.input-bar-error` "red = something
+        // failed" signal). The dot is a `size-2 rounded-full
+        // bg-state-offline` 8px circle; the text lands to its
+        // right inside the flex row. Position / z-index semantics
+        // remain unchanged (sibling of the dialog stack inside
+        // the same `z-[100]` overlay container).
+        <div
+          className="dialog-host-toast pointer-events-none m-2 flex max-w-[min(360px,80vw)] items-center gap-2 self-end rounded-xl border border-border bg-surface px-3 py-2 text-[0.88rem] text-text shadow-lg"
+          role="status"
+          aria-live="polite"
+          data-testid="dialog-toast"
+        >
+          <span
+            aria-hidden="true"
+            className="size-2 shrink-0 rounded-full bg-state-offline"
+          />
+          <span className="flex-1 text-state-offline">{timeoutToast}</span>
         </div>
       ) : null}
     </div>
