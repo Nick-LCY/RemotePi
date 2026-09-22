@@ -86,6 +86,21 @@ export interface SidebarProps {
 // Constants
 // ---------------------------------------------------------------------------
 
+/** Background colour class per session status. Mirrors the legacy
+ *  `.choice-page-row-status.status-${value}` rules that were
+ *  deleted in M6 T02's styles.css contraction. The mapping table
+ *  matches the pre-T02 colours 1-for-1 (running #e69138,
+ *  idle --state-online, spawning --state-connecting,
+ *  exited --state-offline, unknown --muted) so the visual stays
+ *  identical pre/post migration. */
+const SESSION_STATUS_CLASS: Record<SessionListEntry['status'], string> = {
+  running: 'bg-[#e69138]',
+  idle: 'bg-state-online',
+  spawning: 'bg-state-connecting',
+  exited: 'bg-state-offline',
+  unknown: 'bg-muted',
+};
+
 /** session_list / work_dir_list watchdogs — same 5s ceiling as
  *  the legacy ChoicePage level=2 / level=1 timeouts. */
 const SESSION_LIST_TIMEOUT_MS = 5_000;
@@ -267,8 +282,7 @@ function SessionsTab({ currentSession, currentWorkDir }: SessionsTabProps): Reac
 
       {error !== null ? (
         <p
-          className="rounded border border-state-offline px-3 py-2 text-xs text-state-offline"
-          style={{ backgroundColor: 'rgba(192, 57, 43, 0.08)' }}
+          className="m-0 rounded border border-state-offline bg-state-offline/[0.08] px-3 py-2 text-xs text-state-offline"
           role="alert"
           data-testid="sidebar-sessions-error"
         >
@@ -309,7 +323,14 @@ function SessionsTab({ currentSession, currentWorkDir }: SessionsTabProps): Reac
                 <div className="flex w-full items-center gap-2 text-[0.72rem] text-muted">
                   <span data-testid="session-row-time">{entry.created}</span>
                   <span
-                    className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase text-white status-${entry.status}`}
+                    // The legacy `.choice-page-row-status.status-${entry.status}`
+                    // CSS rules painted each running / idle / spawning /
+                    // exited / unknown state with a tinted bg. With
+                    // those rules gone, the same paint is now an inline
+                    // Tailwind class per status. Mapping mirrors the
+                    // legacy 5-value table verbatim so e2e + screenshot
+                    // parity is preserved (D8).
+                    className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase text-white ${SESSION_STATUS_CLASS[entry.status]}`}
                     data-testid="session-row-status"
                     data-status={entry.status}
                   >
@@ -411,8 +432,7 @@ function WorkDirsTab({ currentWorkDir, onOpenBrowser }: WorkDirsTabProps): React
     <div className="flex flex-col gap-2">
       {removeError !== null ? (
         <p
-          className="rounded border border-state-offline px-3 py-2 text-xs text-state-offline"
-          style={{ backgroundColor: 'rgba(192, 57, 43, 0.08)' }}
+          className="m-0 rounded border border-state-offline bg-state-offline/[0.08] px-3 py-2 text-xs text-state-offline"
           role="alert"
           data-testid="choice-page-remove-error"
         >

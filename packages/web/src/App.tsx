@@ -918,14 +918,21 @@ function RecoveryInFlight({ connState, phase }: { connState: ConnState; phase: S
 
   return (
     <section
-      className="card recovery-in-flight"
+      // `recovery-in-flight` className retained as a semantic
+      // anchor (e2e spec 02 / spec 01 query
+      // `[data-testid="recovery-in-flight"]` directly, but the
+      // className itself may be referenced by future CSS hooks).
+      // All chrome (card background, border, padding, gap) is now
+      // expressed as Tailwind utilities — `.card` is no longer
+      // a styled class in styles.css.
+      className="recovery-in-flight flex flex-col gap-2 rounded-md border border-border bg-surface p-4 text-left"
       aria-busy="true"
       aria-live="polite"
       data-phase={phase ?? 'null'}
       data-testid="recovery-in-flight"
     >
-      <h2>恢复中…</h2>
-      <p>
+      <h2 className="m-0 text-[1.1rem]">恢复中…</h2>
+      <p className="m-0 text-[0.95rem] text-muted">
         {phaseText}
         {connState !== 'online' ? <span>（等待 WebSocket 连接…）</span> : null}
       </p>
@@ -942,9 +949,23 @@ function RecoveryInFlight({ connState, phase }: { connState: ConnState; phase: S
 
 function RecoveryErrorCard({ error, onRetry }: { error: RecoveryError; onRetry: () => void }) {
   return (
-    <section className="card recovery-error" role="alert" data-error={error} data-testid="recovery-error">
-      <h2>恢复失败</h2>
-      <p>{errorHint(error)}</p>
+    <section
+      className="recovery-error flex flex-col items-start gap-2 rounded-md border border-border bg-surface p-4 text-left"
+      role="alert"
+      data-error={error}
+      data-testid="recovery-error"
+    >
+      <h2
+        // The previous `.recovery-error[data-error] h2 { color: var(--state-offline); }`
+        // rule painted the title in the offline red when a card carried the
+        // attribute selector. The attribute selector is still emitted on the
+        // section, and the runtime colour is now expressed as a Tailwind
+        // utility on the heading itself.
+        className="m-0 text-[1.1rem] text-state-offline"
+      >
+        恢复失败
+      </h2>
+      <p className="m-0 text-[0.95rem] text-muted">{errorHint(error)}</p>
       <button type="button" onClick={onRetry} data-testid="recovery-retry">
         重试
       </button>

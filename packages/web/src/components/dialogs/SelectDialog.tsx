@@ -81,7 +81,7 @@ export function SelectDialog({
 
   return (
     <dialog
-      className="dialog dialog-select"
+      className="dialog dialog-select pointer-events-auto m-2 flex w-[min(420px,92vw)] flex-col rounded-md border border-border bg-surface p-0 text-text shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
       open
       aria-labelledby={`select-title-${entry.id}`}
       data-testid="dialog-select"
@@ -94,12 +94,12 @@ export function SelectDialog({
         onTimeout={onTimeout}
       />
       {errorMessage !== null ? (
-        <p className="dialog-error" role="alert" data-testid="dialog-error">
+        <p className="dialog-error m-0 border-b border-border bg-state-offline/[0.12] px-3 py-2 text-[0.85rem] text-state-offline" role="alert" data-testid="dialog-error">
           {errorMessage}
         </p>
       ) : null}
-      <form onSubmit={handleSubmit} className="dialog-body">
-        <fieldset className="dialog-select-options" disabled={pending || errorMessage !== null}>
+      <form onSubmit={handleSubmit} className="dialog-body flex flex-col gap-2 px-3 py-2">
+        <fieldset className="dialog-select-options m-0 flex flex-col gap-1 border-0 p-0" disabled={pending || errorMessage !== null}>
           <legend className="visually-hidden">Options</legend>
           {entry.options.map((option, idx) => {
             const id = `select-${entry.id}-${idx}`;
@@ -107,7 +107,14 @@ export function SelectDialog({
               <label
                 key={option}
                 htmlFor={id}
-                className="dialog-select-option"
+                className={
+                  // `dialog-select-option` retained as a
+                  // semantic anchor. The `:has(input:checked)`
+                  // paint from the legacy rule is now expressed
+                  // via Tailwind v4's arbitrary `:has()`
+                  // descendant variant (`[&:has(input:checked)]:border-accent`).
+                  'dialog-select-option flex cursor-pointer items-center gap-2 rounded border border-border bg-surface-2 px-2 py-1 [&:has(input:checked)]:border-accent [&:has(input:checked)]:bg-[rgba(44,92,255,0.08)]'
+                }
                 data-testid="dialog-select-option"
               >
                 <input
@@ -117,6 +124,7 @@ export function SelectDialog({
                   value={option}
                   checked={chosen === option}
                   onChange={onChange}
+                  className="accent-accent"
                 />
                 <span>{option}</span>
               </label>
@@ -153,8 +161,8 @@ export function DialogHeader({ id, title, timeoutMs, enqueuedAt, onTimeout }: Di
   const remainingMs = useCountdown(timeoutMs, enqueuedAt, onTimeout);
   if (timeoutMs === undefined) {
     return (
-      <header className="dialog-header">
-        <h2 id={id} className="dialog-title">
+      <header className="dialog-header flex items-center gap-3 border-b border-border px-3 py-2">
+        <h2 id={id} className="dialog-title m-0 flex-1 text-base">
           {title}
         </h2>
       </header>
@@ -165,15 +173,15 @@ export function DialogHeader({ id, title, timeoutMs, enqueuedAt, onTimeout }: Di
   const pct = Math.max(0, Math.min(100, (elapsedMs / totalMs) * 100));
   const remainingSec = Math.ceil(remainingMs / 1000);
   return (
-    <header className="dialog-header">
-      <h2 id={id} className="dialog-title">
+    <header className="dialog-header flex items-center gap-3 border-b border-border px-3 py-2">
+      <h2 id={id} className="dialog-title m-0 flex-1 text-base">
         {title}
       </h2>
-      <div className="dialog-countdown" role="timer" aria-live="off">
-        <span className="dialog-countdown-label">remaining</span>
-        <span className="dialog-countdown-value">{remainingSec}s</span>
-        <div className="dialog-countdown-bar" aria-hidden="true">
-          <div className="dialog-countdown-bar-fill" style={{ width: `${pct}%` }} />
+      <div className="dialog-countdown flex min-w-[7.5rem] flex-col items-end gap-0.5" role="timer" aria-live="off">
+        <span className="dialog-countdown-label text-[0.7rem] uppercase tracking-[0.05em] text-muted">remaining</span>
+        <span className="dialog-countdown-value font-semibold tabular-nums">{remainingSec}s</span>
+        <div className="dialog-countdown-bar h-1 w-full overflow-hidden rounded-full bg-surface-2" aria-hidden="true">
+          <div className="dialog-countdown-bar-fill h-full bg-accent transition-[width] duration-[250ms] ease-linear" style={{ width: `${pct}%` }} />
         </div>
       </div>
     </header>
@@ -188,11 +196,11 @@ export interface DialogFooterProps {
 
 export function DialogFooter({ onCancel, submitLabel, submitDisabled }: DialogFooterProps) {
   return (
-    <div className="dialog-footer">
+    <div className="dialog-footer flex justify-end gap-2">
       <button
         type="button"
         onClick={onCancel}
-        className="dialog-button dialog-button-cancel"
+        className="dialog-button dialog-button-cancel rounded border border-border bg-surface px-3 py-1.5 font-[inherit] text-text"
         data-testid="dialog-cancel"
       >
         Cancel
@@ -200,7 +208,7 @@ export function DialogFooter({ onCancel, submitLabel, submitDisabled }: DialogFo
       <button
         type="submit"
         disabled={submitDisabled}
-        className="dialog-button dialog-button-submit"
+        className="dialog-button dialog-button-submit rounded border border-accent bg-accent px-3 py-1.5 font-[inherit] text-white disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled"
         data-testid="dialog-confirm-yes"
       >
         {submitLabel}

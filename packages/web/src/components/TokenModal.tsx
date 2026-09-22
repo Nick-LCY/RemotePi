@@ -178,16 +178,13 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
 
         {/* Inline storage-error banner — surfaced when
             `tokenStorage.write` returned false (privacy mode /
-            quota exceeded / SecurityError). Hard-coded `rgba(…)`
-            mirrors `.input-bar-error`'s 8%-alpha offline tint;
-            using a Tailwind opacity modifier on `bg-state-offline/10`
-            would require a Tailwind v4 `<alpha-value>` channel
-            rewrite of the `var(--state-offline)` definition, which
-            would ripple to every other surface. */}
+            quota exceeded / SecurityError). `bg-state-offline/[0.08]`
+            is the canonical Tailwind v4 alpha-channel modifier for
+            the `--state-offline` token (works because the @theme
+            inline block already maps the colour namespace). */}
         {storageError !== undefined && storageError !== null && storageError.length > 0 ? (
           <div
-            className="mb-4 rounded border border-state-offline px-3 py-2 text-sm text-state-offline"
-            style={{ backgroundColor: 'rgba(192, 57, 43, 0.08)' }}
+            className="mb-4 rounded border border-state-offline bg-state-offline/[0.08] px-3 py-2 text-sm text-state-offline"
             data-testid="token-modal-storage-error"
             role="alert"
           >

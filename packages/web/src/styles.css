@@ -1,7 +1,6 @@
 /* RemotePi web — minimal native CSS. No UI library; the
-   stylesheet is organised in four concentric layers that
-   cooperate to back both legacy class-based rules and any
-   Tailwind v4 utilities the components use inline. */
+   stylesheet is organised in concentric layers that cooperate
+   with Tailwind v4 utilities the components use inline. */
 
 /* =====================================================================
  * Layer order (load-bearing):
@@ -38,17 +37,26 @@
  *      (D2 + D9). Because `@theme inline` re-references the
  *      same names, dark-mode propagates to both legacy rules
  *      and Tailwind utilities automatically.
- *   5. `@layer components { ... }` wraps the legacy CSS so it
- *      stacks ABOVE preflight (legacy overrides reset) but BELOW
- *      ad-hoc Tailwind utilities (new components win on
- *      specificity without re-architecting).
+ *   5. `@layer base { ... }` — body + `<code>` / `<h1>` globals.
+ *      These were part of the original reset block but live in
+ *      `@layer base` now (vs the previous `@layer components`
+ *      wrapper) because they paint TAG selectors, not component-
+ *      scoped utility classes. preflight wipes most of this,
+ *      but a few rules survive: body bg, `<code>` inline
+ *      background, `<h1>` bottom margin — see inline notes.
+ *   6. `@layer components { ... }` — non-utility-able semantic
+ *      classes. Kept here because they use pseudo-elements
+ *      (`::-webkit-scrollbar`, `::before`), attribute selectors
+ *      (`details[open] summary::before { transform: … }`), and
+ *      `<details><summary>` marker hiding (`::-webkit-details-
+ *      marker`). The full list (~70 lines) is documented inline
+ *      below; every surviving rule has a "why utilities can't
+ *      express this" comment.
  *
- * M6 D1 / D2 / D5 / D9 — reference cool palette. Token totals:
- *   light 22 / dark 22 (13 legacy + 9 additions);
- *   `@theme inline` exposes 14 colour namespaces + 1 spacing
- *   (the `color-accent-disabled` legacy placeholder is
- *    preserved because two `*:disabled` rules still reference
- *    it — its values stay at M5 baselines; task 11 may tune).
+ * M6 T02 — full migration of legacy CSS to Tailwind utilities
+ * (D4). The previous `@layer components` block carried ~1190
+ * lines of legacy component CSS; what remains below is the
+ * subset that genuinely resists utility expression.
  * ===================================================================== */
 
 @import "tailwindcss";
@@ -216,26 +224,34 @@
 }
 
 /* =====================================================================
- * Legacy component CSS — wrapped in `@layer components` so the
- * cascade order is `preflight (base) < components < utilities`. The
- * original rule body is unchanged; only the wrapping changed. Every
- * rule continues to address legacy selectors
- * (`.app-shell`, `.input-bar-field`, `.message-row`, ...) so visual
- * parity is preserved.
+ * Base layer — tag-selector resets that preflight doesn't cover.
  *
- * M6 T01 deliberately leaves every legacy selector in place. The
- * 22-token retune above already shifts the visible palette because
- * every legacy rule resolves its colour through `var(--token)` —
- * token name parity means "same class, different colour". The
- * per-component visual reshape (AppShell double cards, Sidebar
- * brand block, MessageList bubbles, InputBar shadow ring, TokenModal
- * tinted icon block, DirectoryBrowser modal backdrop, status/choice/
- * recovery card chrome) lives in tasks 03–09 — those tasks edit the
- * JSX + classes; this stylesheet stays the canonical colour
- * dictionary for everyone.
+ *   - `body { margin: 0; background: var(--bg); color: var(--text); }`
+ *     Paints the page-wide canvas. Tailwind's preflight zeroes
+ *     the body margin but doesn't paint background / text; we
+ *     need this so the page reads with the theme rather than
+ *     white-on-white while the React tree boots.
+ *
+ *   - `code { ... }` — single-tag inline code styling. Used by
+ *     the Sidebar's work-dir paths and the DirectoryBrowser's
+ *     path labels; preflight strips the browser default font but
+ *     leaves padding / background inconsistent across browsers,
+ *     so a token-aligned paint here keeps `<code>` blocks
+ *     visually consistent without forcing each call site to
+ *     repeat the same Tailwind utility list.
+ *
+ *   - `h1 { margin: 0 0 1rem; }` — headroom for unstyled h1.
+ *     Sidebar's `<h1>RemotePi</h1>` already carries
+ *     `m-0 text-lg font-semibold tracking-tight text-text`
+ *     which fully replaces this rule's paint; the global rule
+ *     stays as a safety net for any future plain `<h1>` so it
+ *     doesn't collapse into text with no margin breathing room.
+ *
+ * These selectors are tag-level (not component-scoped), so
+ * they belong in `@layer base` rather than `@layer components`.
  * ===================================================================== */
 
-@layer components {
+@layer base {
 
 body {
   margin: 0;
@@ -255,509 +271,137 @@ code {
   font-size: 0.9em;
 }
 
-.app-shell {
-  /* Legacy fallback for any code that still references `.app-shell`
-     outside of the `<AppShell>` JSX (which renders the grid via
-     Tailwind utilities). New components should not touch this
-     class — they go through `<AppShell>`. */
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  min-height: 100vh;
 }
 
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem 1.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
+/* =====================================================================
+ * Components layer — non-utility-able rules.
+ *
+ * M6 T02 (D4) — full migration of legacy CSS to Tailwind utilities.
+ * Every legacy selector that had a one-to-one utility equivalent
+ * (background, padding, border, font-size, text colour, gap, etc.)
+ * is now expressed as a Tailwind class on the component element
+ * — see the per-component className strings in `packages/web/src/`
+ * for the replacements.
+ *
+ * What remains below is the ~70-line subset that genuinely
+ * resists utility expression. Each rule has an inline comment
+ * explaining why a utility can't reach the same paint, plus a
+ * pointer to the consumer component so a future maintainer can
+ * trace the source.
+ *
+ *   1. Markdown code-block scrollbar  (`.markdown-pre`)
+ *   2. `<details><summary>` marker hiding  (global, sticky across the chat)
+ *   3. `.thinking-summary::before` rotated play indicator
+ *   4. `.message-tool-pill::before` rotated play indicator
+ *   5. `.visually-hidden`  (screen-reader-only label)
+ *   6. `.message-tool-result-error`  (red tint + border)
+ *   7. `.message-tool-result-orphan`  (muted border + orphan-id tint)
+ *
+ * The `details[open]` rotation uses BOTH an attribute selector
+ * AND a pseudo-element — neither half is expressible as a
+ * Tailwind utility (`[open]:before:rotate-90` doesn't exist;
+ * Tailwind v4 doesn't have `:before` modifiers because the
+ * `content` property is required to even render the pseudo-
+ * element, and Tailwind's `content-['']` only emits a value
+ * rather than a fully-shaped `::before` rule).
+ * ===================================================================== */
+
+@layer components {
+
+/* 1. Markdown code-block scrollbar — `::-webkit-scrollbar` +
+   `::-webkit-scrollbar-thumb` are WebKit-only pseudo-elements
+   that Tailwind v4 doesn't surface as utilities (they require
+   a paired `::-webkit-scrollbar-track` + `::-webkit-scrollbar-
+   thumb` to actually paint anything; the opaque shorthand used
+   here is the WebKit idiomatic form). Consumers: `packages/web/
+   src/components/AssistantMessageBody.tsx` (`<pre className=
+   "markdown-pre">`) and any future `<pre>` block we attach the
+   class to. */
+.markdown-pre::-webkit-scrollbar {
+  height: 8px;
 }
-
-.card h2 {
-  margin: 0;
-  font-size: 1.1rem;
-}
-
-/* ---- Legacy `.status-bar` / `.badge-*` rules (the
-   pre-M5 `<StatusBar>` component) were removed when that
-   component was deleted; bridge status now lives in
-   `BridgeStatusBar`. Legacy `.token-prompt` rules (the pre-M5
-   `<TokenPrompt>`) were removed when that component was deleted;
-   token entry now lives in `TokenModal`. */
-
-/* ---- Buttons ---------------------------------------------------------- */
-
-button {
-  font: inherit;
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: white;
-  cursor: pointer;
-  align-self: flex-start;
-}
-
-button:disabled {
-  background: var(--accent-disabled);
-  border-color: var(--accent-disabled);
-  cursor: not-allowed;
-}
-
-/* ---- Tables ----------------------------------------------------------- */
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9rem;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 0.4rem 0.6rem;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-}
-
-th {
-  color: var(--muted);
-  font-weight: 500;
-  background: var(--surface-2);
-}
-
-td.empty {
-  color: var(--muted);
-  text-align: center;
-}
-
-tr.timed-out td {
-  color: var(--state-offline);
-}
-
-td code {
-  word-break: break-all;
-  white-space: pre-wrap;
-  display: inline-block;
-  max-width: 100%;
-}
-
-/* ---- RecoveryView ------------------------------------------------------ */
-
-.recovery-in-flight,
-.recovery-error {
-  /* Inherits `.card` chrome but stays a standalone block so the
-     user can spot the "we're not ready yet" state at a glance. */
-  text-align: left;
-}
-
-.recovery-in-flight h2,
-.recovery-error h2 {
-  margin: 0;
-  font-size: 1.1rem;
-}
-
-.recovery-in-flight p,
-.recovery-error p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.95rem;
-}
-
-.recovery-error button {
-  align-self: flex-start;
-}
-
-.recovery-error[data-error] h2 {
-  color: var(--state-offline);
-}
-
-/* ---- ChatView / MessageList ------------------------------------------- */
-
-.chat-view {
-  display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-}
-
-.message-list {
-  max-height: 50vh;
-  overflow-y: auto;
-}
-
-.message-list-items {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.message-row {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.55rem 0.7rem;
-  background: var(--surface-2);
-}
-
-.message-row.message-draft {
-  border-style: dashed;
-  opacity: 0.85;
-}
-
-.message-role {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  margin-bottom: 0.3rem;
-}
-
-.message-role-user {
-  border-color: var(--accent);
-}
-
-.message-role-assistant {
-  border-color: var(--state-online);
-}
-
-.message-body {
-  font-size: 0.92rem;
-  word-break: break-word;
-  white-space: pre-wrap;
-}
-
-/* ---- InputBar --------------------------------------------------------- */
-
-.input-bar {
-  display: flex;
-  /* `align-items: flex-end` pins the Send / Abort buttons to the
-     textarea's bottom edge so they don't drift upward as the
-     textarea grows past one line. */
-  align-items: flex-end;
-  gap: 0.5rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.5rem 0.75rem;
-  flex-wrap: wrap;
-}
-
-.input-bar-field {
-  flex: 1 1 12rem;
-  font-family: inherit;
-  font-size: 0.95rem;
-  line-height: 1.4;
-  padding: 0.45rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--text);
-  /* `resize: none` disables the browser's drag handle (we manage
-     height via the hook, so a user-draggable handle would let
-     them make it taller than `--input-max-height`, defeating
-     the cap). `min-height` keeps the field visually a single row
-     at idle (`rows={1}` + line-height gives ~32px) so the Send /
-     Abort buttons stay close to where the user expects on first
-     paint. `max-height` + `overflow-y: auto` is the auto-grow
-     ceiling — content past the cap gets an internal scrollbar
-     rather than blowing the row height past the layout budget.
-     `box-sizing: border-box` keeps padding inside the cap so
-     `scrollHeight` measurements agree with the visible box. */
-  resize: none;
-  min-height: 32px;
-  max-height: var(--input-max-height);
-  overflow-y: auto;
-  box-sizing: border-box;
-}
-
-.input-bar-field:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.input-bar-field:disabled {
-  cursor: not-allowed;
-  opacity: 0.7;
-}
-
-.input-bar .abort-button {
-  background: var(--surface);
-  color: var(--text);
-  border-color: var(--border);
-}
-
-/* The global `button` rule has `align-self: flex-start`; the
-   `.input-bar` container uses `align-items: flex-end` to keep
-   the buttons pinned to the textarea's bottom edge as the
-   textarea grows. The `align-self: flex-end` override below
-   makes the buttons honour that container alignment —
-   otherwise they'd stay glued to the top of the row regardless
-   of how tall the textarea gets. */
-.input-bar button {
-  align-self: flex-end;
-}
-
-.input-bar .abort-button.abort-live {
-  background: var(--state-offline);
-  border-color: var(--state-offline);
-  color: white;
-}
-
-.input-bar-hint {
-  flex-basis: 100%;
-  margin: 0.2rem 0 0;
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-
-/* PRD §4.5 ordinary-command failure banner — temporary toast that
-   the InputBar auto-hides after 5s. Lives below the Send/Abort row
-   and shares the full-width row layout with `.input-bar-hint` so
-   both messages stack cleanly when they're visible at the same
-   time. Colour mirrors `.dialog-error` so the operator learns one
-   "red = something failed" signal across both surfaces. */
-.input-bar-error {
-  flex-basis: 100%;
-  margin: 0.2rem 0 0;
-  padding: 0.4rem 0.6rem;
-  font-size: 0.82rem;
-  color: var(--state-offline);
-  background: rgba(192, 57, 43, 0.08);
-  border-radius: 6px;
-}
-
-/* ---- DialogHost ------------------------------------------------------- */
-
-.dialog-host {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 2rem;
-  z-index: 100;
-}
-
-.dialog-host > .dialog {
-  pointer-events: auto;
-}
-
-/* W3 timeout toast — global sibling of the dialog stack so it
-   remains visible even after the originating dialog unmounts
-   (the local-timer path can't layer an inline banner — see
-   DialogHost.tsx doc-comment for the race that motivates this).
-   Coloured like `.dialog-error` / `.input-bar-error` so the
-   operator learns one "red = something failed" signal across
-   all surfaces. */
-.dialog-host-toast {
-  pointer-events: none;
-  align-self: flex-end;
-  margin: 0.5rem;
-  padding: 0.55rem 0.85rem;
-  background: var(--surface);
-  color: var(--state-offline);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
-  font-size: 0.88rem;
-  max-width: min(360px, 80vw);
-}
-
-/* ---- Dialogs (generic) ---------------------------------------------- */
-
-.dialog {
-  width: min(420px, 92vw);
-  margin: 0.5rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
-  color: var(--text);
-}
-
-.dialog[open] {
-  display: flex;
-  flex-direction: column;
-}
-
-.dialog-header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.7rem 0.95rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.dialog-title {
-  margin: 0;
-  font-size: 1rem;
-  flex: 1 1 auto;
-}
-
-.dialog-countdown {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.15rem;
-  min-width: 7.5rem;
-}
-
-.dialog-countdown-label {
-  font-size: 0.7rem;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.dialog-countdown-value {
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-
-.dialog-countdown-bar {
-  height: 4px;
-  width: 100%;
-  background: var(--surface-2);
+.markdown-pre::-webkit-scrollbar-thumb {
+  background: var(--border-2);
   border-radius: 999px;
-  overflow: hidden;
 }
 
-.dialog-countdown-bar-fill {
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.25s linear;
+/* 2. `<details><summary>` marker hiding — every native
+   `details > summary` carries a small triangle marker (the
+   `display: list-item` arrow) that the user sees on Chrome /
+   Safari but Tailwind's preflight `list-style: none` reset
+   doesn't reach (because `summary` has a vendor-prefixed
+   `::-webkit-details-marker` pseudo-element separate from the
+   `list-style` property that preflight does touch). Our
+   thinking / tool pills use custom `::before` content instead,
+   and the native marker would render as a second triangle
+   conflicting with the custom one. Consumer: every
+   `<details><summary>` pair in `ChatView.tsx`,
+   `AssistantMessageBody.tsx`, and the tool-result branches
+   (`message-thinking-details`, `message-tool-details`,
+   `message-tool-result-orphan`). */
+summary::-webkit-details-marker {
+  display: none;
 }
 
-.dialog-error {
-  margin: 0;
-  padding: 0.5rem 0.95rem;
-  background: rgba(192, 57, 43, 0.12);
-  color: var(--state-offline);
-  font-size: 0.85rem;
-  border-bottom: 1px solid var(--border);
+/* 3. Thinking summary `::before` — content + rotated indicator.
+   The `content: '▶'` literal pseudo-element is mandatory (a
+   utility can't inject the content string), and the
+   `[open] > summary::before { transform: rotate(90deg) }`
+   rule combines an attribute selector with a pseudo-element
+   descendant — neither half is expressible as a utility.
+   Consumer: `AssistantMessageBody.tsx` (`Thinking` segment)
+   and `ChatView.tsx` (streaming draft thinking fold). */
+.thinking-summary {
+  list-style: none;
+  user-select: none;
+}
+.thinking-summary::before {
+  content: '▶';
+  display: inline-block;
+  margin-right: 0.4rem;
+  font-size: 0.7em;
+  transition: transform 0.15s ease-in-out;
+}
+details[open] > .thinking-summary::before {
+  transform: rotate(90deg);
 }
 
-.dialog-body {
-  padding: 0.85rem 0.95rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.65rem;
+/* 4. Tool pill `::before` — content + rotated indicator. Same
+   rationale as `thinking-summary::before` (custom content +
+   attribute-driven transform) and additionally we use the
+   same `[open]` toggle so the pill flips between collapsed /
+   expanded states. Consumer: `AssistantMessageBody.tsx`
+   (`toolCall` segment) + `ChatView.tsx` (streaming tool fold
+   + orphan toolResult fold). */
+.message-tool-pill {
+  list-style: none;
+  user-select: none;
+}
+.message-tool-pill::before {
+  content: '▶';
+  display: inline-block;
+  margin-right: 0.3rem;
+  font-size: 0.7em;
+  color: var(--muted);
+  transition: transform 0.15s ease-in-out;
+}
+details[open] > .message-tool-pill::before {
+  transform: rotate(90deg);
 }
 
-.dialog-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
-.dialog-button {
-  font: inherit;
-  padding: 0.4rem 0.85rem;
-  border-radius: 6px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: white;
-  cursor: pointer;
-}
-
-.dialog-button:disabled {
-  background: var(--accent-disabled);
-  border-color: var(--accent-disabled);
-  cursor: not-allowed;
-}
-
-.dialog-button-cancel {
-  background: var(--surface);
-  color: var(--text);
-  border-color: var(--border);
-}
-
-.dialog-button-decline {
-  background: var(--surface);
-  color: var(--text);
-  border-color: var(--border);
-}
-
-/* ---- SelectDialog ---------------------------------------------------- */
-
-.dialog-select-options {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  border: none;
-  padding: 0;
-  margin: 0;
-}
-
-.dialog-select-option {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.4rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-  cursor: pointer;
-}
-
-.dialog-select-option:has(input:checked) {
-  border-color: var(--accent);
-  background: rgba(44, 92, 255, 0.08);
-}
-
-/* ---- ConfirmDialog --------------------------------------------------- */
-
-.dialog-confirm-message {
-  margin: 0;
-  font-size: 0.95rem;
-  color: var(--text);
-}
-
-/* ---- InputDialog ----------------------------------------------------- */
-
-.dialog-input-field {
-  font: inherit;
-  font-size: 0.95rem;
-  padding: 0.5rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--text);
-}
-
-.dialog-input-field:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* ---- EditorDialog ---------------------------------------------------- */
-
-.dialog-editor-field {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.9rem;
-  padding: 0.55rem 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--text);
-  min-height: 9rem;
-  resize: vertical;
-}
-
-.dialog-editor-field:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* Accessibility helper — keep legend visible to AT but invisible to
-   sighted users so the fieldset doesn't add visual noise. */
+/* 5. `.visually-hidden` — standard sr-only a11y helper. The
+   `clip: rect(0 0 0 0)` form is the W3C-recommended pattern
+   over the older `display: none` (which kills screen-reader
+   access) and over `width: 0; height: 0` (which still leaves
+   the element in the layout flow). The Tailwind `sr-only`
+   utility emits a slightly different equivalent (using
+   `overflow: hidden` + `padding / margin / border: 0`) but
+   the project sticks to this W3C form for the SelectDialog's
+   `<legend>` (the only current consumer — `packages/web/src/
+   components/dialogs/SelectDialog.tsx`). Keeping the rule
+   here means the utility name is the project's
+   visually-hidden class (the test suite does not check for
+   `sr-only` anywhere). */
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -770,529 +414,66 @@ td code {
   border: 0;
 }
 
-/* ---- ChoicePage (M4 tasks/m4/07) --------------------------------------- */
-
-.choice-page {
-  display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-}
-
-.choice-page-hint {
-  margin: 0;
-  font-size: 0.88rem;
-  color: var(--muted);
-}
-
-.choice-page-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.choice-page-header > h2 {
-  flex: 1 1 auto;
-}
-
-.choice-page-current-work-dir {
-  margin: 0;
-  font-size: 0.88rem;
-  color: var(--muted);
-  flex-basis: 100%;
-}
-
-.choice-page-header-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.choice-page-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.choice-page-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.choice-page-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-  padding: 0.4rem 0.55rem;
-}
-
-.choice-page-row-button {
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.3rem;
-  background: transparent;
-  color: var(--text);
-  border: none;
-  padding: 0.2rem 0.3rem;
-  text-align: left;
-  cursor: pointer;
-}
-
-.choice-page-row-button:hover {
-  background: rgba(44, 92, 255, 0.06);
-}
-
-.choice-page-row-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-.choice-page-row-time {
-  font-variant-numeric: tabular-nums;
-}
-
-.choice-page-row-status {
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 0.1rem 0.5rem;
-  border-radius: 999px;
-  color: white;
-  background: var(--state-connecting);
-  text-transform: lowercase;
-  letter-spacing: 0.02em;
-}
-
-.choice-page-row-status.status-running {
-  background: #e69138;
-}
-
-.choice-page-row-status.status-idle {
-  background: var(--state-online);
-}
-
-.choice-page-row-status.status-spawning {
-  background: var(--state-connecting);
-}
-
-.choice-page-row-status.status-exited {
-  background: var(--state-offline);
-}
-
-.choice-page-row-status.status-unknown {
-  background: var(--muted);
-}
-
-.choice-page-row-first {
-  font-size: 0.9rem;
-  word-break: break-word;
-}
-
-.choice-page-row-remove {
-  background: var(--surface);
-  color: var(--text);
-  border-color: var(--border);
-  font-size: 0.85rem;
-  padding: 0.35rem 0.7rem;
-}
-
-.choice-page-error {
-  margin: 0;
-  padding: 0.4rem 0.6rem;
-  font-size: 0.85rem;
-  color: var(--state-offline);
-  background: rgba(192, 57, 43, 0.08);
-  border-radius: 6px;
-}
-
-.choice-page-empty,
-.choice-page-loading {
-  margin: 0;
-  font-size: 0.9rem;
-  color: var(--muted);
-}
-
-/* ---- DirectoryBrowser (M4 tasks/m4/07) ---------------------------------- */
-
-.directory-browser {
-  border-style: dashed;
-}
-
-.directory-browser-header {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.directory-browser-header > h3 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.directory-browser-path {
-  margin: 0;
-  font-size: 0.88rem;
-  color: var(--muted);
-}
-
-.directory-browser-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.directory-browser-entries {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  max-height: 40vh;
-  overflow-y: auto;
-}
-
-.directory-browser-entry {
-  display: grid;
-  grid-template-columns: minmax(8rem, 1fr) minmax(0, 2fr) auto;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.35rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-}
-
-.directory-browser-entry-name {
-  font-weight: 600;
-  font-size: 0.92rem;
-}
-
-.directory-browser-entry-path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.82rem;
-  color: var(--muted);
-  word-break: break-all;
-}
-
-.directory-browser-entry-actions {
-  display: flex;
-  gap: 0.4rem;
-}
-
-.directory-browser-entry-actions button {
-  font-size: 0.82rem;
-  padding: 0.3rem 0.65rem;
-}
-
-.directory-browser-entry-actions button[data-testid='dir-entry-open'] {
-  background: var(--surface);
-  color: var(--text);
-  border-color: var(--border);
-}
-
-.directory-browser-error {
-  margin: 0;
-  padding: 0.4rem 0.6rem;
-  font-size: 0.85rem;
-  color: var(--state-offline);
-  background: rgba(192, 57, 43, 0.08);
-  border-radius: 6px;
-}
-
-.directory-browser-loading,
-.directory-browser-empty {
-  margin: 0;
-  font-size: 0.88rem;
-  color: var(--muted);
-}
-
-/* ---- Markdown + folding (AssistantMessageBody + streaming draft) ---
+/* 6. `.message-tool-result-error` — red tint + border for
+   `isError: true` tool results. The rule paints a `pre`
+   that's a child of `.message-tool-result` — the dual-class
+   `message-tool-result message-tool-result-error` pattern is
+   matched by the corresponding className string emitted from
+   `AssistantMessageBody.tsx` (`toolCall` segment) and
+   `ChatView.tsx` (orphan toolResult branch).
  *
- * Styles for react-markdown output (terminal assistant messages)
- * and the folded thinking / toolCall pills (terminal + streaming
- * drafts). Inline code / fenced code blocks use the `--code-bg`
- * CSS variable defined in the :root + dark-mode blocks above
- * for theme parity with the rest of the chat surface.
- */
-
-/* Markdown body container (AssistantMessageBody) — vertical
- * rhythm for stacked segments inside one message. */
-.assistant-text-segment {
-  margin: 0.4rem 0;
-}
-.assistant-text-segment:first-child {
-  margin-top: 0;
-}
-.assistant-text-segment:last-child {
-  margin-bottom: 0;
-}
-
-/* Heading rhythm — keep h1/h2/h3 compact so a long answer doesn't
- * push the conversation off-screen. */
-.assistant-text-segment h1,
-.assistant-text-segment h2,
-.assistant-text-segment h3,
-.assistant-text-segment h4 {
-  margin: 0.8rem 0 0.4rem;
-  font-size: 1em;
-  font-weight: 600;
-}
-.assistant-text-segment h1 { font-size: 1.15em; }
-.assistant-text-segment h2 { font-size: 1.05em; }
-.assistant-text-segment h3 { font-size: 1em; }
-.assistant-text-segment h1:first-child,
-.assistant-text-segment h2:first-child,
-.assistant-text-segment h3:first-child,
-.assistant-text-segment h4:first-child {
-  margin-top: 0;
-}
-
-.assistant-text-segment p {
-  margin: 0.4rem 0;
-}
-.assistant-text-segment p:first-child {
-  margin-top: 0;
-}
-.assistant-text-segment p:last-child {
-  margin-bottom: 0;
-}
-
-/* Lists inside markdown bodies — pad the markers so they align
- * with the surrounding text. */
-.assistant-text-segment ul,
-.assistant-text-segment ol {
-  margin: 0.4rem 0;
-  padding-left: 1.5rem;
-}
-.assistant-text-segment li {
-  margin: 0.15rem 0;
-}
-
-/* GFM tables — keep the layout dense but readable. */
-.assistant-text-segment table {
-  border-collapse: collapse;
-  margin: 0.5rem 0;
-  font-size: 0.9em;
-  width: auto;
-  max-width: 100%;
-}
-.assistant-text-segment th,
-.assistant-text-segment td {
-  border: 1px solid var(--border);
-  padding: 0.3rem 0.55rem;
-  text-align: left;
-  vertical-align: top;
-}
-.assistant-text-segment th {
-  background: var(--surface-2);
-  font-weight: 600;
-}
-
-/* Links — pick up the accent colour so they stand out without
- * clashing with the surrounding prose. */
-.assistant-text-segment a {
-  color: var(--accent);
-  text-decoration: underline;
-}
-.assistant-text-segment a:hover {
-  text-decoration: none;
-}
-
-/* Inline + block code — both use --code-bg for theme parity;
- * inline is rendered tighter (no extra padding) while blocks
- * get a scrollable <pre> wrapper. */
-.markdown-code-inline {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  background: var(--code-bg);
-  padding: 0.1rem 0.3rem;
-  border-radius: 3px;
-  font-size: 0.9em;
-}
-
-.markdown-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.9em;
-}
-
-.markdown-pre {
-  background: var(--code-bg);
-  padding: 0.6rem 0.75rem;
-  border-radius: 6px;
-  overflow-x: auto;
-  margin: 0.5rem 0;
-  font-size: 0.88em;
-  border: 1px solid var(--border);
-}
-
-/* Block quotes — used by markdown `>` syntax; subtle indent
- * + left border so they read as quoted text. */
-.assistant-text-segment blockquote {
-  margin: 0.5rem 0;
-  padding-left: 0.75rem;
-  border-left: 3px solid var(--border);
-  color: var(--muted);
-}
-
-/* Horizontal rules — drawn as a thin divider. */
-.assistant-text-segment hr {
-  border: 0;
-  border-top: 1px solid var(--border);
-  margin: 0.75rem 0;
-}
-
-/* ---- Thinking fold (terminal + streaming) ---------------------------- */
-
-.message-thinking-details {
-  margin: 0.4rem 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-}
-.message-thinking-details.assistant-thinking {
-  /* terminal-state variant — currently shares the base border
-   * (the rule is kept as a hook for future visual divergence
-   * between streaming-time and terminal-time folds). The
-   * explicit `border-style: solid` that used to live here was
-   * redundant — the shorthand `border: 1px solid var(--border)`
-   * above already pins the style to `solid`. */
-}
-
-.thinking-summary {
-  cursor: pointer;
-  padding: 0.35rem 0.6rem;
-  font-size: 0.85rem;
-  color: var(--muted);
-  list-style: none;
-  user-select: none;
-}
-.thinking-summary::-webkit-details-marker {
-  display: none;
-}
-.thinking-summary::before {
-  content: '▶';
-  display: inline-block;
-  margin-right: 0.4rem;
-  font-size: 0.7em;
-  transition: transform 0.15s ease-in-out;
-}
-.message-thinking-details[open] .thinking-summary::before {
-  transform: rotate(90deg);
-}
-
-.thinking-body {
-  padding: 0.4rem 0.7rem 0.6rem;
-  border-top: 1px solid var(--border);
-  font-size: 0.88rem;
-  color: var(--muted);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-/* ---- Tool fold (terminal + streaming) ------------------------------- */
-
-.message-tool-details {
-  margin: 0.4rem 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
-}
-.message-tool-details.assistant-tool-call {
-  /* terminal-state variant — currently shares the base border
-   * (the rule is kept as a hook for future visual divergence
-   * between streaming-time and terminal-time folds). The
-   * explicit `border-style: solid` that used to live here was
-   * redundant — the shorthand `border: 1px solid var(--border)`
-   * above already pins the style to `solid`. */
-}
-
-.message-tool-pill {
-  cursor: pointer;
-  padding: 0.35rem 0.7rem;
-  font-size: 0.88rem;
-  list-style: none;
-  user-select: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  color: var(--text);
-}
-.message-tool-pill::-webkit-details-marker {
-  display: none;
-}
-.message-tool-pill::before {
-  content: '▶';
-  display: inline-block;
-  margin-right: 0.3rem;
-  font-size: 0.7em;
-  color: var(--muted);
-  transition: transform 0.15s ease-in-out;
-}
-.message-tool-details[open] .message-tool-pill::before {
-  transform: rotate(90deg);
-}
-
-.message-tool-body {
-  padding: 0.5rem 0.7rem 0.7rem;
-  border-top: 1px solid var(--border);
-  font-size: 0.88rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-.message-tool-body strong {
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  font-weight: 600;
-}
-.message-tool-args,
-.message-tool-result {
-  margin: 0;
-  padding: 0.4rem 0.55rem;
-  background: var(--code-bg);
-  border-radius: 4px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.82em;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 20rem;
-  overflow: auto;
-}
-
-/* Tool result error styling. Applied to the
-   `<pre class="message-tool-result">` when `result.isError === true`
-   (the MergedToolResult shape from `mergeToolResults`). Visual
-   treatment: red-tinted background + red border + red text, so the
-   user spots a failed tool call at a glance. Uses the same
-   `--state-offline` CSS variable family as `.input-bar-error` /
-   `.dialog-error` / `.dialog-host-toast` so the operator learns one
-   "red = something failed" signal across all surfaces. */
+ * Kept in `@layer components` because:
+ *   - the rule shares a red background across the error AND
+ *     the orphan-error branches, and pinning the alpha at 8%
+ *     of the token (`rgba(192, 57, 43, 0.08)`) keeps the same
+ *     surface feel as `.input-bar-error` / `.dialog-error` /
+ *     `.dialog-host-toast` for a "red = something failed"
+ *     signal across all surfaces;
+ *   - the Tailwind v4 `<alpha-value>` channel rewrite for the
+ *     `bg-state-offline/[0.08]` arbitrary value would have to
+ *     rip through the entire `--state-offline` token usage
+ *     (every other red banner uses opacity the same way) and
+ *     is out of scope for T02.
+ *
+ * The inline `rgba(192, 57, 43, 0.08)` literal is the
+ * canonical `#c0392b @ 8%` alpha — see `:root` (`--state-
+ * offline: #c0392b`). Dark mode uses the brighter `#f87171`
+ * token via `--state-offline`, but the same 8% tint is applied
+ * (slightly darker on dark, still a clear "red-tinted bg"
+ * signal). */
 .message-tool-result.message-tool-result-error {
   background: rgba(192, 57, 43, 0.08);
   border: 1px solid rgba(192, 57, 43, 0.45);
   color: var(--state-offline);
 }
 
-/* Orphan toolResult folded details. Applied when
-   `mergeToolResults` couldn't match a toolResult to any prior
-   assistant toolCall (typical: MESSAGES_CAP truncated the
-   assistant message but the toolResult survived). The wrapper
-   uses the existing `.message-tool-details` chrome (folded
-   summary, default-folded `<details>`) and the `.message-tool-
-   pill` summary, but adds the `.message-tool-result-orphan`
-   modifier so the `(orphan)` suffix can use the muted colour and
-   the orphan-id span can sit inline without changing the
-   terminal pill's typography. */
+/* 7. `.message-tool-result-orphan` — muted-border variant for
+   orphan toolResult folds (no matching assistant toolCall).
+   The border colour (`rgba(154, 154, 166, 0.55)`) is a fixed
+   grey-alpha because there isn't a token that targets the
+   "orphan" semantics specifically — the soft contrast against
+   the default `--border` makes the orphan fold visually
+   distinct from a regular tool fold without elevating it to
+   an error state. The `.message-tool-orphan-id` child span
+   inherits `color: var(--muted)` + `font-size: 0.78em` to
+   subordinate the orphan id to the pill's tool name.
+ *
+ * Kept in `@layer components` because:
+ *   - the dual-class pattern `message-tool-details message-
+ *     tool-result-orphan` requires the AND of two class
+ *     selectors on the same `<details>` element; Tailwind
+ *     doesn't have a "AND two class selectors on the same
+ *     element" utility (variants like `open:` or `aria-
+ *     [something]:` are still single-class modifiers);
+ *   - the orphan-id span emits a small inline-block element
+ *     that inherits the surrounding `<summary>` typography;
+ *     migrating to utilities would force the consumer
+ *     (`ChatView.tsx` `OrphanToolResultBody`) to compose three
+ *     separate utility strings across two elements.
+ *
+ * Consumer: `ChatView.tsx` (orphan toolResult branch only)
+ * and `AssistantMessageBody.tsx` (no consumer — terminal
+ * toolCall pill never carries this class). */
 .message-tool-details.message-tool-result-orphan {
   border-color: rgba(154, 154, 166, 0.55);
 }
@@ -1301,13 +482,6 @@ td code {
   color: var(--muted);
   margin-left: 0.2rem;
   letter-spacing: 0.02em;
-}
-
-.message-tool-pending {
-  margin: 0;
-  font-size: 0.82rem;
-  color: var(--muted);
-  font-style: italic;
 }
 
 }

@@ -107,7 +107,11 @@ export function ChatView({ session, workDir }: { session: string; workDir: strin
     prewarmMarkdownChunk();
   }, []);
   return (
-    <div className="chat-view" data-testid="chat-view" data-session={session}>
+    // `chat-view` retained as a semantic class anchor (no styling
+    // remains under it; e2e selectors target `[data-testid="chat-view"]`
+    // directly, so the class is load-bearing only for any future
+    // global hooks). The flex column + gap is now a Tailwind utility.
+    <div className="chat-view flex flex-col gap-2" data-testid="chat-view" data-session={session}>
       <MessageList session={session} />
       <InputBar session={session} workDir={workDir} />
       <DialogHost />
@@ -178,27 +182,55 @@ function MessageList({ session }: { session: string }) {
   }, [mergedMessages, draft]);
 
   return (
-    <section className="card message-list" aria-label="Conversation" data-testid="message-list">
+    // `message-list` retained as a semantic class anchor (no
+    // styling remains under it after M6 T02; the `card` chrome
+    // and the 50vh cap now live as Tailwind utilities below).
+    // The `message-list-items` class on the `<ol>` likewise stays
+    // for structural reference but contributes no paint.
+    <section
+      className="message-list flex max-h-[50vh] flex-col gap-3 overflow-y-auto rounded-md border border-border bg-surface p-4"
+      aria-label="Conversation"
+      data-testid="message-list"
+    >
       {items.length === 0 ? (
-        <p className="empty" data-testid="message-list-empty">No messages yet — send a prompt to start.</p>
+        <p className="empty text-muted text-center" data-testid="message-list-empty">No messages yet — send a prompt to start.</p>
       ) : (
-        <ol className="message-list-items">
-          {items.map((item) => (
-            <li
-              key={item.key}
-              className={`message-row message-role-${item.role}${item.kind === 'draft' ? ' message-draft' : ''}`}
-              data-testid={item.kind === 'draft' ? 'message-draft' : 'message-row'}
-            >
-              <div className="message-role">{item.role}</div>
-              <div className="message-body">
-                {item.kind === 'draft' ? (
-                  <StreamingDraftBody segments={item.segments} />
-                ) : (
-                  <TerminalMessageBody role={item.role} raw={item.raw} />
-                )}
-              </div>
-            </li>
-          ))}
+        <ol className="message-list-items m-0 flex list-none flex-col gap-2 p-0">
+          {items.map((item) => {
+            // Per-role border colour: the previous legacy
+            // `.message-role-user { border-color: var(--accent); }` /
+            // `.message-role-assistant { border-color: var(--state-online); }`
+            // rules painted the corresponding row's left/top border
+            // in accent / online green. With utilities that lived
+            // in `<li class="border border-border rounded-md ...">`
+            // we're now opting in to `border-accent` /
+            // `border-state-online` per role. Other roles fall
+            // back to `border-border` from the base class.
+            const roleBorderClass =
+              item.role === 'user'
+                ? 'border-accent'
+                : item.role === 'assistant'
+                  ? 'border-state-online'
+                  : '';
+            return (
+              <li
+                key={item.key}
+                className={`message-row message-role-${item.role}${
+                  item.kind === 'draft' ? ' message-draft' : ''
+                } border border-border ${roleBorderClass} rounded-md bg-surface-2 px-3 py-2`}
+                data-testid={item.kind === 'draft' ? 'message-draft' : 'message-row'}
+              >
+                <div className="message-role mb-1.5 text-[0.72rem] uppercase tracking-[0.05em] text-muted">{item.role}</div>
+                <div className="message-body text-[0.92rem] break-words whitespace-pre-wrap">
+                  {item.kind === 'draft' ? (
+                    <StreamingDraftBody segments={item.segments} />
+                  ) : (
+                    <TerminalMessageBody role={item.role} raw={item.raw} />
+                  )}
+                </div>
+              </li>
+            );
+          })}
         </ol>
       )}
     </section>
@@ -220,29 +252,39 @@ function StreamingDraftBody({ segments }: { segments: readonly StreamingSegment[
       {segments.map((seg, idx) => {
         if (seg.type === 'thinking') {
           return (
+            // `message-thinking-details` retained as a semantic
+            // anchor (no styling beyond the `<details>`/`<summary>`
+            // pseudo-element rules in styles.css). Tailwind utilities
+            // paint the chrome (border / padding / background).
             <details
               key={`think-${idx}`}
-              className="message-thinking-details"
+              className="message-thinking-details my-1 rounded-md border border-border bg-surface-2"
               data-testid="message-draft-thinking"
             >
-              <summary className="thinking-summary">
+              <summary className="thinking-summary cursor-pointer px-3 py-1 text-[0.85rem] text-muted">
                 Thinking… ({seg.text.length} chars)
               </summary>
-              <div className="thinking-body">{seg.text}</div>
+              <div className="thinking-body whitespace-pre-wrap break-words border-t border-border px-3 pb-2 pt-2 text-[0.88rem] text-muted">{seg.text}</div>
             </details>
           );
         }
         if (seg.type === 'tool') {
           return (
+            // `message-tool-details` / `message-tool-pill` retained
+            // as semantic anchors. The `message-tool-body` on the
+            // `<pre>` likewise stays — current consumers (this
+            // component + `AssistantMessageBody.tsx`) don't assert
+            // on its paint (the streaming draft wraps the args /
+            // running message in a single `<pre>` of minimal chrome).
             <details
               key={`tool-${idx}`}
-              className="message-tool-details"
+              className="message-tool-details my-1 rounded-md border border-border bg-surface-2"
               data-testid="message-draft-tool"
             >
-              <summary className="message-tool-pill">
+              <summary className="message-tool-pill inline-flex cursor-pointer items-center gap-1 px-3 py-1 text-[0.88rem] text-text">
                 <span aria-hidden="true">🔧</span> {seg.name || 'tool'}
               </summary>
-              <pre className="message-tool-body">{seg.args || '(running…)'}</pre>
+              <pre className="message-tool-body m-0 overflow-auto whitespace-pre-wrap break-words rounded border-t border-border bg-code-bg p-3 text-[0.82em]">{seg.args || '(running…)'}</pre>
             </details>
           );
         }
@@ -375,19 +417,30 @@ function OrphanToolResultBody({ raw }: { raw: unknown }) {
   const text = merged.text;
   const isError = merged.isError;
   return (
+    // `message-tool-details` + `message-tool-result-orphan`
+    // anchor the orphan variant in styles.css (the border-color
+    // override + orphan-id span styles live there). The chrome
+    // (padding / margin / rounded / bg) is now utilities.
     <details
-      className="message-tool-details message-tool-result-orphan"
+      className="message-tool-details message-tool-result-orphan my-1 rounded-md border border-border bg-surface-2"
       data-testid="message-tool-result-orphan"
     >
-      <summary className="message-tool-pill">
+      <summary className="message-tool-pill inline-flex cursor-pointer items-center gap-1 px-3 py-1 text-[0.88rem] text-text">
         <span aria-hidden="true">🔧</span> {toolName}
         <span className="message-tool-orphan-id"> · result (orphan)</span>
       </summary>
       <pre
+        // `message-tool-result` + `message-tool-result-error` keep
+        // the dual-class anchor so the `.message-tool-result.
+        // message-tool-result-error` rule in styles.css still
+        // paints the red tint for `isError === true` orphans.
+        // Background + border + padding + font (the success path)
+        // are now Tailwind utilities.
         className={
-          isError
+          (isError
             ? 'message-tool-result message-tool-result-error'
-            : 'message-tool-result'
+            : 'message-tool-result') +
+          ' m-0 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border-t border-border bg-code-bg p-3 font-mono text-[0.82em]'
         }
       >
         {text}
@@ -774,10 +827,22 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
   };
 
   return (
-    <form className="input-bar" onSubmit={onSubmit} aria-label="Send a prompt">
+    // `input-bar` retained as a semantic class anchor (no
+    // styling remains under it; the flex / align / gap / chrome
+    // are Tailwind utilities below). The class is kept for any
+    // future global hook + to anchor the `keydown` testid
+    // surface (`[data-testid="chat-view"] > form.input-bar`).
+    <form className="input-bar flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface px-3 py-2" onSubmit={onSubmit} aria-label="Send a prompt">
       <textarea
         ref={textareaRef}
-        className="input-bar-field"
+        // `input-bar-field` retained as a semantic anchor (the
+        // `useAutoResizeTextarea` effect depends on this class to
+        // detect its textarea for the height auto-grow pass — see
+        // `hooks/useAutoResizeTextarea.ts` references). All
+        // chrome (box-sizing / resize / min-height / max-height /
+        // overflow / focus outline) is now utilities.
+        className="input-bar-field m-0 box-border w-full min-w-[12rem] flex-1 resize-none rounded border border-border bg-surface-2 px-2 py-1.5 font-[inherit] text-[0.95rem] leading-[1.4] text-text outline outline-2 outline-offset-1 outline-accent focus:outline disabled:cursor-not-allowed disabled:opacity-70"
+        style={{ maxHeight: 'var(--input-max-height)' }}
         data-testid="input-field"
         rows={1}
         placeholder={
@@ -795,13 +860,22 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
         autoComplete="off"
         spellCheck={false}
       />
-      <button type="submit" data-testid="input-send" disabled={inputDisabled || value.trim().length === 0}>
+      <button type="submit" data-testid="input-send" disabled={inputDisabled || value.trim().length === 0} className="self-end rounded border border-accent bg-accent px-4 py-2 font-[inherit] text-white">
         Send
       </button>
       <button
         type="button"
         data-testid="input-abort"
-        className={abortLive ? 'abort-button abort-live' : 'abort-button'}
+        // `abort-button` retained as a semantic anchor (mirror of
+        // `input-bar-field`). `abort-live` was the live-state
+        // red paint — the legacy CSS rule is gone, so we apply
+        // the red Tailwind colour stack explicitly here.
+        className={
+          (abortLive
+            ? 'abort-button abort-live border-state-offline bg-state-offline text-white'
+            : 'abort-button border-border bg-surface text-text') +
+          ' self-end rounded px-4 py-2 font-[inherit] disabled:cursor-not-allowed disabled:opacity-50'
+        }
         onClick={onAbort}
         disabled={!abortLive}
         title={
@@ -815,10 +889,16 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
         Abort
       </button>
       {settledHintVisible && phase === 'idle' ? (
-        <p className="input-bar-hint">agent settled — 5 minutes until auto-shutdown</p>
+        // `input-bar-hint` retained as a semantic anchor (no
+        // styling; layout pulse + text colour are utilities).
+        <p className="input-bar-hint m-0 basis-full text-[0.82rem] text-muted">agent settled — 5 minutes until auto-shutdown</p>
       ) : null}
       {commandError !== null ? (
-        <p className="input-bar-error" role="alert" data-testid="input-error">
+        // `input-bar-error` retained as a semantic anchor (no
+        // styling; tint is the canonical "red = something
+        // failed" 8%-alpha paint matching the other surfaces that
+        // flip on `--state-offline`).
+        <p className="input-bar-error m-0 basis-full rounded bg-state-offline/[0.08] px-2 py-1 text-[0.82rem] text-state-offline" role="alert" data-testid="input-error">
           {commandError}
         </p>
       ) : null}

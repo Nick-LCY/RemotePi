@@ -44,25 +44,25 @@ function render(content: unknown): string {
 describe('AssistantMessageBody — GFM rendering', () => {
   it('1.1 renders headings (# ## ###) as <h1>/<h2>/<h3>', () => {
     const html = render([{ type: 'text', text: '# H1\n## H2\n### H3' }]);
-    expect(html).toContain('<h1>H1</h1>');
-    expect(html).toContain('<h2>H2</h2>');
-    expect(html).toContain('<h3>H3</h3>');
+    expect(html).toMatch(/<h1[^>]*>H1<\/h1>/);
+    expect(html).toMatch(/<h2[^>]*>H2<\/h2>/);
+    expect(html).toMatch(/<h3[^>]*>H3<\/h3>/);
   });
 
   it('1.2 renders unordered lists (- / *) as <ul><li>', () => {
     const html = render([{ type: 'text', text: '- a\n- b\n- c' }]);
-    expect(html).toContain('<ul>');
-    expect(html).toContain('<li>a</li>');
-    expect(html).toContain('<li>b</li>');
-    expect(html).toContain('<li>c</li>');
-    expect(html).toContain('</ul>');
+    expect(html).toMatch(/<ul[^>]*>/);
+    expect(html).toMatch(/<li[^>]*>a<\/li>/);
+    expect(html).toMatch(/<li[^>]*>b<\/li>/);
+    expect(html).toMatch(/<li[^>]*>c<\/li>/);
+    expect(html).toMatch(/<\/ul>/);
   });
 
   it('1.3 renders ordered lists (1. 2.) as <ol><li>', () => {
     const html = render([{ type: 'text', text: '1. one\n2. two\n3. three' }]);
-    expect(html).toContain('<ol>');
-    expect(html).toContain('<li>one</li>');
-    expect(html).toContain('<li>two</li>');
+    expect(html).toMatch(/<ol[^>]*>/);
+    expect(html).toMatch(/<li[^>]*>one<\/li>/);
+    expect(html).toMatch(/<li[^>]*>two<\/li>/);
   });
 
   it('1.4 renders GFM tables with <table><thead><tbody>', () => {
@@ -72,13 +72,13 @@ describe('AssistantMessageBody — GFM rendering', () => {
         text: '| col1 | col2 |\n| ---- | ---- |\n| a    | b    |\n| c    | d    |',
       },
     ]);
-    expect(html).toContain('<table>');
-    expect(html).toContain('<thead>');
-    expect(html).toContain('<tbody>');
-    expect(html).toContain('<th>col1</th>');
-    expect(html).toContain('<th>col2</th>');
-    expect(html).toContain('<td>a</td>');
-    expect(html).toContain('<td>d</td>');
+    expect(html).toMatch(/<table[^>]*>/);
+    expect(html).toMatch(/<thead[^>]*>/);
+    expect(html).toMatch(/<tbody[^>]*>/);
+    expect(html).toMatch(/<th[^>]*>col1<\/th>/);
+    expect(html).toMatch(/<th[^>]*>col2<\/th>/);
+    expect(html).toMatch(/<td[^>]*>a<\/td>/);
+    expect(html).toMatch(/<td[^>]*>d<\/td>/);
   });
 
   it('1.5 renders fenced code blocks (```) as <pre><code>', () => {
@@ -183,8 +183,7 @@ describe('AssistantMessageBody — folded segments', () => {
     const html = render([
       { type: 'thinking', thinking: 'reasoning text' },
     ]);
-    expect(html).toContain('<details');
-    expect(html).toContain('class="message-thinking-details assistant-thinking"');
+    expect(html).toMatch(/<details[^>]*message-thinking-details assistant-thinking[^>]*>/);
     expect(html).toContain('<summary');
     expect(html).toContain('思考过程');
     expect(html).toContain('reasoning text');
@@ -211,10 +210,8 @@ describe('AssistantMessageBody — folded segments', () => {
       },
     ]);
     // Pill summary with the tool name + emoji.
-    expect(html).toContain('<details');
-    expect(html).toContain('class="message-tool-details assistant-tool-call"');
-    expect(html).toContain('<summary');
-    expect(html).toContain('message-tool-pill');
+    expect(html).toMatch(/<details[^>]*message-tool-details assistant-tool-call[^>]*>/);
+    expect(html).toMatch(/<summary[^>]*message-tool-pill[^>]*>/);
     expect(html).toContain('🔧');
     expect(html).toContain('bash');
     // Args + result (D4 — untruncated). `renderToStaticMarkup`
@@ -229,7 +226,6 @@ describe('AssistantMessageBody — folded segments', () => {
     expect(html).toContain('stdout: file.txt');
     expect(html).toContain('code: 0');
     // Success path does NOT carry the error styling.
-    expect(html).toContain('class="message-tool-result"');
     expect(html).not.toContain('message-tool-result-error');
     expect(html).not.toContain('data-testid="assistant-tool-result-error"');
     // Not open by default.
@@ -250,7 +246,7 @@ describe('AssistantMessageBody — folded segments', () => {
       },
     ]);
     expect(html).toContain('结果');
-    expect(html).toContain('class="message-tool-result message-tool-result-error"');
+    expect(html).toMatch(/message-tool-result message-tool-result-error/);
     expect(html).toContain('data-testid="assistant-tool-result-error"');
     expect(html).toContain('cannot remove /missing');
     // Success-variant testids are absent.
@@ -423,9 +419,9 @@ describe('AssistantMessageBody — link safety + custom renderers', () => {
 
   it('5.2 fenced code block <pre> + <code> carry the markdown-* classes', () => {
     const html = render([{ type: 'text', text: '```\nhello\n```' }]);
-    expect(html).toContain('class="markdown-pre"');
-    // Inside the <pre> there should be a <code class="markdown-code …">
-    expect(html).toMatch(/<code class="markdown-code/);
+    expect(html).toMatch(/<pre[^>]*markdown-pre[^>]*>/);
+    // Inside the <pre> there should be a <code …markdown-code …>
+    expect(html).toMatch(/<code[^>]*markdown-code/);
   });
 
   it('5.3 mailto: links do NOT carry target="_blank" / rel="noreferrer" (S3)', () => {

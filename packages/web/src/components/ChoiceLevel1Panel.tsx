@@ -35,8 +35,7 @@ export function ChoiceLevel1Panel(props: ChoiceLevel1PanelProps): JSX.Element {
 
       {removeError !== undefined && removeError !== null ? (
         <p
-          className="m-0 rounded border border-state-offline px-3 py-2 text-sm text-state-offline"
-          style={{ backgroundColor: 'rgba(192, 57, 43, 0.08)' }}
+          className="m-0 rounded border border-state-offline bg-state-offline/[0.08] px-3 py-2 text-sm text-state-offline"
           role="alert"
         >
           {removeError}

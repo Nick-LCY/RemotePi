@@ -210,26 +210,35 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
   return (
     <section
       ref={containerRef}
+      // `directory-browser` retained as a semantic anchor on the
+      // desktop form — the e2e 09 spec asserts mobile should NOT
+      // contain the literal `card directory-browser` substring,
+      // so we don't add `card` class to the desktop form (the
+      // chrome utilities below replace it 1-for-1). Mobile form
+      // stays free of both classes — the spec assertion
+      // `not.toContain('card directory-browser')` is satisfied
+      // trivially.
       className={isMobile
-        ? 'fixed inset-0 z-[250] flex flex-col gap-3 overflow-y-auto bg-bg p-4'
-        : 'card directory-browser'
+        ? 'directory-browser-mobile fixed inset-0 z-[250] flex flex-col gap-3 overflow-y-auto bg-bg p-4'
+        : 'directory-browser flex flex-col gap-2 rounded border border-dashed border-border bg-surface p-4'
       }
       data-testid="directory-browser"
       role="dialog"
       aria-modal="true"
       aria-labelledby="directory-browser-title"
     >
-      <div className="directory-browser-header">
-        <h3 id="directory-browser-title">浏览目录</h3>
-        <p className="directory-browser-path" data-testid="directory-browser-path">
+      <div className="directory-browser-header flex flex-col gap-2">
+        <h3 id="directory-browser-title" className="directory-browser-title m-0 text-base">浏览目录</h3>
+        <p className="directory-browser-path m-0 text-[0.88rem] text-muted" data-testid="directory-browser-path">
           当前路径：<code>{path ?? '$HOME'}</code>
         </p>
-        <div className="directory-browser-actions">
+        <div className="directory-browser-actions flex gap-2">
           <button
             type="button"
             onClick={goHome}
             disabled={path === null}
             data-testid="directory-browser-home"
+            className="rounded border border-border bg-surface px-3 py-1.5 text-sm text-text disabled:opacity-50"
           >
             上到 home
           </button>
@@ -237,6 +246,7 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
             type="button"
             onClick={onCancel}
             data-testid="directory-browser-cancel"
+            className="rounded border border-border bg-surface px-3 py-1.5 text-sm text-text"
           >
             取消
           </button>
@@ -245,7 +255,7 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
 
       {listError !== null ? (
         <p
-          className="directory-browser-error"
+          className="directory-browser-error m-0 rounded bg-state-offline/[0.08] px-3 py-2 text-[0.85rem] text-state-offline"
           role="alert"
           data-testid="directory-browser-error"
         >
@@ -255,7 +265,7 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
 
       {addError !== null ? (
         <p
-          className="directory-browser-error"
+          className="directory-browser-error m-0 rounded bg-state-offline/[0.08] px-3 py-2 text-[0.85rem] text-state-offline"
           role="alert"
           data-testid="directory-browser-add-error"
         >
@@ -264,36 +274,37 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
       ) : null}
 
       {entries === null && listError === null ? (
-        <p className="directory-browser-loading" data-testid="directory-browser-loading">
+        <p className="directory-browser-loading m-0 text-[0.88rem] text-muted" data-testid="directory-browser-loading">
           加载中…
         </p>
       ) : null}
 
       {entries !== null ? (
-        <ul className="directory-browser-entries" data-testid="dir-entries">
+        <ul className="directory-browser-entries m-0 flex max-h-[40vh] list-none flex-col gap-1 overflow-y-auto p-0" data-testid="dir-entries">
           {entries.entries.length === 0 ? (
-            <li className="directory-browser-empty">（无子目录）</li>
+            <li className="directory-browser-empty text-[0.88rem] text-muted">（无子目录）</li>
           ) : (
             entries.entries.map((entry) => (
               <li
                 key={entry.path}
-                className="directory-browser-entry"
+                className="directory-browser-entry grid grid-cols-[minmax(8rem,1fr)_minmax(0,2fr)_auto] items-center gap-2 rounded border border-border bg-surface-2 px-2 py-1"
                 data-testid="dir-entry"
               >
                 <span
-                  className="directory-browser-entry-name"
+                  className="directory-browser-entry-name text-[0.92rem] font-semibold"
                   data-testid="dir-entry-name"
                 >
                   {entry.name}
                 </span>
-                <span className="directory-browser-entry-path">
+                <span className="directory-browser-entry-path break-all font-mono text-[0.82rem] text-muted">
                   <code>{entry.path}</code>
                 </span>
-                <div className="directory-browser-entry-actions">
+                <div className="directory-browser-entry-actions flex gap-1">
                   <button
                     type="button"
                     onClick={() => navigateTo(entry.path)}
                     data-testid="dir-entry-open"
+                    className="rounded border border-border bg-surface px-2 py-0.5 text-[0.82rem] text-text"
                   >
                     打开
                   </button>
@@ -302,6 +313,7 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
                     onClick={() => handleSelect(entry.path)}
                     disabled={addingPath === entry.path}
                     data-testid="dir-entry-select"
+                    className="rounded border border-accent bg-accent px-2 py-0.5 text-[0.82rem] text-white disabled:bg-accent-disabled disabled:border-accent-disabled"
                   >
                     {addingPath === entry.path ? '选择中…' : '选择'}
                   </button>

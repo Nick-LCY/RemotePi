@@ -204,7 +204,10 @@ export function DialogHost() {
   // sibling — it lives in the same overlay container so it's
   // visible above the chat surface and below the dialog stack.
   return (
-    <div className="dialog-host" aria-label="Pending dialogs" data-testid="dialog-host">
+    // `dialog-host` retained as a semantic anchor (no styling
+    // remains under it; the fixed + centred stack + z-index-100
+    // positioning now live on the Tailwind utilities).
+    <div className="dialog-host pointer-events-none fixed inset-0 z-[100] flex items-start justify-center pt-8" aria-label="Pending dialogs" data-testid="dialog-host">
       {entries.map(({ entry, enqueuedAt }) => {
         const state = local.get(entry.id) ?? {
           status: 'open',
@@ -231,7 +234,12 @@ export function DialogHost() {
       );
       })}
       {timeoutToast !== null ? (
-        <div className="dialog-host-toast" role="status" aria-live="polite" data-testid="dialog-toast">
+        // `dialog-host-toast` retained as a semantic anchor. The
+        // toast paint uses the same "red = something failed"
+        // colour family as `.dialog-error` /
+        // `.input-bar-error` — achieved via `text-state-offline`
+        // + the canonical 16%-alpha shadow token.
+        <div className="dialog-host-toast pointer-events-none mx-2 mb-2 max-w-[min(360px,80vw)] self-end rounded-md border border-border bg-surface px-3 py-2 text-[0.88rem] text-state-offline shadow-[0_6px_18px_rgba(0,0,0,0.16)]" role="status" aria-live="polite" data-testid="dialog-toast">
           {timeoutToast}
         </div>
       ) : null}

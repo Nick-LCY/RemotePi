@@ -93,19 +93,18 @@ function AssistantSegment({ piece }: AssistantSegmentProps): ReactNode {
     case 'text': {
       const text = typeof obj.text === 'string' ? obj.text : '';
       return (
-        <div className="assistant-text-segment" data-testid="assistant-text-segment">
+        // `assistant-text-segment` retained as a semantic anchor
+        // — used by `assistant-message-body.test.tsx` 1.6 to
+        // verify the renderer produced a `data-testid` on the
+        // segment wrapper. The vertical rhythm (top / bottom
+        // margins trimmed at edges) is now a Tailwind utility on
+        // the segment itself; the descendant heading / paragraph
+        // / list / GFM-table / code / blockquote / hr paint is
+        // expressed by the `markdownComponents` map below.
+        <div className="assistant-text-segment my-1 first:mt-0 last:mb-0 space-y-1.5" data-testid="assistant-text-segment">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             rehypePlugins={[rehypeSanitize]}
-            // The `markdownComponents` object is typed as a
-            // plain `Record<string, unknown>` (see comment
-            // above) — `ReactMarkdown` accepts a strict
-            // `Components` shape keyed by HTML tag names, but
-            // the per-component prop types don't match the
-            // hast-Element-aware strict shape without dragging
-            // in a `hast` types dep. TS infers the broader
-            // `Record<string, unknown>` as compatible at the
-            // call site.
             components={markdownComponents}
           >
             {text}
@@ -116,12 +115,16 @@ function AssistantSegment({ piece }: AssistantSegmentProps): ReactNode {
     case 'thinking': {
       const thinking = typeof obj.thinking === 'string' ? obj.thinking : '';
       return (
+        // `message-thinking-details` + `assistant-thinking`
+        // retained as the dual-class anchors the spec 3.1
+        // asserts on. Chroming utilities match the streaming
+        // draft branch in ChatView.tsx.
         <details
-          className="message-thinking-details assistant-thinking"
+          className="message-thinking-details assistant-thinking my-1 rounded-md border border-border bg-surface-2"
           data-testid="assistant-thinking"
         >
-          <summary className="thinking-summary">思考过程</summary>
-          <div className="thinking-body">{thinking}</div>
+          <summary className="thinking-summary cursor-pointer px-3 py-1 text-[0.85rem] text-muted">思考过程</summary>
+          <div className="thinking-body whitespace-pre-wrap break-words border-t border-border px-3 pb-2 pt-2 text-[0.88rem] text-muted">{thinking}</div>
         </details>
       );
     }
@@ -129,33 +132,29 @@ function AssistantSegment({ piece }: AssistantSegmentProps): ReactNode {
       const name = typeof obj.name === 'string' ? obj.name : 'tool';
       const args = obj.arguments;
       const result = obj.result;
-      // `result` shape is the `MergedToolResult` attached by
-      // `mergeToolResults` (see `components/toolResultMerge.ts`):
-      // `{text, isError}`. Anything else (older test fixtures
-      // that pass an arbitrary object, drift in the wire shape)
-      // falls through to the `pending…` hint rather than
-      // rendering an unexpected structure — the merge function
-      // is the single source of truth for `result` shape today.
       const mergedResult = readMergedToolResult(result);
       return (
+        // `message-tool-details` + `assistant-tool-call` retained
+        // as the dual-class anchors the spec 3.2 asserts on.
         <details
-          className="message-tool-details assistant-tool-call"
+          className="message-tool-details assistant-tool-call my-1 rounded-md border border-border bg-surface-2"
           data-testid="assistant-tool-call"
         >
-          <summary className="message-tool-pill">
+          <summary className="message-tool-pill inline-flex cursor-pointer items-center gap-1 px-3 py-1 text-[0.88rem] text-text">
             <span aria-hidden="true">🔧</span> {name}
           </summary>
-          <div className="message-tool-body">
-            <strong>参数</strong>
-            <pre className="message-tool-args">{stringifySafe(args ?? {})}</pre>
+          <div className="message-tool-body flex flex-col gap-1 border-t border-border px-3 pb-2 pt-2 text-[0.88rem]">
+            <strong className="text-[0.78rem] font-semibold uppercase tracking-[0.05em] text-muted">参数</strong>
+            <pre className="message-tool-args m-0 overflow-auto whitespace-pre-wrap break-words rounded bg-code-bg p-2 font-mono text-[0.82em]">{stringifySafe(args ?? {})}</pre>
             {mergedResult !== null ? (
               <>
-                <strong>结果</strong>
+                <strong className="text-[0.78rem] font-semibold uppercase tracking-[0.05em] text-muted">结果</strong>
                 <pre
                   className={
-                    mergedResult.isError
+                    (mergedResult.isError
                       ? 'message-tool-result message-tool-result-error'
-                      : 'message-tool-result'
+                      : 'message-tool-result') +
+                    ' m-0 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border-t border-border bg-code-bg p-2 font-mono text-[0.82em]'
                   }
                   data-testid={mergedResult.isError ? 'assistant-tool-result-error' : 'assistant-tool-result'}
                 >
@@ -163,7 +162,7 @@ function AssistantSegment({ piece }: AssistantSegmentProps): ReactNode {
                 </pre>
               </>
             ) : (
-              <p className="message-tool-pending">pending…</p>
+              <p className="message-tool-pending m-0 text-[0.82rem] italic text-muted">pending…</p>
             )}
           </div>
         </details>
@@ -222,6 +221,7 @@ const markdownComponents: Record<string, unknown> = {
     const isExternal = href !== undefined && /^(https?:)/i.test(href);
     return (
       <a
+        className="text-accent underline hover:no-underline"
         href={href ?? '#'}
         {...(isExternal ? { target: '_blank', rel: 'noreferrer' } : {})}
       >
@@ -244,15 +244,70 @@ const markdownComponents: Record<string, unknown> = {
       // Inline code — a parent other than <pre> (typically a
       // paragraph). Use the dedicated inline class so the CSS
       // can render a tighter background than the block variant.
-      return <code className="markdown-code-inline">{children}</code>;
+      return <code className="markdown-code-inline rounded-sm bg-code-bg px-1.5 py-0.5 font-mono text-[0.9em]">{children}</code>;
     }
     return (
-      <code className={['markdown-code', className].filter(Boolean).join(' ')}>{children}</code>
+      <code className={['markdown-code', className].filter(Boolean).join(' ') + ' font-mono text-[0.9em]'}>{children}</code>
     );
   },
   pre: ({ children }: { children?: ReactNode }) => (
-    <pre className="markdown-pre">{children}</pre>
+    // `.markdown-pre` retained as a semantic anchor — the
+    // WebKit scrollbar pseudo-elements (`::-webkit-scrollbar*`)
+    // in styles.css style the slim horizontal scrollbar the
+    // user agent shows for long lines. Tailwind preflight
+    // strips the default scrollbar; utilities can't paint
+    // `::-webkit-scrollbar` pseudo-elements, hence the rule
+    // is preserved in `@layer components`.
+    <pre className="markdown-pre mb-1 mt-2 overflow-x-auto rounded-md border border-border bg-code-bg px-3 py-2 text-[0.88em]">{children}</pre>
   ),
+  // GFM table paint (M5 M+ (R3) — the original `.assistant-text-
+  // segment table / th / td` rule) lives here so it travels with
+  // the renderer; utilities can't reach table-cell borders via
+  // table-shorthand compositions cleanly.
+  table: ({ children }: { children?: ReactNode }) => (
+    <table className="my-2 w-auto max-w-full border-collapse text-[0.9em]">{children}</table>
+  ),
+  th: ({ children }: { children?: ReactNode }) => (
+    <th className="border border-border bg-surface-2 px-2 py-1 text-left align-top font-semibold">{children}</th>
+  ),
+  td: ({ children }: { children?: ReactNode }) => (
+    <td className="border border-border px-2 py-1 text-left align-top">{children}</td>
+  ),
+  // Heading paint — the legacy rule pinned `h1: 1.15em`, `h2:
+  // 1.05em`, `h3/h4: 1em` to keep a long answer compact. We
+  // preserve the same scale here with arbitrary em-based
+  // text-size utilities.
+  h1: ({ children }: { children?: ReactNode }) => (
+    <h1 className="first:mt-0 mb-1 mt-2 text-[1.15em] font-semibold">{children}</h1>
+  ),
+  h2: ({ children }: { children?: ReactNode }) => (
+    <h2 className="first:mt-0 mb-1 mt-2 text-[1.05em] font-semibold">{children}</h2>
+  ),
+  h3: ({ children }: { children?: ReactNode }) => (
+    <h3 className="first:mt-0 mb-1 mt-2 font-semibold">{children}</h3>
+  ),
+  h4: ({ children }: { children?: ReactNode }) => (
+    <h4 className="first:mt-0 mb-1 mt-2 font-semibold">{children}</h4>
+  ),
+  // Paragraph, list, blockquote, hr — descendant paint
+  // applied at the renderer level (the segment wrapper alone
+  // can't reach these without descendant selectors).
+  p: ({ children }: { children?: ReactNode }) => (
+    <p className="first:mt-0 mb-1 mt-1 last:mb-0">{children}</p>
+  ),
+  ul: ({ children }: { children?: ReactNode }) => (
+    <ul className="m-1 list-disc pl-6">{children}</ul>
+  ),
+  ol: ({ children }: { children?: ReactNode }) => (
+    <ol className="m-1 list-decimal pl-6">{children}</ol>
+  ),
+  li: ({ children }: { children?: ReactNode }) => (
+    <li className="my-0.5">{children}</li>
+  ),
+  blockquote: ({ children }: { children?: ReactNode }) => (
+    <blockquote className="my-2 border-l-[3px] border-border pl-3 text-muted">{children}</blockquote>
+  ),
+  hr: () => <hr className="my-3 border-0 border-t border-border" />,
 };
 
 function renderPlainText(text: string): ReactNode {
