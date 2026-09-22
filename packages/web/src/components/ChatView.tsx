@@ -212,11 +212,13 @@ function MessageList({ session }: { session: string }) {
             // the role-specific shape (AI: avatar + name +
             // rounded-tl-sm bubble / User: justify-end +
             // max-w-[80%] + rounded-tr-sm bubble), and the
-            // `.message-body` (with `data-testid="message-body"`)
-            // is the text-content parent — pinned to satisfy e2e
-            // 01 §6 streaming-continuity (monotonic textContent
-            // on `.message-body`) and e2e 02 (history body
-            // snapshot).
+            // `.message-body` class is the text-content parent
+            // — pinned to satisfy e2e 01 §6 streaming-continuity
+            // (monotonic textContent on `.message-body`) and e2e
+            // 02 (history body snapshot). No `data-testid` on
+            // the bubble: the e2e specs use the `message-body`
+            // class as the query anchor (T03-T09 review
+            // polish — testid 集合零增承诺恢复 baseline 7700d6c).
             //
             // No timestamp is rendered: the WsClient message
             // shape carries no timestamp field (verified against
@@ -245,17 +247,16 @@ function MessageList({ session }: { session: string }) {
                     // the top-right corner to the chat's
                     // right-aligned edge while the other three
                     // corners stay fully rounded. The bubble
-                    // div carries the `message-body` class +
-                    // `data-testid="message-body"` (D6 / e2e
-                    // contract) so the text content parent is
-                    // still queryable as the same class across
-                    // both roles.
+                    // div carries the `message-body` class
+                    // (D6 / e2e contract — no `data-testid`,
+                    // e2e anchors on the class itself) so the
+                    // text content parent is still queryable
+                    // across both roles.
                     className={`max-w-[80%] rounded-2xl rounded-tr-sm bg-accent px-4 py-3 text-sm leading-6 text-white message-body break-words whitespace-pre-wrap${
                       item.kind === 'draft'
                         ? ' border border-dashed border-border opacity-85'
                         : ''
                     }`}
-                    data-testid="message-body"
                   >
                     {item.kind === 'draft' ? (
                       <StreamingDraftBody segments={item.segments} />
@@ -312,16 +313,15 @@ function MessageList({ session }: { session: string }) {
                     // bubble visually anchors to the avatar
                     // block; the other three corners stay fully
                     // rounded. The bubble div carries the
-                    // `message-body` class +
-                    // `data-testid="message-body"` so the text
-                    // content parent is queryable as the same
-                    // class across both roles.
+                    // `message-body` class (no `data-testid`,
+                    // e2e anchors on the class itself) so the
+                    // text content parent is queryable across
+                    // both roles.
                     className={`rounded-2xl rounded-tl-sm bg-surface-2 px-4 py-3 text-sm leading-6 text-muted-2 message-body break-words whitespace-pre-wrap${
                       item.kind === 'draft'
                         ? ' border border-dashed border-border opacity-85'
                         : ''
                     }`}
-                    data-testid="message-body"
                   >
                     {item.kind === 'draft' ? (
                       <StreamingDraftBody segments={item.segments} />

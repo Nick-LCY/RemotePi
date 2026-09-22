@@ -35,8 +35,9 @@
 //
 //   1.1 AI row carries avatar block + Zap icon + name row +
 //       bubble chrome (D11)
-//   1.2 AI bubble carries `message-body` class +
-//       `data-testid="message-body"` (D6 / e2e contract)
+//   1.2 AI bubble carries `message-body` class (D6 / e2e
+//       contract — class-anchor only; no `data-testid` on the
+//       bubble; baseline 7700d6c testid 集合零增承诺恢复)
 //   2.1 User row is `flex justify-end` + `max-w-[80%]` + accent
 //       blue bubble + white text
 //   3.1 `<li>` shell preserves `message-row` + `message-role-*`
@@ -161,16 +162,29 @@ describe('ChatView — AI bubble layout (D11)', () => {
     expect(html).toMatch(/class="rounded-2xl rounded-tl-sm bg-surface-2 px-4 py-3 text-sm leading-6 text-muted-2 message-body/);
     // The body text lands inside `.message-body`.
     expect(html).toContain('hi from agent');
-    expect(html).toMatch(/<div[^>]*message-body[^>]*data-testid="message-body"[^>]*>[^<]*<span>hi from agent<\/span>/);
+    // Bubble carries the `message-body` class as the
+    // text-content parent (D6 / e2e contract — class anchor
+    // only, no `data-testid` on the bubble).
+    expect(html).toMatch(/<div[^>]*\bmessage-body\b[^>]*>[^<]*<span>hi from agent<\/span>/);
   });
 
-  it('1.2 AI bubble carries `data-testid="message-body"` + `message-body` class (D6)', () => {
+  it('1.2 AI bubble carries the `message-body` class as the text-content parent (D6 — class anchor only)', () => {
+    // D6 — the e2e specs (01 / 02 / 08) anchor on `.message-body`
+    // via `querySelector('.message-body')`. No `data-testid` on
+    // the bubble (T03-T09 review polish — testid 集合零增承诺
+    // 恢复 7700d6c baseline).
     const client = makeFakeWsClient();
     client.bucketFor('s1').messages.push({ role: 'assistant', content: 'x' });
     const html = renderChatViewWithClient(client, 's1');
-    // message-body class + data-testid on the bubble.
-    const bubbleClassMatch = html.match(/<div[^>]*\bmessage-body\b[^>]*data-testid="message-body"[^>]*>/);
+    // `message-body` class on a `<div>` (the AI bubble); the
+    // text content lands inside it.
+    const bubbleClassMatch = html.match(/<div[^>]*\bmessage-body\b[^>]*>[^<]*<span>x<\/span>/);
     expect(bubbleClassMatch).not.toBeNull();
+    // Negative pin: no `data-testid="message-body"` attribute
+    // on the bubble (would be a regression of the polish
+    // contract).
+    const bubbleWithTestid = html.match(/<div[^>]*\bmessage-body\b[^>]*data-testid="message-body"[^>]*>/);
+    expect(bubbleWithTestid).toBeNull();
   });
 });
 

@@ -52,7 +52,7 @@ export function ChoiceLevel1Panel(props: ChoiceLevel1PanelProps): JSX.Element {
       // selectors still match. The card itself is `max-w-md
       // mx-auto text-center` so the panel centres inside the
       // main card rail.
-      className="flex flex-col items-center gap-4 rounded-2xl border border-border bg-surface p-7 text-center shadow-sm"
+      className="mx-auto flex max-w-md flex-col items-center gap-4 rounded-2xl border border-border bg-surface p-7 text-center shadow-sm"
       data-testid="choice-page"
       data-level="1"
     >
