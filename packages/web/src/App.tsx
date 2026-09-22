@@ -148,6 +148,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncExternalStore } from 'react';
 
+import { AlertTriangle, Loader } from 'lucide-react';
+
 import { watchStemRefilled } from './ws/stem-refilled.js';
 import type { SessionPhase } from '@remotepi/shared';
 
@@ -918,21 +920,35 @@ function RecoveryInFlight({ connState, phase }: { connState: ConnState; phase: S
 
   return (
     <section
-      // `recovery-in-flight` className retained as a semantic
-      // anchor (e2e spec 02 / spec 01 query
-      // `[data-testid="recovery-in-flight"]` directly, but the
-      // className itself may be referenced by future CSS hooks).
-      // All chrome (card background, border, padding, gap) is now
-      // expressed as Tailwind utilities — `.card` is no longer
-      // a styled class in styles.css.
-      className="recovery-in-flight flex flex-col gap-2 rounded-md border border-border bg-surface p-4 text-left"
+      // M6 T09 — in-flight card reference form (D7 / G12):
+      // centred white card with tinted online icon block +
+      // phase-aware hint. The `recovery-in-flight` semantic
+      // className is retained for any future CSS hooks; the
+      // className itself is no longer styled in styles.css.
+      // The data-testid + data-phase attributes are unchanged so
+      // e2e 01 / 02's `[data-testid="recovery-in-flight"]` and
+      // `data-phase` selectors still match (D12 / 雷区).
+      className="recovery-in-flight flex flex-col items-center gap-3 rounded-2xl border border-border bg-surface p-6 text-center shadow-sm"
       aria-busy="true"
       aria-live="polite"
       data-phase={phase ?? 'null'}
       data-testid="recovery-in-flight"
     >
-      <h2 className="m-0 text-[1.1rem]">恢复中…</h2>
-      <p className="m-0 text-[0.95rem] text-muted">
+      {/* M6 T09 — tinted online icon block. `size-11 rounded-xl
+          bg-state-online/[0.12] text-state-online` mirrors the
+          DirectoryBrowser / TokenModal tinted icon block family
+          (D7) but uses the green state token (recovery in-flight
+          is a healthy "loading" surface, not a warning). The
+          lucide `Loader` icon picks up the surrounding
+          `text-state-online` via currentColor. */}
+      <div
+        className="flex size-11 items-center justify-center rounded-xl bg-state-online/[0.12] text-state-online"
+        aria-hidden="true"
+      >
+        <Loader className="size-5 animate-spin" focusable="false" />
+      </div>
+      <h2 className="m-0 text-base font-semibold tracking-tight text-text">恢复中…</h2>
+      <p className="m-0 text-sm leading-6 text-muted">
         {phaseText}
         {connState !== 'online' ? <span>（等待 WebSocket 连接…）</span> : null}
       </p>
@@ -950,23 +966,47 @@ function RecoveryInFlight({ connState, phase }: { connState: ConnState; phase: S
 function RecoveryErrorCard({ error, onRetry }: { error: RecoveryError; onRetry: () => void }) {
   return (
     <section
-      className="recovery-error flex flex-col items-start gap-2 rounded-md border border-border bg-surface p-4 text-left"
+      // M6 T09 — error card reference form (D7 / G12): centred
+      // white card with red tinted icon block + accent-filled
+      // retry button. The `recovery-error` semantic className is
+      // retained for any future CSS hooks; the className itself
+      // is no longer styled in styles.css. The data-error +
+      // data-testid attributes are unchanged so e2e 02's
+      // `[data-testid="recovery-error"]` and `data-error`
+      // selectors still match (D12 / 雷区).
+      className="recovery-error flex flex-col items-center gap-3 rounded-2xl border border-state-offline/30 bg-surface p-6 text-center shadow-sm"
       role="alert"
       data-error={error}
       data-testid="recovery-error"
     >
-      <h2
-        // The previous `.recovery-error[data-error] h2 { color: var(--state-offline); }`
-        // rule painted the title in the offline red when a card carried the
-        // attribute selector. The attribute selector is still emitted on the
-        // section, and the runtime colour is now expressed as a Tailwind
-        // utility on the heading itself.
-        className="m-0 text-[1.1rem] text-state-offline"
+      {/* M6 T09 — tinted offline icon block. `size-11 rounded-xl
+          bg-state-offline/[0.12] text-state-offline` mirrors the
+          M6 T07 dialog / token-modal tinted icon block family
+          but uses the offline (red) state token to surface the
+          failure visually. The lucide `AlertTriangle` icon picks
+          up `text-state-offline` via currentColor. */}
+      <div
+        className="flex size-11 items-center justify-center rounded-xl bg-state-offline/[0.12] text-state-offline"
+        aria-hidden="true"
       >
+        <AlertTriangle className="size-5" focusable="false" />
+      </div>
+      <h2 className="m-0 text-base font-semibold tracking-tight text-state-offline">
         恢复失败
       </h2>
-      <p className="m-0 text-[0.95rem] text-muted">{errorHint(error)}</p>
-      <button type="button" onClick={onRetry} data-testid="recovery-retry">
+      <p className="m-0 text-sm leading-6 text-muted">{errorHint(error)}</p>
+      {/* M6 T09 — retry button promoted to accent-filled primary
+          CTA (was unstyled). Mirrors the TokenModal `token-submit`
+          + DirectoryBrowser `dir-entry-select` accent-filled
+          button family (D7 modal primary-button family). The
+          `recovery-retry` testid is preserved so e2e 02's click
+          path stays intact. */}
+      <button
+        type="button"
+        onClick={onRetry}
+        data-testid="recovery-retry"
+        className="mt-1 inline-flex items-center justify-center rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent-hover focus:outline-none focus-visible:ring-4 focus-visible:ring-accent-ring"
+      >
         重试
       </button>
     </section>

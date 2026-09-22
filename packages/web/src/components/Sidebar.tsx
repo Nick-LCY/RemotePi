@@ -139,13 +139,18 @@ export interface SidebarProps {
 
 /** Background colour class per session status. Mirrors the legacy
  *  `.choice-page-row-status.status-${value}` rules that were
- *  deleted in M6 T02's styles.css contraction. The mapping table
- *  matches the pre-T02 colours 1-for-1 (running #e69138,
- *  idle --state-online, spawning --state-connecting,
- *  exited --state-offline, unknown --muted) so the visual stays
- *  identical pre/post migration. */
+ *  deleted in M6 T02's styles.css contraction.
+ *
+ *  M6 T09 (D7 / 状态色 token 化收尾): the previous `running: 'bg-[#e69138]'`
+ *  hard-coded hex was the last non-tokenised status colour in the
+ *  table. T07 introduced the `--amber` / `--amber-soft` family for
+ *  the select-dialog tinted icon block; T09 routes `running` through
+ *  the same token (`bg-amber`) so the visual language stays
+ *  consistent across Sidebar / SessionStatusBar / select dialog.
+ *  All other statuses already mapped to state-* / muted tokens
+ *  since T02. */
 const SESSION_STATUS_CLASS: Record<SessionListEntry['status'], string> = {
-  running: 'bg-[#e69138]',
+  running: 'bg-amber',
   idle: 'bg-state-online',
   spawning: 'bg-state-connecting',
   exited: 'bg-state-offline',

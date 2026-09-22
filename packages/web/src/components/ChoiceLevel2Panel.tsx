@@ -5,11 +5,34 @@
 // 「更换目录」 button (unique to this panel — the Sidebar doesn't
 // render it), and an optional session_list error banner.
 //
+// ## M6 T09 — minimal hint card reference form (D7 / G12)
+//
+// Visual reference:
+//   - Container: white hint card — `rounded-2xl border border-border
+//     bg-surface p-7 shadow-sm max-w-md mx-auto text-center`.
+//     Sits inside the main elevated card; `text-center` aligns the
+//     text content while the action button keeps its natural width.
+//   - Header icon block: `size-11 rounded-xl bg-accent-soft text-accent`
+//     with a lucide `Folder` icon (D7 tinted icon block family —
+//     mirrors DirectoryBrowser + TokenModal).
+//   - Main button: accent-filled, white text — `bg-accent text-white
+//     hover:bg-accent-hover rounded-xl px-4 py-2`. Promoted from
+//     pre-T09's neutral white-on-border chip so the "更换目录" CTA
+//     reads as the primary action (D7 modal primary-button family).
+//   - Path inline code: `surface-2` background + accent foreground
+//     + monospace font — mirrors the DirectoryBrowser
+//     `directory-browser-path` inline code (D7 inline-code family).
+//   - Session-list error: red semantic strip (`bg-state-offline/[0.08]
+//     border border-state-offline text-state-offline`) — same
+//     family used by DirectoryBrowser `directory-browser-error`.
+//
 // Preserved testids:
 //   - `choice-page`           — section root, data-level="2".
 //   - `choice-page-work-dir`  — `<code>` element holding the path.
 //   - `work-dir-change`       — 更换目录 button.
 //   - `choice-page-error`     — session_list error banner.
+
+import { Folder } from 'lucide-react';
 
 interface ChoiceLevel2PanelProps {
   /** Current work_dir (the one we're listing sessions under).
@@ -42,29 +65,40 @@ export function ChoiceLevel2Panel(props: ChoiceLevel2PanelProps): JSX.Element {
   void props.onNewSession;
   return (
     <section
-      className="flex flex-col gap-3 rounded border border-border bg-surface p-4"
+      // M6 T09 — minimal hint card (D7 / G12). The data-level
+      // attribute stays so e2e 01 / 02 / 03 / 04 / 05 / 06 / 07 /
+      // 08 / 09's `[data-testid="choice-page"][data-level="2"]`
+      // selectors still match. The card itself is `max-w-md
+      // mx-auto text-center` so the panel centres inside the
+      // main card rail.
+      className="flex flex-col items-center gap-4 rounded-2xl border border-border bg-surface p-7 text-center shadow-sm"
       data-testid="choice-page"
       data-level="2"
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="m-0 flex-1 text-lg font-semibold text-text">选择会话</h2>
-        {/* 「更换目录」 button — `work-dir-change` is unique to this
-            panel (the Sidebar doesn't render it; the user picks
-            a new work_dir via the Sidebar's WorkDirsTab click). */}
-        <button
-          type="button"
-          onClick={onChangeWorkDir}
-          className="rounded border border-border bg-surface px-3 py-1.5 text-sm text-text hover:bg-bg"
-          data-testid="work-dir-change"
-        >
-          更换目录
-        </button>
+      {/* Header icon block — `size-11 rounded-xl bg-accent-soft
+          text-accent` with `Folder` icon, mirrors the
+          DirectoryBrowser + TokenModal reference tinted icon
+          block family (D7). aria-hidden on the icon block keeps
+          the screen reader focused on the text. */}
+      <div
+        className="flex size-11 items-center justify-center rounded-xl bg-accent-soft text-accent"
+        aria-hidden="true"
+      >
+        <Folder className="size-5" focusable="false" />
       </div>
 
-      <p className="m-0 text-sm text-muted">
+      <div className="flex flex-col gap-1.5">
+        <h2 className="m-0 text-base font-semibold tracking-tight text-text">选择会话</h2>
+      </div>
+
+      {/* M6 T09 — work_dir inline code promoted to accent
+          foreground (was neutral text). Mirrors the
+          DirectoryBrowser `directory-browser-path` inline-code
+          treatment (D7 inline-code family). */}
+      <p className="m-0 text-sm leading-6 text-muted">
         工作目录：
         <code
-          className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs"
+          className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs text-accent"
           data-testid="choice-page-work-dir"
         >
           {workDir}
@@ -73,13 +107,27 @@ export function ChoiceLevel2Panel(props: ChoiceLevel2PanelProps): JSX.Element {
 
       {error !== undefined && error !== null ? (
         <p
-          className="m-0 rounded border border-state-offline bg-state-offline/[0.08] px-3 py-2 text-sm text-state-offline"
+          className="m-0 w-full rounded-md border border-state-offline bg-state-offline/[0.08] px-3 py-2 text-left text-sm text-state-offline"
           role="alert"
           data-testid="choice-page-error"
         >
           {error}
         </p>
       ) : null}
+
+      {/* M6 T09 — 「更换目录」 button promoted to accent-filled
+          primary CTA (was white-on-border chip). Mirrors the
+          TokenModal `token-submit` accent-filled button (D7
+          modal primary-button family). testid `work-dir-change`
+          is preserved so e2e 04's click path stays intact. */}
+      <button
+        type="button"
+        onClick={onChangeWorkDir}
+        className="mt-1 inline-flex items-center justify-center rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent-hover focus:outline-none focus-visible:ring-4 focus-visible:ring-accent-ring"
+        data-testid="work-dir-change"
+      >
+        更换目录
+      </button>
 
       {/* Empty/loading hint anchors (`session-list-loading`,
           `session-list-empty`) live in the sidebar; this panel

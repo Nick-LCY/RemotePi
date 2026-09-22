@@ -14,11 +14,42 @@
 // `data-open` reflects the current drawer state for e2e 09 spec
 // assertions.
 //
+// ## M6 T09 — reference pill 条形态（D7 / G12）
+//
+// Visual reference:
+//   - Container: white pill bar — `rounded-xl border border-border
+//     bg-surface px-4 py-2.5 shadow-sm flex items-center gap-3`.
+//     Sits inside the main elevated card; the slight border + shadow
+//     lift it off the main card surface (avoid "白上白" wash-out).
+//   - Phase badge: tinted small pill — amber for `running` (D7 amber
+//     family matches the select-dialog tinted icon block), accent
+//     for `ready`, state-online for `idle`, state-connecting for
+//     `spawning`, state-offline for `exited`, muted for `unknown`.
+//     The five-value mapping mirrors the legacy `.phase-{value}` rule
+//     shape (re-coloured under the M6 token family).
+//   - Queue pills: light grey small pill — `rounded-full bg-surface-2
+//     border border-border px-2 py-0.5 text-xs`. Numbers in `text-text`
+//     for emphasis.
+//   - Session name: when `sessionKey === 'new'` shows "新会话";
+//     when `sessionKey === 'm3-legacy'` shows "M3 旧链接会话";
+//     otherwise the stem itself.
+//
+// ## M6 T09 — session 状态色 token 化收尾
+//
+// The session-status / phase colour map (`SESSION_STATUS_CLASS` in
+// `Sidebar.tsx` + `PHASE_CLASS` here) used a hard-coded hex for
+// `running` (`#e69138`, amber). M6 T07 introduced the tokenized
+// `--amber` / `--amber-soft` family for the select-dialog tinted icon
+// block; T09 repurposes the foreground token `bg-amber` for the
+// phase badge + sidebar status pill so the visual language stays
+// consistent across the app (select dialog + sidebar + status bar
+// share the amber family).
+//
 // Data sources:
 //   - Phase badge — `useSessionPhaseFor(sessionKey)`. The
 //     five-value enum (running / idle / spawning / exited /
-//     unknown) maps to background colours mirroring the legacy
-//     `.phase-{value}` rules in styles.css.
+//     ready / unknown) maps to background colours via tokenised
+//     utilities.
 //   - Queue pills — `useQueueFor(sessionKey)` returns
 //     `{steering, followUp}` counts. Hidden when both are zero
 //     so the bar doesn't get cluttered during a normal chat.
@@ -59,17 +90,21 @@ interface SessionStatusBarProps {
 }
 
 // ---------------------------------------------------------------------------
-// Phase presentation (mirrors PhaseIndicator's 5-state mapping)
+// Phase presentation (D7 amber family — tokenised)
 // ---------------------------------------------------------------------------
 
-/** Background-colour class for each phase — mirrors the legacy
- *  `.phase-{value}` rules in styles.css. `null` falls back to
- *  `phase-unknown` (the muted grey). */
+/** Background-colour class for each phase. Tokenised via the
+ *  M6 T07 `--amber` / `--amber-soft` family so the visual language
+ *  stays consistent with the select-dialog tinted icon block + the
+ *  Sidebar's session status pill. `null` falls back to muted grey. */
 const PHASE_CLASS: Record<NonNullable<SessionPhase>, string> = {
-  spawning: 'bg-state-connecting',
+  // M6 T09 — running now uses the amber family (was hard-coded
+  // `bg-[#e69138]` in Sidebar's SESSION_STATUS_CLASS; T09 brings
+  // both maps onto the same tokenised vocabulary).
+  running: 'bg-amber',
   ready: 'bg-accent',
-  running: 'bg-state-offline', // amber-ish in legacy CSS; sidebar mode keeps the offline tint as a "working" signal
   idle: 'bg-state-online',
+  spawning: 'bg-state-connecting',
   exited: 'bg-state-offline',
 };
 
@@ -102,7 +137,11 @@ export function SessionStatusBar(props: SessionStatusBarProps): JSX.Element {
 
   return (
     <div
-      className="flex flex-wrap items-center gap-3 rounded border border-border bg-surface px-3 py-2 text-sm"
+      // M6 T09 — pill bar reference form (D7 / G12). White pill
+      // 条 with border + shadow-sm, sits inside the main elevated
+      // card; the border + shadow lift it off the main card
+      // surface so it doesn't wash out (避免"白上白").
+      className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm shadow-sm"
       data-testid="session-status-bar"
       data-session={session}
       data-phase={phase ?? 'unknown'}
@@ -115,7 +154,10 @@ export function SessionStatusBar(props: SessionStatusBarProps): JSX.Element {
           aria-expanded={sidebarOpen}
           aria-controls="app-sidebar"
           onClick={onToggleSidebar}
-          className="-ml-1 inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-bg text-text hover:bg-surface"
+          // Hamburger kept on the surface-2 chip background so
+          // it pops against the white pill bar (mirrors the
+          // SessionStatusBar's pre-T09 visual).
+          className="-ml-1 inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-surface-2 text-text hover:bg-bg"
           data-testid="sidebar-toggle"
           data-open={sidebarOpen ? 'true' : 'false'}
         >
@@ -133,8 +175,12 @@ export function SessionStatusBar(props: SessionStatusBarProps): JSX.Element {
         {sessionLabel}
       </span>
 
+      {/* M6 T09 — phase badge: tinted small pill (D7 / G12). The
+          five-value mapping is tokenised via PHASE_CLASS; the
+          `text-white` foreground stays so the colour reads as a
+          solid pill against the white surface. */}
       <span
-        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[0.72rem] font-semibold text-white ${
+        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[0.72rem] font-semibold uppercase tracking-wide text-white ${
           phase === null ? 'bg-muted' : PHASE_CLASS[phase]
         }`}
         data-testid="session-status-bar-phase"
@@ -148,15 +194,19 @@ export function SessionStatusBar(props: SessionStatusBarProps): JSX.Element {
           className="flex flex-wrap items-center gap-2 text-muted"
           data-testid="session-status-bar-queue"
         >
+          {/* M6 T09 — queue pills: light grey small pill
+              (D7 / G12). Numbers lifted into text-text via the
+              nested `<strong>` so the count reads as the
+              primary signal while the label stays muted. */}
           <span
-            className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-xs"
+            className="inline-flex items-center gap-1 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-xs"
             data-testid="session-status-bar-queue-steering"
             data-count={steeringCount}
           >
             steering: <strong className="text-text">{steeringCount}</strong>
           </span>
           <span
-            className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-xs"
+            className="inline-flex items-center gap-1 rounded-full border border-border bg-surface-2 px-2 py-0.5 text-xs"
             data-testid="session-status-bar-queue-follow-up"
             data-count={followUpCount}
           >
