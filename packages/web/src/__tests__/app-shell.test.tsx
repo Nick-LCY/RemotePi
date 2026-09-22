@@ -569,3 +569,134 @@ describe('AppShell — M5 task 08 review W1: computeInert pure helper', () => {
     expect(computeInert(true, true)).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 11. M6 T03 — desktop dual elevated card form (D5 + G5)
+//
+// Desktop (isMobile=false) 形态从 M5 直角通栏迁移到 reference
+// 双 elevated 卡：外层 `bg-bg p-4 gap-4` + sidebar `rounded-2xl
+// border border-border bg-surface p-3 shadow-sm` + main `rounded-2xl
+// border border-border bg-surface p-4 shadow-sm`。Sidebar 宽度
+// 落地 `--sidebar-width 300px`（D5: 280→300）。
+//
+// 测试用 stubbed `window.matchMedia` 控制 isMobile。
+// 移动态下外层不应用 p-4/gap-4，sidebar 走 fixed 抽屉 + shadow-xl
+// + border-r，main 走 bg-bg p-4（无卡 chrome 铺满视口）。
+//
+// Backdrop 走 tokenised deep slate `bg-deep/20 backdrop-blur-[3px]`
+// （替换 M5 的 `bg-black/40 backdrop-blur-sm`）—— 钉桩如下测试 11g。
+// ---------------------------------------------------------------------------
+
+describe('AppShell — M6 T03 desktop dual elevated card form', () => {
+  it('11a. 桌面态外层 grid 容器带 bg-bg p-4 gap-4 (16px 间距 + 16px 卡间隙)', () => {
+    installMatchMediaStub(false);
+    const html = renderShell();
+    // Root data-testid="app-shell" 容器包含 class 字符串。
+    const rootMatch = html.match(/<div[^>]*data-testid="app-shell"[^>]*>/);
+    expect(rootMatch, 'app-shell root must render').not.toBeNull();
+    const rootClass = rootMatch![0];
+    expect(rootClass, 'desktop outer must paint bg-bg').toMatch(/\bbg-bg\b/);
+    expect(rootClass, 'desktop outer must apply p-4 (16px canvas padding)').toMatch(/\bp-4\b/);
+    expect(rootClass, 'desktop outer must apply gap-4 (16px card-to-card gap)').toMatch(/\bgap-4\b/);
+  });
+
+  it('11b. 桌面态 sidebar <aside> 容器带 rounded-2xl border border-border bg-surface shadow-sm (elevated card)', () => {
+    installMatchMediaStub(false);
+    const html = renderShell();
+    // Sidebar 容器是 data-testid="sidebar" testid 的最近外层 <aside>——
+    // 抓 <aside id="app-sidebar">（侧边栏外壳）作 chrome 断言目标。
+    const asideMatch = html.match(/<aside[^>]*id="app-sidebar"[^>]*>/);
+    expect(asideMatch, 'app-sidebar <aside> must render').not.toBeNull();
+    const asideClass = asideMatch![0];
+    expect(asideClass, 'desktop sidebar must carry rounded-2xl (card corners)').toMatch(/\brounded-2xl\b/);
+    expect(asideClass, 'desktop sidebar must carry border (1px stroke)').toMatch(/\bborder\b/);
+    expect(asideClass, 'desktop sidebar must carry border-border (tokenised grey)').toMatch(/\bborder-border\b/);
+    expect(asideClass, 'desktop sidebar must carry bg-surface (tokenised white)').toMatch(/\bbg-surface\b/);
+    expect(asideClass, 'desktop sidebar must carry shadow-sm (soft elevation)').toMatch(/\bshadow-sm\b/);
+  });
+
+  it('11c. 桌面态 main <main> 容器带 rounded-2xl border border-border bg-surface shadow-sm (matching card)', () => {
+    installMatchMediaStub(false);
+    const html = renderShell();
+    const mainMatch = html.match(/<main[^>]*data-testid="app-shell-main"[^>]*>/);
+    expect(mainMatch, 'app-shell-main must render').not.toBeNull();
+    const mainClass = mainMatch![0];
+    expect(mainClass, 'desktop main must carry rounded-2xl (card corners)').toMatch(/\brounded-2xl\b/);
+    expect(mainClass, 'desktop main must carry border (1px stroke)').toMatch(/\bborder\b/);
+    expect(mainClass, 'desktop main must carry border-border (tokenised grey)').toMatch(/\bborder-border\b/);
+    expect(mainClass, 'desktop main must carry bg-surface (tokenised white)').toMatch(/\bbg-surface\b/);
+    expect(mainClass, 'desktop main must carry shadow-sm (soft elevation)').toMatch(/\bshadow-sm\b/);
+  });
+
+  it('11d. 移动态外层 grid 容器不应用 p-4 / gap-4 (off-canvas drawer flush 到 viewport 边缘)', () => {
+    installMatchMediaStub(true);
+    const html = renderShell();
+    const rootMatch = html.match(/<div[^>]*data-testid="app-shell"[^>]*>/);
+    expect(rootMatch, 'app-shell root must render').not.toBeNull();
+    const rootClass = rootMatch![0];
+    expect(rootClass, 'mobile outer must NOT apply p-4 (canvas flush to edges)').not.toMatch(/\bp-4\b/);
+    expect(rootClass, 'mobile outer must NOT apply gap-4 (no gap on mobile)').not.toMatch(/\bgap-4\b/);
+  });
+
+  it('11e. 移动态 sidebar <aside> 容器带 shadow-xl + border-r + 翻译抽屉 (elevated sheet)', () => {
+    installMatchMediaStub(true);
+    const html = renderShell();
+    const asideMatch = html.match(/<aside[^>]*id="app-sidebar"[^>]*>/);
+    expect(asideMatch, 'app-sidebar <aside> must render').not.toBeNull();
+    const asideClass = asideMatch![0];
+    // Mobile 抽屉走 fixed + translate-x 过渡 + border-r 抽屉边。
+    expect(asideClass, 'mobile sidebar must be fixed (drawer)').toMatch(/\bfixed\b/);
+    expect(asideClass, 'mobile sidebar must carry z-[200]').toMatch(/z-\[200\]/);
+    expect(asideClass, 'mobile sidebar must carry border-r (drawer edge)').toMatch(/\bborder-r\b/);
+    expect(asideClass, 'mobile sidebar must carry shadow-xl (elevated sheet)').toMatch(/\bshadow-xl\b/);
+    expect(asideClass, 'mobile sidebar must carry -translate-x-full (closed)').toMatch(/-translate-x-full/);
+    // 桌面态 exclusive 验证
+    expect(asideClass, 'mobile sidebar must NOT carry rounded-2xl (full-height drawer has no card corners)').not.toMatch(/\brounded-2xl\b/);
+  });
+
+  it('11f. 移动态 main <main> 容器不应用卡 chrome (bg-bg 铺满，无圆角 / 边框 / 阴影)', () => {
+    installMatchMediaStub(true);
+    const html = renderShell();
+    const mainMatch = html.match(/<main[^>]*data-testid="app-shell-main"[^>]*>/);
+    expect(mainMatch, 'app-shell-main must render').not.toBeNull();
+    const mainClass = mainMatch![0];
+    expect(mainClass, 'mobile main must carry bg-bg (page surface fills viewport)').toMatch(/\bbg-bg\b/);
+    expect(mainClass, 'mobile main must NOT carry rounded-2xl (no card corners)').not.toMatch(/\brounded-2xl\b/);
+    expect(mainClass, 'mobile main must NOT carry border (no card stroke)').not.toMatch(/\bborder\b/);
+    expect(mainClass, 'mobile main must NOT carry shadow-sm (no elevation)').not.toMatch(/\bshadow-sm\b/);
+  });
+
+  it('11g. 移动态 backdrop 走 tokenised deep slate `bg-deep/20 backdrop-blur-[3px]` (D6 一致性)', () => {
+    installMatchMediaStub(true);
+    const html = renderShell({ sidebarOpen: true });
+    const backdropMatch = html.match(/<button[^>]*data-testid="sidebar-backdrop"[^>]*>/);
+    expect(backdropMatch, 'sidebar-backdrop must render when sidebarOpen=true on mobile').not.toBeNull();
+    const backdropClass = backdropMatch![0];
+    // tokenised deep slate (replaces M5 `bg-black/40`).
+    expect(backdropClass, 'backdrop must carry bg-deep/20 (tokenised deep slate)').toMatch(/\bbg-deep\/20\b/);
+    // 3px blur (replaces M5 `backdrop-blur-sm`).
+    expect(backdropClass, 'backdrop must carry backdrop-blur-[3px] (D6 3px blur)').toMatch(/backdrop-blur-\[3px\]/);
+    // M5 旧 `bg-black/40` 不应再出现。
+    expect(backdropClass, 'backdrop must NOT carry bg-black/40 (M5 旧 scrim 已替换)').not.toMatch(/\bbg-black\/40\b/);
+  });
+
+  it('11h. --sidebar-width token 落地 300px (D5: 280→300)，grid 与 aside 都消费同一 token', () => {
+    installMatchMediaStub(false);
+    const html = renderShell();
+    // grid-template-columns 引用 var(--sidebar-width) 1fr。
+    const rootMatch = html.match(/<div[^>]*data-testid="app-shell"[^>]*>/);
+    expect(rootMatch, 'app-shell root must render').not.toBeNull();
+    const rootStyle = rootMatch![0];
+    expect(rootStyle, 'grid style must read --sidebar-width').toMatch(/var\(--sidebar-width\)/);
+    // aside 容器走 w-[var(--sidebar-width)]。
+    const asideMatch = html.match(/<aside[^>]*id="app-sidebar"[^>]*>/);
+    expect(asideMatch, 'app-sidebar <aside> must render').not.toBeNull();
+    const asideClass = asideMatch![0];
+    expect(asideClass, 'aside must consume --sidebar-width via w-[var(...)]').toMatch(/w-\[var\(--sidebar-width\)\]/);
+  });
+
+  // Restore matchMedia stub after each test in this describe.
+  afterEach(() => {
+    uninstallMatchMediaStub();
+  });
+});

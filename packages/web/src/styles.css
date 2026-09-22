@@ -86,6 +86,16 @@
   --color-state-online: var(--state-online);
   --color-state-offline: var(--state-offline);
   --color-state-connecting: var(--state-connecting);
+  /* M6 T03 — deep slate backdrop family. Used by the mobile
+     sidebar drawer backdrop (`bg-deep/20`) so the deep ink
+     palette stays tokenised instead of hard-coded hex. Light
+     reuses the same deep ink as `--text` so a `bg-deep/20`
+     overlay reads as a slate-tinted scrim; dark lifts it
+     slightly above the dark `--bg` so the scrim is still
+     perceivable against the slate surface. Task 11 contrast
+     pass may retune the dark value (±5% L authorised by D2
+     + M6 §6). */
+  --color-deep: var(--deep);
 
   /* Layout token — sidebar width. Tailwind v4 spacing namespace
      lets utilities like `w-sidebar-width` or `w-[var(--sidebar-width)]`
@@ -134,6 +144,15 @@
   --state-offline: #c0392b;
   --state-connecting: #87919d;
 
+  /* Deep slate — backdrop ink for mobile sidebar drawer
+     (M6 T03). Light reuses the same `#17202b` ink as `--text`
+     so a `bg-deep/20` scrim reads as the page ink at 20%
+     alpha; the value is duplicated rather than aliased to
+     `--text` because `--text` flips to a bright ink in dark
+     mode and the scrim must stay a deep slate on both sides.
+     Task 11 contrast pass may retune the dark value (±5% L). */
+  --deep: #17202b;
+
   /* Card shadow — shared by InputBar / TokenModal / message
      bubbles (downstream tasks). RGB matches `--text` so the
      shadow inherits the page ink colour in dark mode. */
@@ -159,12 +178,14 @@
      cap kicks in independently of the JS inline `style.height`. */
   --input-max-height: 200px;
 
-  /* AppShell sidebar width — D5 schedules 280→300, but task 01
-     leaves the value at 280 (the layout consumer in
-     `AppShell.tsx` reads it via `w-[var(--sidebar-width)]`) and
-     defers the bump to task 03 alongside the AppShell rebuild
-     so width + card chrome land together. */
-  --sidebar-width: 280px;
+  /* AppShell sidebar width — D5 lands at 300px in task 03 alongside
+     the AppShell rebuild so width + card chrome (sidebar +
+     main both `rounded-2xl border border-border bg-surface
+     shadow-sm`, with the main gap realised by an outer
+     `gap-4` on the grid) land together. The layout consumer
+     in `AppShell.tsx` reads it via `w-[var(--sidebar-width)]`
+     + `grid-template-columns: var(--sidebar-width) 1fr`. */
+  --sidebar-width: 300px;
 
   font-family:
     system-ui,
@@ -213,6 +234,12 @@
     --state-connecting: #74808c;
     --state-online: #34d399;
     --state-offline: #f87171;
+
+    /* Deep slate backdrop — dark-mode companion to `--deep`.
+       Lifted slightly above the dark `--bg` so a `bg-deep/20`
+       scrim remains perceivable against the slate surface.
+       Task 11 contrast pass may retune the value (±5% L). */
+    --deep: #232b36;
 
     /* Card shadow — heavier for the dark surface (matches the
        elevation feel of reference dark cards). */
