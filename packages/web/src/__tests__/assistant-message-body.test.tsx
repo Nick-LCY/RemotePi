@@ -97,6 +97,33 @@ describe('AssistantMessageBody — GFM rendering', () => {
     expect(html).toContain('npm install');
   });
 
+  it('1.6b inline code renders with the M6 T05 reference paint (white bg + accent text + text-xs)', () => {
+    // M6 T05 — inline code flips from the legacy `bg-code-bg +
+    // text-[0.9em]` to the reference's white-background /
+    // accent-text / text-xs look. The `--code-bg` token stays
+    // defined in `:root` (block code paths still reference it) —
+    // we only change the inline variant's surface to white so it
+    // visually anchors to the bubble interior rather than
+    // blending with it. Pin every class token so a regression
+    // that drops any one of them (e.g. reverting to text-[0.9em])
+    // trips this test loudly.
+    const html = render([{ type: 'text', text: 'use `npm install`' }]);
+    const inlineMatch = html.match(/<code[^>]*markdown-code-inline[^>]*>/);
+    expect(inlineMatch).not.toBeNull();
+    const codeTag = inlineMatch![0];
+    // Reference inline-code surface.
+    expect(codeTag).toContain('bg-surface');
+    expect(codeTag).toContain('text-accent');
+    expect(codeTag).toContain('rounded');
+    expect(codeTag).toContain('px-1.5');
+    expect(codeTag).toContain('py-0.5');
+    expect(codeTag).toContain('font-mono');
+    expect(codeTag).toContain('text-xs');
+    // Legacy `bg-code-bg` is NOT the surface any more (block
+    // code still uses it; inline has switched to white).
+    expect(codeTag).not.toContain('bg-code-bg');
+  });
+
   it('1.7 renders bold (**) and italic (*) emphasis', () => {
     const html = render([{ type: 'text', text: '**bold** and *italic*' }]);
     expect(html).toContain('<strong>bold</strong>');

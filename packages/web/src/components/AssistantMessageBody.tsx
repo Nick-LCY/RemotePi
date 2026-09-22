@@ -253,10 +253,19 @@ const markdownComponents: Record<string, unknown> = {
     const parentTag = node?.parent?.tagName;
     const isBlock = parentTag === 'pre';
     if (!isBlock) {
-      // Inline code — a parent other than <pre> (typically a
-      // paragraph). Use the dedicated inline class so the CSS
-      // can render a tighter background than the block variant.
-      return <code className="markdown-code-inline rounded-sm bg-code-bg px-1.5 py-0.5 font-mono text-[0.9em]">{children}</code>;
+      // M6 T05 — inline code switches to reference's white-
+      // background / blue-text look: `bg-surface` for the tile
+      // (so it pops on the assistant bubble's `bg-surface-2`
+      // surface) + `text-accent` for the foreground token
+      // (matches the link colour family for "code reference"
+      // intent). The `--code-bg` token stays defined in
+      // `:root` (block code paths still reference it) — we're
+      // only changing the inline variant's surface to white so
+      // it visually anchors to the bubble interior rather than
+      // blending with it. Font size drops from `0.9em` to
+      // `text-xs` (12px) so the inline code tile doesn't out-
+      // shout the surrounding body copy.
+      return <code className="markdown-code-inline rounded bg-surface px-1.5 py-0.5 font-mono text-xs text-accent">{children}</code>;
     }
     return (
       <code className={['markdown-code', className].filter(Boolean).join(' ') + ' font-mono text-[0.9em]'}>{children}</code>

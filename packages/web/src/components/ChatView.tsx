@@ -32,6 +32,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
 
+import { Send, ShieldCheck, Square, Zap } from 'lucide-react';
+
 import {
   useCommandErrorSubscription,
   useMessagesFor,
@@ -195,40 +197,138 @@ function MessageList({ session }: { session: string }) {
       {items.length === 0 ? (
         <p className="empty text-muted text-center" data-testid="message-list-empty">No messages yet — send a prompt to start.</p>
       ) : (
-        <ol className="message-list-items m-0 flex list-none flex-col gap-2 p-0">
+        <ol className="message-list-items m-0 flex list-none flex-col gap-4 p-0">
           {items.map((item) => {
-            // Per-role border colour: the previous legacy
-            // `.message-role-user { border-color: var(--accent); }` /
-            // `.message-role-assistant { border-color: var(--state-online); }`
-            // rules painted the corresponding row's left/top border
-            // in accent / online green. With utilities that lived
-            // in `<li class="border border-border rounded-md ...">`
-            // we're now opting in to `border-accent` /
-            // `border-state-online` per role. Other roles fall
-            // back to `border-border` from the base class.
-            const roleBorderClass =
-              item.role === 'user'
-                ? 'border-accent'
-                : item.role === 'assistant'
-                  ? 'border-state-online'
-                  : '';
+            // M6 T05 (D11) — bubble layout per reference. The
+            // `<li>` shell carries the load-bearing class tokens
+            // (D6 — `message-row` + `message-role-{role}` +
+            // `message-draft` for in-flight streams), which the
+            // e2e specs 02 / 03 / 05 / 07 / 08 match with exact
+            // string / `startsWith('message-role-')` queries.
+            // Per-role layout utilities are appended after the
+            // token triplet so the e2e `classList` filter
+            // (looking for the standalone role token) still
+            // resolves. The bubble container inside the `<li>` is
+            // the role-specific shape (AI: avatar + name +
+            // rounded-tl-sm bubble / User: justify-end +
+            // max-w-[80%] + rounded-tr-sm bubble), and the
+            // `.message-body` (with `data-testid="message-body"`)
+            // is the text-content parent — pinned to satisfy e2e
+            // 01 §6 streaming-continuity (monotonic textContent
+            // on `.message-body`) and e2e 02 (history body
+            // snapshot).
+            //
+            // No timestamp is rendered: the WsClient message
+            // shape carries no timestamp field (verified against
+            // `@earendil-works/pi-coding-agent@0.85.1` types),
+            // and the task spec explicitly forbids fabricating
+            // one or touching the store / WsClient / protocol
+            // just to populate it. The PRD's G7 / D11 timestamp
+            // (`text-[10px] text-[#a2aab3]`) is a visual
+            // decoration that the wire shape can't supply; it
+            // is omitted rather than invented. A future revision
+            // that adds timestamps upstream can re-enable the
+            // 10px muted-5 line below the bubble.
+            const roleToken = `message-role-${item.role}`;
+            const draftToken = item.kind === 'draft' ? ' message-draft' : '';
+            if (item.role === 'user') {
+              return (
+                <li
+                  key={item.key}
+                  className={`message-row ${roleToken}${draftToken} flex justify-end`}
+                  data-testid={item.kind === 'draft' ? 'message-draft' : 'message-row'}
+                >
+                  <div
+                    // User bubble — `max-w-[80%]` caps the row
+                    // width so long prompts wrap rather than
+                    // dominate the chat; `rounded-tr-sm` pins
+                    // the top-right corner to the chat's
+                    // right-aligned edge while the other three
+                    // corners stay fully rounded. The bubble
+                    // div carries the `message-body` class +
+                    // `data-testid="message-body"` (D6 / e2e
+                    // contract) so the text content parent is
+                    // still queryable as the same class across
+                    // both roles.
+                    className={`max-w-[80%] rounded-2xl rounded-tr-sm bg-accent px-4 py-3 text-sm leading-6 text-white message-body break-words whitespace-pre-wrap${
+                      item.kind === 'draft'
+                        ? ' border border-dashed border-border opacity-85'
+                        : ''
+                    }`}
+                    data-testid="message-body"
+                  >
+                    {item.kind === 'draft' ? (
+                      <StreamingDraftBody segments={item.segments} />
+                    ) : (
+                      <TerminalMessageBody role={item.role} raw={item.raw} />
+                    )}
+                  </div>
+                </li>
+              );
+            }
+            // Assistant / toolResult / unknown — AI bubble layout
+            // (`flex items-start gap-3` with avatar + name +
+            // bubble). The avatar + name live as siblings of the
+            // bubble so the column stack reads naturally on
+            // narrow screens.
             return (
               <li
                 key={item.key}
-                className={`message-row message-role-${item.role}${
-                  item.kind === 'draft' ? ' message-draft' : ''
-                } border border-border ${roleBorderClass}${
-                  item.kind === 'draft' ? ' border-dashed opacity-85' : ''
-                } rounded-md bg-surface-2 px-[0.7rem] py-[0.55rem]`}
+                className={`message-row ${roleToken} flex items-start gap-3${draftToken}`}
                 data-testid={item.kind === 'draft' ? 'message-draft' : 'message-row'}
               >
-                <div className="message-role mb-1.5 text-[0.72rem] uppercase tracking-[0.05em] text-muted">{item.role}</div>
-                <div className="message-body text-[0.92rem] break-words whitespace-pre-wrap">
-                  {item.kind === 'draft' ? (
-                    <StreamingDraftBody segments={item.segments} />
-                  ) : (
-                    <TerminalMessageBody role={item.role} raw={item.raw} />
-                  )}
+                {/* AI avatar block — size-8 rounded-lg deep-slate
+                    square with the lucide `Zap` icon (16px).
+                    `shrink-0` keeps the avatar from collapsing
+                    when the row narrows on mobile (the bubble
+                    flexes; the avatar stays fixed). `data-testid`
+                    is intentionally absent — the avatar is a
+                    visual decoration container, not an e2e
+                    anchor (task spec contract: visual-decor
+                    containers don't enter the testid contract). */}
+                <div
+                  aria-hidden="true"
+                  className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-deep text-white"
+                >
+                  <Zap size={16} aria-hidden="true" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  {/* Name row — references the assistant
+                      identity. Rendered as a plain line above
+                      the bubble; no border / padding (the bubble
+                      carries the chrome). The brand text
+                      matches the project identity («RemotePi»)
+                      so the avatar + name pair consistently
+                      identifies the assistant side. The text
+                      colour is `text-text` so it reads against
+                      the page surface; the bubble underneath
+                      uses `text-muted-2` so the body copy sits
+                      a step lighter than the name (visual
+                      hierarchy). */}
+                  <div className="mb-1 text-xs font-semibold text-text">RemotePi</div>
+                  <div
+                    // AI bubble — `rounded-tl-sm` pins the
+                    // top-left corner against the avatar so the
+                    // bubble visually anchors to the avatar
+                    // block; the other three corners stay fully
+                    // rounded. The bubble div carries the
+                    // `message-body` class +
+                    // `data-testid="message-body"` so the text
+                    // content parent is queryable as the same
+                    // class across both roles.
+                    className={`rounded-2xl rounded-tl-sm bg-surface-2 px-4 py-3 text-sm leading-6 text-muted-2 message-body break-words whitespace-pre-wrap${
+                      item.kind === 'draft'
+                        ? ' border border-dashed border-border opacity-85'
+                        : ''
+                    }`}
+                    data-testid="message-body"
+                  >
+                    {item.kind === 'draft' ? (
+                      <StreamingDraftBody segments={item.segments} />
+                    ) : (
+                      <TerminalMessageBody role={item.role} raw={item.raw} />
+                    )}
+                  </div>
                 </div>
               </li>
             );
@@ -829,81 +929,134 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
   };
 
   return (
-    // `input-bar` retained as a semantic class anchor (no
-    // styling remains under it; the flex / align / gap / chrome
-    // are Tailwind utilities below). The class is kept for any
-    // future global hook + to anchor the `keydown` testid
-    // surface (`[data-testid="chat-view"] > form.input-bar`).
-    <form className="input-bar flex flex-wrap items-end gap-2 rounded-md border border-border bg-surface px-3 py-2" onSubmit={onSubmit} aria-label="Send a prompt">
-      <textarea
-        ref={textareaRef}
-        // `input-bar-field` retained as a semantic anchor (the
-        // `useAutoResizeTextarea` effect depends on this class to
-        // detect its textarea for the height auto-grow pass — see
-        // `hooks/useAutoResizeTextarea.ts` references). All
-        // chrome (box-sizing / resize / min-height / max-height /
-        // overflow / focus outline) is now utilities.
-        className="input-bar-field m-0 box-border w-full min-w-[12rem] flex-1 resize-none rounded-md border border-border bg-surface-2 px-[0.6rem] py-[0.45rem] font-[inherit] text-[0.95rem] leading-[1.4] text-text outline outline-2 outline-offset-1 outline-accent focus:outline disabled:cursor-not-allowed disabled:opacity-70"
-        style={{ maxHeight: 'var(--input-max-height)' }}
-        data-testid="input-field"
-        rows={1}
-        placeholder={
-          inputDisabled
-            ? 'agent is working — abort to take over'
-            : phase === 'exited'
-              ? 'send a prompt to respawn pi…'
-              : 'send a prompt…'
-        }
-        value={value}
-        onChange={onChange}
-        onKeyDown={onKeyDown}
-        disabled={inputDisabled}
-        aria-label="Prompt"
-        autoComplete="off"
-        spellCheck={false}
-      />
-      <button type="submit" data-testid="input-send" disabled={inputDisabled || value.trim().length === 0} className="self-end rounded border border-accent bg-accent px-4 py-2 font-[inherit] text-white disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled">
-        Send
-      </button>
-      <button
-        type="button"
-        data-testid="input-abort"
-        // `abort-button` retained as a semantic anchor (mirror of
-        // `input-bar-field`). `abort-live` was the live-state
-        // red paint — the legacy CSS rule is gone, so we apply
-        // the red Tailwind colour stack explicitly here.
-        className={
-          (abortLive
-            ? 'abort-button abort-live border-state-offline bg-state-offline text-white'
-            : 'abort-button border-border bg-surface text-text') +
-          ' self-end rounded px-4 py-2 font-[inherit] disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled'
-        }
-        onClick={onAbort}
-        disabled={!abortLive}
-        title={
-          abortLive
-            ? 'Abort the running turn'
-            : phase === 'exited'
-              ? 'No active turn (bridge will no-op)'
-              : 'No active turn'
-        }
+    // M6 引用 task 05 — InputBar reference 形态：rounded-2xl
+    // 外壳 + 常驻 shadow + focus-within 单一焦点指示
+    // （`focus-within:border-accent + focus-within:ring-4` 携带
+    // `--accent-ring` 软底；R4 去除旧 textarea 的 2px outline 双
+    // 指示，键盘 focus-visible 语义保留于外亮 ring）。外壳同时担
+    // 任 textarea / send / abort / helper 行的容器，错误 banner 移到
+    // 外壳下方，避免错误信息被 ring 抬起的后景蒙住。
+    <div className="input-bar-shell flex flex-col gap-2">
+      <form
+        // `input-bar` retained as a semantic class anchor (the
+        // keydown testid surface anchors here). The chrome (rounded-
+        // 2xl / border / p-2 / shadow-card) + the focus-within ring
+        // are the visual source of truth for the "focus indicator"
+        // contract — R4 task 05 spec removes the legacy 2px outline
+        // on the textarea, so the only focus paint now lives on the
+        // outer shell (single-focus-indicator principle).
+        className="input-bar flex flex-col gap-2 rounded-2xl border border-border-2 bg-surface p-2 shadow-[var(--shadow-card)] focus-within:border-accent focus-within:ring-4 focus-within:ring-accent-ring"
+        onSubmit={onSubmit}
+        aria-label="Send a prompt"
       >
-        Abort
-      </button>
+        <textarea
+          ref={textareaRef}
+          // `input-bar-field` retained as a semantic anchor (the
+          // `useAutoResizeTextarea` effect depends on this class to
+          // detect its textarea for the height auto-grow pass — see
+          // `hooks/useAutoResizeTextarea.ts` references). The chrome
+          // (rounded / bg-transparent / outline-none) is now utilities;
+          // focus indication is delegated to the outer shell's
+          // `focus-within` ring (R4 — single-focus-indicator principle:
+          // no `outline-2 outline-accent` on the textarea itself).
+          className="input-bar-field m-0 box-border w-full resize-none rounded-lg border-0 bg-transparent px-1 py-1 font-[inherit] text-sm leading-6 text-text outline-none placeholder:text-muted-5 disabled:cursor-not-allowed disabled:opacity-70"
+          style={{ maxHeight: 'var(--input-max-height)' }}
+          data-testid="input-field"
+          rows={1}
+          placeholder={
+            inputDisabled
+              ? 'agent is working — abort to take over'
+              : phase === 'exited'
+                ? 'send a prompt to respawn pi…'
+                : 'send a prompt…'
+          }
+          value={value}
+          onChange={onChange}
+          onKeyDown={onKeyDown}
+          disabled={inputDisabled}
+          aria-label="Prompt"
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <div className="flex items-center justify-between gap-2 px-1 pt-1">
+          <div className="flex items-center gap-3 text-[10px] text-muted-5">
+            <span>Enter 发送 · Shift + Enter 换行</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              data-testid="input-abort"
+              // `abort-button` retained as a semantic anchor. Red
+              // paint when live; disabled state uses the canonical
+              // accent-disabled token so the "disabled" semantic
+              // matches the send button (consistent visual
+              // language across both buttons). The square icon
+              // signals "stop the current run" — lucide's `Square`
+              // 14px sits comfortably inside the 32px button.
+              aria-label="Abort the running turn"
+              title={
+                abortLive
+                  ? 'Abort the running turn'
+                  : phase === 'exited'
+                    ? 'No active turn (bridge will no-op)'
+                    : 'No active turn'
+              }
+              className={
+                'abort-button flex size-8 items-center justify-center rounded-xl text-white transition disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:text-text/40 ' +
+                (abortLive
+                  ? 'bg-state-offline hover:bg-state-offline/90'
+                  : 'bg-accent-disabled')
+              }
+              onClick={onAbort}
+              disabled={!abortLive}
+            >
+              <Square size={14} aria-hidden="true" />
+            </button>
+            <button
+              type="submit"
+              data-testid="input-send"
+              aria-label="Send prompt"
+              // Send button — size-8 rounded-xl deep-slate per
+              // reference. `transition` smooths the colour
+              // cross-fade to `bg-deep-hover` on hover; the
+              // disabled state uses the canonical opacity drop
+              // (the visual contract is "30% opacity + cursor
+              // not-allowed", shared across the surface). The
+              // lucide `Send` icon sits at 14px so it visually
+              // balances with the abort button's `Square` 14px
+              // (same icon stroke weight + size across the two
+              // adjacent buttons).
+              className="flex size-8 items-center justify-center rounded-xl bg-deep text-white transition hover:bg-deep-hover disabled:cursor-not-allowed disabled:opacity-30"
+              disabled={inputDisabled || value.trim().length === 0}
+            >
+              <Send size={14} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </form>
+      <div className="flex items-center justify-center gap-1 text-[10px] text-muted-5">
+        <ShieldCheck size={12} aria-hidden="true" />
+        <span>消息通过已配对的安全连接发送</span>
+      </div>
       {settledHintVisible && phase === 'idle' ? (
         // `input-bar-hint` retained as a semantic anchor (no
         // styling; layout pulse + text colour are utilities).
-        <p className="input-bar-hint m-0 mt-[0.2rem] basis-full text-[0.82rem] text-muted">agent settled — 5 minutes until auto-shutdown</p>
+        <p className="input-bar-hint m-0 rounded-md bg-surface-2 px-[0.6rem] py-[0.4rem] text-[0.82rem] text-muted" role="status">
+          agent settled — 5 minutes until auto-shutdown
+        </p>
       ) : null}
       {commandError !== null ? (
         // `input-bar-error` retained as a semantic anchor (no
         // styling; tint is the canonical "red = something
         // failed" 8%-alpha paint matching the other surfaces that
-        // flip on `--state-offline`).
-        <p className="input-bar-error m-0 mt-[0.2rem] basis-full rounded-md bg-state-offline/[0.08] px-[0.6rem] py-[0.4rem] text-[0.82rem] text-state-offline" role="alert" data-testid="input-error">
+        // flip on `--state-offline`). Position is BELOW the
+        // shell — task 05 spec: error banner lives outside the
+        // rounded input shell so the focus ring doesn't bleed
+        // through the banner's tinted background.
+        <p className="input-bar-error m-0 rounded-md bg-state-offline/[0.08] px-[0.6rem] py-[0.4rem] text-[0.82rem] text-state-offline" role="alert" data-testid="input-error">
           {commandError}
         </p>
       ) : null}
-    </form>
+    </div>
   );
 }

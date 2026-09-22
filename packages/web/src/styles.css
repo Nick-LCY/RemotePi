@@ -96,6 +96,14 @@
      pass may retune the dark value (±5% L authorised by D2
      + M6 §6). */
   --color-deep: var(--deep);
+  /* M6 T05 — deep slate hover companion. The send button
+     (`bg-deep` size-8 rounded-xl) uses `hover:bg-deep-hover`
+     as the active-state tint; light value matches reference's
+     `#2d3a49` (a +3 L step on the deep `#17202b` ink), dark
+     value lifts the dark `--deep` (`#232b36`) by ~3 L to keep
+     the hover-vs-rest contrast perceptible on the slate
+     surface (task 11 ±5% L retune may touch this value). */
+  --color-deep-hover: var(--deep-hover);
 
   /* Layout token — sidebar width. Tailwind v4 spacing namespace
      lets utilities like `w-sidebar-width` or `w-[var(--sidebar-width)]`
@@ -145,13 +153,23 @@
   --state-connecting: #87919d;
 
   /* Deep slate — backdrop ink for mobile sidebar drawer
-     (M6 T03). Light reuses the same `#17202b` ink as `--text`
+     (M6 T03) + chat AI avatar block + InputBar send button
+     (M6 T05). Light reuses the same `#17202b` ink as `--text`
      so a `bg-deep/20` scrim reads as the page ink at 20%
      alpha; the value is duplicated rather than aliased to
      `--text` because `--text` flips to a bright ink in dark
      mode and the scrim must stay a deep slate on both sides.
      Task 11 contrast pass may retune the dark value (±5% L). */
   --deep: #17202b;
+
+  /* Deep hover — M6 T05 send-button hover tint. Pairs with
+     `--deep` (rest state). Light value `#2d3a49` matches the
+     reference send-button hover; the value is a +3 L step on
+     `--deep` so the active state reads as a visible but
+     understated lift (not a full inversion). Dark value
+     `#3a5064` lifts the dark `--deep` (`#232b36`) by ~5 L —
+     task 11 ±5% L retune authorised. */
+  --deep-hover: #2d3a49;
 
   /* Card shadow — shared by InputBar / TokenModal / message
      bubbles (downstream tasks). RGB matches `--text` so the
@@ -240,6 +258,11 @@
        scrim remains perceivable against the slate surface.
        Task 11 contrast pass may retune the value (±5% L). */
     --deep: #232b36;
+
+    /* Deep hover — dark-mode companion to `--deep-hover`.
+       Pairs with the dark `--deep` for the send button's
+       hover state on the dark slate surface. */
+    --deep-hover: #3a5064;
 
     /* Card shadow — heavier for the dark surface (matches the
        elevation feel of reference dark cards). */
