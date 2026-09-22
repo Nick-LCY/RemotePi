@@ -269,7 +269,13 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
             type="submit"
             data-testid="token-submit"
             disabled={submitDisabled}
-            className="mt-4 h-11 w-full rounded-xl bg-accent text-sm font-semibold text-white transition hover:bg-accent-hover disabled:bg-accent-disabled disabled:cursor-not-allowed"
+            // M6 T11 — focus-visible ring 2px / accent-ring / 1px
+            // surface offset on the submit button. The TokenModal
+            // input itself already paints `focus:ring-4
+            // focus:ring-accent-ring` (D7 single-focus-indicator)
+            // so this is the only submit-side ring the keyboard
+            // path touches.
+            className="mt-4 h-11 w-full rounded-xl bg-accent text-sm font-semibold text-on-accent transition hover:bg-accent-hover disabled:bg-accent-disabled disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
           >
             {required ? '连接' : '保存'}
           </button>

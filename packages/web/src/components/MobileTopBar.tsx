@@ -79,7 +79,13 @@ export function MobileTopBar(props: MobileTopBarProps): JSX.Element | null {
         aria-expanded={sidebarOpen}
         aria-controls="app-sidebar"
         onClick={onToggleSidebar}
-        className="-ml-1 inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-bg text-text hover:bg-surface"
+        // M6 T11 — focus-visible ring 2px / accent-ring / 1px
+        // surface offset on the hamburger. The mobile drawer
+        // focus trap (e2e 09 spec) keeps focus inside the
+        // sidebar on open + returns it to this hamburger on
+        // close; the ring is the visual confirmation for the
+        // return-focus path.
+        className="-ml-1 inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-bg text-text hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
         data-testid="sidebar-toggle"
         data-open={sidebarOpen ? 'true' : 'false'}
       >

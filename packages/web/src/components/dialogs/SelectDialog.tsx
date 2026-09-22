@@ -287,7 +287,13 @@ export function DialogFooter({ onCancel, submitLabel, submitDisabled }: DialogFo
       <button
         type="button"
         onClick={onCancel}
-        className="dialog-button dialog-button-cancel inline-flex h-10 items-center justify-center rounded-xl border border-border-2 bg-surface px-4 text-sm font-medium text-muted transition hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:text-white"
+        // M6 T11 — focus-visible ring 2px / accent-ring / 1px
+        // surface offset on the Cancel button. Disabled variant
+        // keeps the ring (the disabled:bg-accent-disabled swap
+        // does not strip focus-visible; WCAG exempts disabled
+        // controls from contrast requirements, so the muted
+        // disabled paint is acceptable).
+        className="dialog-button dialog-button-cancel inline-flex h-10 items-center justify-center rounded-xl border border-border-2 bg-surface px-4 text-sm font-medium text-muted transition hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
         data-testid="dialog-cancel"
       >
         Cancel
@@ -295,7 +301,7 @@ export function DialogFooter({ onCancel, submitLabel, submitDisabled }: DialogFo
       <button
         type="submit"
         disabled={submitDisabled}
-        className="dialog-button dialog-button-submit inline-flex h-10 items-center justify-center rounded-xl bg-accent px-4 text-sm font-semibold text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-accent-disabled"
+        className="dialog-button dialog-button-submit inline-flex h-10 items-center justify-center rounded-xl bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-accent-disabled focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
         data-testid="dialog-confirm-yes"
       >
         {submitLabel}

@@ -137,9 +137,9 @@ export interface SidebarProps {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Background colour class per session status. Mirrors the legacy
- *  `.choice-page-row-status.status-${value}` rules that were
- *  deleted in M6 T02's styles.css contraction.
+/** Background + foreground colour class per session status.
+ *  Mirrors the legacy `.choice-page-row-status.status-${value}`
+ *  rules that were deleted in M6 T02's styles.css contraction.
  *
  *  M6 T09 (D7 / 状态色 token 化收尾): the previous `running: 'bg-[#e69138]'`
  *  hard-coded hex was the last non-tokenised status colour in the
@@ -148,13 +148,22 @@ export interface SidebarProps {
  *  the same token (`bg-amber`) so the visual language stays
  *  consistent across Sidebar / SessionStatusBar / select dialog.
  *  All other statuses already mapped to state-* / muted tokens
- *  since T02. */
+ *  since T02.
+ *
+ *  M6 T11 (G13 dark contrast WCAG AA): every coloured pill is
+ *  paired with the matching `--on-*` text token so dark mode
+ *  clears WCAG AA — `--on-amber` / `--on-online` /
+ *  `--on-offline` are deep ink colours (light mode `#ffffff`
+ *  keeps the visual identical to T01-T09 baseline). The
+ *  `spawning` / `unknown` grey pills stay text-white
+ *  (borderline in dark mode but not in the T11 three-edge
+ *  list). */
 const SESSION_STATUS_CLASS: Record<SessionListEntry['status'], string> = {
-  running: 'bg-amber',
-  idle: 'bg-state-online',
-  spawning: 'bg-state-connecting',
-  exited: 'bg-state-offline',
-  unknown: 'bg-muted',
+  running: 'bg-amber text-on-amber',
+  idle: 'bg-state-online text-on-online',
+  spawning: 'bg-state-connecting text-white',
+  exited: 'bg-state-offline text-on-offline',
+  unknown: 'bg-muted text-white',
 };
 
 /** session_list / work_dir_list watchdogs — same 5s ceiling as
@@ -247,7 +256,13 @@ export function Sidebar(props: SidebarProps): JSX.Element {
             type="button"
             aria-label="关闭侧边栏"
             onClick={onClose}
-            className="-mr-2 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-4 hover:bg-surface-2 lg:hidden"
+            // M6 T11 — keyboard focus-visible ring 2px / accent-ring
+            // with 1px surface offset so the close X button is
+            // perceivable when the user tabs to it (mobile
+            // drawer focus trap). Hover paint (text-muted-4 +
+            // bg-surface-2) stays so the visual identity with
+            // the rest of the brand chrome is preserved.
+            className="-mr-2 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-4 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface lg:hidden"
           >
             <X className="size-4" aria-hidden="true" focusable="false" />
           </button>
@@ -271,7 +286,10 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           role="tab"
           aria-selected={activeTab === 'sessions'}
           onClick={() => setActiveTab('sessions')}
-          className={`flex-1 rounded px-2 py-1 text-sm font-medium transition-colors ${
+          // M6 T11 — focus-visible ring 2px / accent-ring / 1px
+          // surface offset for keyboard tab navigation between
+          // the two sidebar tabs.
+          className={`flex-1 rounded px-2 py-1 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface ${
             activeTab === 'sessions'
               ? 'bg-surface text-text shadow-sm'
               : 'text-muted hover:text-text'
@@ -286,7 +304,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           role="tab"
           aria-selected={activeTab === 'work-dirs'}
           onClick={() => setActiveTab('work-dirs')}
-          className={`flex-1 rounded px-2 py-1 text-sm font-medium transition-colors ${
+          className={`flex-1 rounded px-2 py-1 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface ${
             activeTab === 'work-dirs'
               ? 'bg-surface text-text shadow-sm'
               : 'text-muted hover:text-text'
@@ -323,7 +341,11 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         <button
           type="button"
           onClick={onSettingsClick}
-          className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-muted hover:bg-surface-2"
+          // M6 T11 — focus-visible ring 2px / accent-ring / 1px
+          // surface offset for keyboard navigation to the
+          // settings button (the last tabable in the sidebar
+          // footer before the bridge status card).
+          className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-muted hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
           data-testid="settings-button"
           aria-label="设置 — 更换访问令牌"
         >
@@ -413,7 +435,11 @@ function SessionsTab({ currentSession, currentWorkDir }: SessionsTabProps): Reac
       <button
         type="button"
         onClick={handleNew}
-        className="flex items-center justify-center gap-1.5 rounded-xl bg-accent-soft px-3 py-2.5 text-sm font-medium text-accent hover:bg-accent-soft/80"
+        // M6 T11 — focus-visible ring 2px / accent-ring / 1px
+        // surface offset on the 「新建会话」 button (first
+        // focusable after the sidebar tabs when Sessions is
+        // active).
+        className="flex items-center justify-center gap-1.5 rounded-xl bg-accent-soft px-3 py-2.5 text-sm font-medium text-accent hover:bg-accent-soft/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
         data-testid="session-new"
       >
         <Plus className="size-3.5" aria-hidden="true" focusable="false" />
@@ -445,7 +471,13 @@ function SessionsTab({ currentSession, currentWorkDir }: SessionsTabProps): Reac
               <button
                 type="button"
                 onClick={() => handleSelect(entry.id)}
-                className={`flex w-full items-start gap-2 rounded-xl px-3 py-2.5 text-left transition-colors ${
+                // M6 T11 — focus-visible ring 2px / accent-ring /
+                // 1px surface offset so the keyboard tab path
+                // through the session list lands on a perceivable
+                // ring at every row (e2e 09 spec asserts the sidebar
+                // tab path cycles focus inside the drawer — the ring
+                // is the visual confirmation for that path).
+                className={`flex w-full items-start gap-2 rounded-xl px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface ${
                   currentSession === entry.id
                     ? 'bg-surface-2 text-text'
                     : 'text-muted hover:bg-surface-2'
@@ -462,8 +494,12 @@ function SessionsTab({ currentSession, currentWorkDir }: SessionsTabProps): Reac
                   // those rules gone, the same paint is now an inline
                   // Tailwind class per status. Mapping mirrors the
                   // legacy 5-value table verbatim so e2e + screenshot
-                  // parity is preserved (D8).
-                  className={`mt-1 inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase text-white ${SESSION_STATUS_CLASS[entry.status]}`}
+                  // parity is preserved (D8). M6 T11 drops the base
+                  // `text-white` — every SESSION_STATUS_CLASS entry
+                  // pairs its bg with the matching `text-on-*` token
+                  // (or text-white for the borderline grey states)
+                  // so dark mode clears WCAG AA contrast.
+                  className={`mt-1 inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase ${SESSION_STATUS_CLASS[entry.status]}`}
                   data-testid="session-row-status"
                   data-status={entry.status}
                 >
@@ -630,7 +666,10 @@ function WorkDirsTab({ currentWorkDir, onOpenBrowser }: WorkDirsTabProps): React
                   <button
                     type="button"
                     onClick={() => handleSelect(path)}
-                    className="min-w-0 flex-1 truncate text-left text-sm font-medium"
+                    // M6 T11 — focus-visible ring 2px / accent-ring
+                    // / 1px surface offset for keyboard navigation
+                    // through the work-dir list rows.
+                    className="min-w-0 flex-1 truncate text-left text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
                     data-testid="work-dir-select"
                     data-path={path}
                   >
@@ -647,7 +686,14 @@ function WorkDirsTab({ currentWorkDir, onOpenBrowser }: WorkDirsTabProps): React
                       type="button"
                       onClick={() => handleRemove(path)}
                       disabled={removingPath === path}
-                      className="rounded px-1.5 py-0.5 text-xs text-muted hover:bg-surface disabled:opacity-50"
+                      // M6 T11 — focus-visible ring 2px / accent-ring
+                      // / 1px surface offset on the × remove button
+                      // so keyboard users can perceive + activate
+                      // the destructive action (the ring colour
+                      // mirrors the rest of the chrome; the action
+                      // itself stays opt-in via keyboard
+                      // confirmation in DialogHost).
+                      className="rounded px-1.5 py-0.5 text-xs text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
                       data-testid="work-dir-remove"
                       data-path={path}
                       aria-label={`移除工作目录 ${path}`}
@@ -665,7 +711,11 @@ function WorkDirsTab({ currentWorkDir, onOpenBrowser }: WorkDirsTabProps): React
       <button
         type="button"
         onClick={onOpenBrowser}
-        className="flex items-center justify-center gap-1.5 rounded-xl bg-surface-2 px-3 py-2.5 text-sm font-medium text-text hover:bg-bg"
+        // M6 T11 — focus-visible ring 2px / accent-ring / 1px
+        // surface offset on the 「浏览添加」 button (last focusable
+        // in the WorkDirs tab — keyboard users tabbing through
+        // the list land on this as the terminal action).
+        className="flex items-center justify-center gap-1.5 rounded-xl bg-surface-2 px-3 py-2.5 text-sm font-medium text-text hover:bg-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
         data-testid="work-dir-browse"
       >
         <FolderOpen className="size-3.5" aria-hidden="true" focusable="false" />

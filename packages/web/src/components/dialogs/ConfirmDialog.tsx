@@ -132,7 +132,7 @@ export function ConfirmDialog({
             type="button"
             onClick={handleCancel}
             disabled={pending}
-            className="dialog-button dialog-button-cancel inline-flex h-10 items-center justify-center rounded-xl border border-border-2 bg-surface px-4 text-sm font-medium text-muted transition hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:text-white"
+            className="dialog-button dialog-button-cancel inline-flex h-10 items-center justify-center rounded-xl border border-border-2 bg-surface px-4 text-sm font-medium text-muted transition hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             data-testid="dialog-cancel"
           >
             Cancel
@@ -151,7 +151,7 @@ export function ConfirmDialog({
             type="button"
             onClick={handleDecline}
             disabled={buttonsDisabled}
-            className="dialog-button dialog-button-decline inline-flex h-10 items-center justify-center rounded-xl bg-state-offline px-4 text-sm font-semibold text-white transition hover:bg-state-offline/90 disabled:cursor-not-allowed disabled:bg-accent-disabled"
+            className="dialog-button dialog-button-decline inline-flex h-10 items-center justify-center rounded-xl bg-state-offline px-4 text-sm font-semibold text-on-offline transition hover:bg-state-offline/90 disabled:cursor-not-allowed disabled:bg-accent-disabled focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             data-testid="dialog-decline"
           >
             No
@@ -160,7 +160,7 @@ export function ConfirmDialog({
             type="button"
             onClick={handleConfirm}
             disabled={buttonsDisabled}
-            className="dialog-button dialog-button-submit dialog-confirm-destructive inline-flex h-10 items-center justify-center rounded-xl bg-accent px-4 text-sm font-semibold text-white transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-accent-disabled"
+            className="dialog-button dialog-button-submit dialog-confirm-destructive inline-flex h-10 items-center justify-center rounded-xl bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-accent-disabled focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
             data-testid="dialog-confirm-yes"
           >
             Yes

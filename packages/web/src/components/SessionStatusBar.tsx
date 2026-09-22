@@ -93,19 +93,37 @@ interface SessionStatusBarProps {
 // Phase presentation (D7 amber family — tokenised)
 // ---------------------------------------------------------------------------
 
-/** Background-colour class for each phase. Tokenised via the
- *  M6 T07 `--amber` / `--amber-soft` family so the visual language
- *  stays consistent with the select-dialog tinted icon block + the
- *  Sidebar's session status pill. `null` falls back to muted grey. */
+/** Background + foreground colour class for each phase.
+ *  Tokenised via the M6 T07 `--amber` / `--amber-soft` family
+ *  so the visual language stays consistent with the
+ *  select-dialog tinted icon block + the Sidebar's session
+ *  status pill. M6 T11 pairs each background with the matching
+ *  `--on-*` text token so the dark-mode WCAG AA contrast
+ *  threshold is met on every coloured pill (light-mode visual
+ *  zero change — `--on-*` is `#ffffff` in light). `null` falls
+ *  back to muted grey + white text (4.5:1 borderline, kept as
+ *  the "unknown" placeholder). */
 const PHASE_CLASS: Record<NonNullable<SessionPhase>, string> = {
   // M6 T09 — running now uses the amber family (was hard-coded
   // `bg-[#e69138]` in Sidebar's SESSION_STATUS_CLASS; T09 brings
   // both maps onto the same tokenised vocabulary).
-  running: 'bg-amber',
-  ready: 'bg-accent',
-  idle: 'bg-state-online',
-  spawning: 'bg-state-connecting',
-  exited: 'bg-state-offline',
+  // M6 T11 — foreground picks the matching `--on-amber` token
+  // (dark `#422006`, light `#ffffff`) so white-on-#fbbf24
+  // 1.67:1 contrast failure in dark mode is fixed.
+  running: 'bg-amber text-on-amber',
+  // M6 T11 — `ready` was accent-filled (CTA chrome). Dark mode
+  // white-on-#6f9bff fails 2.7:1; `--on-accent` lands at 6.9:1.
+  ready: 'bg-accent text-on-accent',
+  // M6 T11 — `idle` was bg-state-online. Dark mode white-on-
+  // #34d399 fails 1.9:1; `--on-online` lands at 6.7:1.
+  idle: 'bg-state-online text-on-online',
+  // M6 T11 — `spawning` stays text-white (borderline 4.08:1 in
+  // dark, large enough to be visually distinct; not in the
+  // T11 three-edge list — keep current visual).
+  spawning: 'bg-state-connecting text-white',
+  // M6 T11 — `exited` was bg-state-offline. Dark mode white-on-
+  // #f87171 fails 2.8:1; `--on-offline` lands at 6.5:1.
+  exited: 'bg-state-offline text-on-offline',
 };
 
 function phaseLabel(phase: SessionPhase | null): string {
@@ -157,7 +175,7 @@ export function SessionStatusBar(props: SessionStatusBarProps): JSX.Element {
           // Hamburger kept on the surface-2 chip background so
           // it pops against the white pill bar (mirrors the
           // SessionStatusBar's pre-T09 visual).
-          className="-ml-1 inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-surface-2 text-text hover:bg-bg"
+          className="-ml-1 inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-surface-2 text-text hover:bg-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
           data-testid="sidebar-toggle"
           data-open={sidebarOpen ? 'true' : 'false'}
         >
@@ -176,12 +194,15 @@ export function SessionStatusBar(props: SessionStatusBarProps): JSX.Element {
       </span>
 
       {/* M6 T09 — phase badge: tinted small pill (D7 / G12). The
-          five-value mapping is tokenised via PHASE_CLASS; the
-          `text-white` foreground stays so the colour reads as a
-          solid pill against the white surface. */}
+          five-value mapping is tokenised via PHASE_CLASS. M6 T11
+          dropped the base `text-white` — each PHASE_CLASS entry
+          pairs its `bg-*` with the matching `text-on-*` token
+          (or `text-white` for the borderline connecting / muted
+          grey states not in the T11 three-edge list) so dark
+          mode clears WCAG AA. */}
       <span
-        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[0.72rem] font-semibold uppercase tracking-wide text-white ${
-          phase === null ? 'bg-muted' : PHASE_CLASS[phase]
+        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[0.72rem] font-semibold uppercase tracking-wide ${
+          phase === null ? 'bg-muted text-white' : PHASE_CLASS[phase]
         }`}
         data-testid="session-status-bar-phase"
         data-phase={phase ?? 'unknown'}

@@ -252,7 +252,7 @@ function MessageList({ session }: { session: string }) {
                     // e2e anchors on the class itself) so the
                     // text content parent is still queryable
                     // across both roles.
-                    className={`max-w-[80%] rounded-2xl rounded-tr-sm bg-accent px-4 py-3 text-sm leading-6 text-white message-body break-words whitespace-pre-wrap${
+                    className={`max-w-[80%] rounded-2xl rounded-tr-sm bg-accent px-4 py-3 text-sm leading-6 text-on-accent message-body break-words whitespace-pre-wrap${
                       item.kind === 'draft'
                         ? ' border border-dashed border-border opacity-85'
                         : ''
@@ -1002,10 +1002,10 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
                     : 'No active turn'
               }
               className={
-                'abort-button flex size-8 items-center justify-center rounded-xl text-white transition disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:text-text/40 ' +
+                'abort-button flex size-8 items-center justify-center rounded-xl transition disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:text-text/40 ' +
                 (abortLive
-                  ? 'bg-state-offline hover:bg-state-offline/90'
-                  : 'bg-accent-disabled')
+                  ? 'bg-state-offline text-on-offline hover:bg-state-offline/90'
+                  : 'bg-accent-disabled text-white')
               }
               onClick={onAbort}
               disabled={!abortLive}

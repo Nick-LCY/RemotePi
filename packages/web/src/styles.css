@@ -93,6 +93,28 @@
      `text-amber` on the size-11 rounded-xl header block. */
   --color-amber-soft: var(--amber-soft);
   --color-amber: var(--amber);
+  /* M6 T11 — dark-mode contrast WCAG AA 校色（D2 + G13）.
+     「实心彩底上的文字色」 token family. Light mode keeps
+     `#ffffff` so the light-mode visual stays identical to the
+     M6 T01-T09 baseline (D1-D12 决策零改动). Dark mode swaps
+     to a deep ink close to `--bg` so the white-on-彩底
+     combinations (amber pill / accent CTA / state-offline /
+     state-online) clear WCAG AA 4.5:1 body-text + 3:1 UI
+     thresholds against the lifted dark-mode bg colours
+     (#fbbf24 / #6f9bff / #f87171 / #34d399). The dark values
+     are picked to land at ≥ 6.5:1 (room above 4.5:1 so any
+     future ±5% L retune on the parent bg colour stays inside
+     the threshold). Consumers: SessionStatusBar phase badge
+     (running / idle / exited), Sidebar SESSION_STATUS_CLASS
+     running / idle / exited pills, all `bg-accent` 实心 CTAs
+     (TokenModal submit + ChoiceLevel2 work-dir-change +
+     DialogFooter 4 类弹窗 submit + ChatView user bubble +
+     App.tsx recovery-retry), and the abort-button live state
+     (bg-state-offline). Light mode zeroes visual change. */
+  --color-on-accent: var(--on-accent);
+  --color-on-amber: var(--on-amber);
+  --color-on-offline: var(--on-offline);
+  --color-on-online: var(--on-online);
   /* M6 T03 — deep slate backdrop family. Used by the mobile
      sidebar drawer backdrop (`bg-deep/20`) so the deep ink
      palette stays tokenised instead of hard-coded hex. Light
@@ -165,6 +187,20 @@
      the page ink without crowding the accent blue family). */
   --amber-soft: #fef3c7;
   --amber: #d97706;
+
+  /* M6 T11 — 「实心彩底上的文字色」 token family (light). White
+     on the reference light palette is the existing visual
+     (white on accent #245bc4 = 6.24:1 ✓; white on amber
+     #d97706 = 3.20:1 ✓ UI; white on offline #c0392b =
+     5.41:1 ✓; white on online #1f9d55 = 3.49:1 ✓ UI). Pinning
+     `#ffffff` here so the dark-mode swap is the only delta vs
+     the M6 T01-T09 baseline (light 视觉零变化承诺). The dark
+     block lower in the file overrides to deep ink values
+     sized to clear WCAG AA on the lifted dark-mode bg tokens. */
+  --on-accent: #ffffff;
+  --on-amber: #ffffff;
+  --on-offline: #ffffff;
+  --on-online: #ffffff;
 
   /* Deep slate — backdrop ink for mobile sidebar drawer
      (M6 T03) + chat AI avatar block + InputBar send button
@@ -266,6 +302,25 @@
     --state-connecting: #74808c;
     --state-online: #34d399;
     --state-offline: #f87171;
+
+    /* M6 T11 — dark-mode 「实心彩底上的文字色」 tokens. White on
+       the lifted dark-mode colours fails WCAG (accent #6f9bff
+       1.05/0.39 = 2.7:1 ✗; amber #fbbf24 1.67:1 ✗; offline
+       #f87171 2.8:1 ✗; online #34d399 1.92:1 ✗), so dark mode
+       paints these tokens with a slate-family deep colour close
+       to `--bg` (#0e1218) so the contrast ratio lands at
+       ≥ 6.5:1 (room above the 4.5:1 body-text AA threshold
+       should a future ±5% L retune on the parent bg land —
+       task 11 / D2 ±5% L 授权). The `--on-amber` value mirrors
+       `--amber-soft` (#422006) so the icon block's amber-on-
+       amber-soft pair stays visually balanced; `--on-offline`
+       and `--on-online` mirror their semantic mood (deep
+       brick-red + deep emerald). Verified contrast in
+       `__tests__/styles-token-contrast.test.ts`. */
+    --on-accent: #0f1522;
+    --on-amber: #422006;
+    --on-offline: #2a0a08;
+    --on-online: #053a23;
 
     /* Amber — dark-mode companion to the select dialog amber
        tinted icon block. Dark soft `#422006` is a deeply

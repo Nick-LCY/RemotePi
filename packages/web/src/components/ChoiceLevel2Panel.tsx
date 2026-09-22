@@ -123,7 +123,7 @@ export function ChoiceLevel2Panel(props: ChoiceLevel2PanelProps): JSX.Element {
       <button
         type="button"
         onClick={onChangeWorkDir}
-        className="mt-1 inline-flex items-center justify-center rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:bg-accent-hover focus:outline-none focus-visible:ring-4 focus-visible:ring-accent-ring"
+        className="mt-1 inline-flex items-center justify-center rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-on-accent transition hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
         data-testid="work-dir-change"
       >
         更换目录

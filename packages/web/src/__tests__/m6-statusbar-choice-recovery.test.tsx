@@ -328,12 +328,16 @@ describe('M6 T09 — ChoiceLevel2Panel reference shape (D7 / G12)', () => {
     expect(html).not.toMatch(/<svg[^>]*class="[^"]*\blucide-folder-open\b/);
   });
 
-  it('3c. work-dir-change button is accent-filled (bg-accent text-white)', () => {
+  it('3c. work-dir-change button is accent-filled (bg-accent text-on-accent) [T11 dark contrast]', () => {
     const html = renderChoiceLevel2('/home/me');
     const btnMatch = html.match(/<button[^>]*data-testid="work-dir-change"[^>]*>/);
     expect(btnMatch).not.toBeNull();
     expect(btnMatch![0]).toContain('bg-accent');
-    expect(btnMatch![0]).toContain('text-white');
+    // M6 T11 — foreground swapped from raw `text-white` to the
+    // `--on-accent` token (light = #ffffff → light visual
+    // unchanged; dark = #0f1522 → 6.9:1 vs the prior 2.9:1
+    // white-on-accent failure on the lifted dark-mode #6f9bff).
+    expect(btnMatch![0]).toContain('text-on-accent');
     expect(btnMatch![0]).toContain('rounded-xl');
   });
 

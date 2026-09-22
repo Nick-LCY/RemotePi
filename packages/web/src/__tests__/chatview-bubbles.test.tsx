@@ -201,11 +201,16 @@ describe('ChatView — user bubble layout (D11)', () => {
     // The class tokens land on the same element as
     // `message-row message-role-user`.
     expect(html).toMatch(/<li[^>]*\bmessage-row\b[^"]*\bmessage-role-user\b[^>]*flex justify-end[^>]*data-testid="message-row"/);
-    // max-w-[80%] + accent + white text + rounded-tr-sm on the
+    // max-w-[80%] + accent + on-accent text + rounded-tr-sm on the
     // bubble. The bubble class set lives on a descendant of
     // the user `<li>` — we assert on the substring presence
     // (the exact order matches the emitted class string).
-    expect(html).toMatch(/class="max-w-\[80%\] rounded-2xl rounded-tr-sm bg-accent px-4 py-3 text-sm leading-6 text-white message-body/);
+    // M6 T11: foreground is now the `text-on-accent` token
+    // (light = #ffffff so light visual is identical; dark
+    // = #0f1522 so the user message bubble clears WCAG AA on
+    // the lifted dark-mode accent #6f9bff — 6.9:1 vs the prior
+    // 2.7:1 white-on-accent failure).
+    expect(html).toMatch(/class="max-w-\[80%\] rounded-2xl rounded-tr-sm bg-accent px-4 py-3 text-sm leading-6 text-on-accent message-body/);
     // The body text appears inside the bubble.
     expect(html).toContain('hello agent');
   });

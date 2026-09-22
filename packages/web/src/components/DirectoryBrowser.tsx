@@ -396,7 +396,12 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
             onClick={goHome}
             disabled={path === null}
             data-testid="directory-browser-home"
-            className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-text hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
+            // M6 T11 — focus-visible ring 2px / accent-ring / 1px
+            // surface offset on the home navigation button. The
+            // disabled state (path === null) still has the ring
+            // because WCAG exempts disabled controls from contrast
+            // requirements; the muted disabled paint is acceptable.
+            className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-text hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
           >
             上到 home
           </button>
@@ -404,7 +409,7 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
             type="button"
             onClick={onCancel}
             data-testid="directory-browser-cancel"
-            className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-text hover:bg-surface-2"
+            className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-text hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
           >
             取消
           </button>
@@ -469,7 +474,10 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
                       type="button"
                       onClick={() => navigateTo(entry.path)}
                       data-testid="dir-entry-open"
-                      className="rounded-lg border border-border bg-surface px-2.5 py-1 text-xs text-text transition hover:bg-surface-2"
+                      // M6 T11 — focus-visible ring 2px / accent-ring
+                      // / 1px surface offset on the 「打开」 button
+                      // (navigates into the entry's children list).
+                      className="rounded-lg border border-border bg-surface px-2.5 py-1 text-xs text-text transition hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
                     >
                       打开
                     </button>
@@ -478,7 +486,12 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
                       onClick={() => handleSelect(entry.path)}
                       disabled={addingPath === entry.path}
                       data-testid="dir-entry-select"
-                      className="rounded-lg border border-accent bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent transition hover:border-accent hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-50"
+                      // M6 T11 — focus-visible ring 2px / accent-ring
+                      // / 1px surface offset on the 「选择」 button
+                      // (commits the work_dir via DialogHost confirm;
+                      // ring keeps the same D7 modal-primary accent
+                      // identity).
+                      className="rounded-lg border border-accent bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent transition hover:border-accent hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring focus-visible:ring-offset-1 focus-visible:ring-offset-surface"
                     >
                       {addingPath === entry.path ? '选择中…' : '选择'}
                     </button>

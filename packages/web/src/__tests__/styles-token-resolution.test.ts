@@ -47,141 +47,20 @@
 // Each pass extracts `--name: value;` declarations and folds
 // them into a `Record<string, string>` keyed by token name. A
 // helper `expectToken()` then asserts individual values.
+//
+// M6 T11 — the source-text parsing helpers are extracted into
+// `styles-token-resolution.helpers.ts` so the T11 contrast test
+// (`styles-token-contrast.test.ts`) reuses the exact same parse
+// output. A single source of truth keeps the two test files
+// from drifting apart as the file grows.
 
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-// ---------------------------------------------------------------------------
-// Module under test — locate `packages/web/src/styles.css` relative to this
-// file. The test runner is invoked from the repo root (`pnpm --filter
-// @remotepi/web test` → `vitest run` → CWD = repo root), so absolute
-// resolution off `__dirname` is the safe path. Importing via `import.meta.url`
-// keeps the helper valid for both ESM and `vitest` worker bundles.
-// ---------------------------------------------------------------------------
-
-const here = dirname(fileURLToPath(import.meta.url));
-const stylesPath = resolve(here, '../styles.css');
-
-// `readFileSync` happens once per test invocation; the file is small (~22 KB)
-// so a memoised read at module scope avoids re-parsing the same string for
-// every assertion below.
-const cssSource = readFileSync(stylesPath, 'utf8');
-
-// Match CSS custom-property declarations where the value runs
-// until the next semicolon (or balanced paren for rgba() /
-// var() etc.). Trailing whitespace + trailing semicolon are
-// trimmed by the consumer. Greedy non-semicolon matching is
-// safe because every value in the file terminates with a
-// semicolon — nested var(--other) references don't introduce
-// semicolons inside their argument list (they resolve to a
-// CSS-wide identifier list, never a declaration block).
-const DECL_RE = /--([a-z0-9-]+)\s*:\s*([^;]+);/gi;
-
-// Pull a single top-level block out of source. `start` marks
-// the index of the opening-brace target (e.g. the index of the
-// `@theme` keyword); the helper scopes capture to the matching
-// close-brace at depth zero and returns everything in between.
-// Balanced-brace walk guards against capturing a stray `{` that
-// lives inside a value (the only place it could appear today is
-// inside an arbitrary-value utility we don't yet emit, but the
-// helper is general-purpose so future task 02 Tailwind utilities
-// won't trip it).
-function extractRootBlock(source: string, start: number): string {
-  const openIdx = source.indexOf('{', start);
-  if (openIdx < 0) return '';
-  let depth = 1;
-  let i = openIdx + 1;
-  while (i < source.length && depth > 0) {
-    const ch = source[i];
-    if (ch === '{') depth++;
-    else if (ch === '}') depth--;
-    i++;
-  }
-  return source.slice(openIdx + 1, i - 1);
-}
-
-// Strip the banner comments so the structural regexes below
-// don't match the literal `@theme inline { ... }` /
-// `root selector { ... }` snippets that the banner comment
-// quotes for documentation. We use a non-greedy global match
-// here on purpose: CSS rule bodies never contain the end-of-
-// comment sequence in this project (plain CSS, no single-line
-// trickery), so non-greedy yields the safest collapse while
-// still surviving any future multi-line banner additions.
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '');
-}
-
-const cssNoComments = stripComments(cssSource);
-
-// Walk every token declaration inside the supplied block text
-// and return a record keyed by the token name. The declaration
-// shape is a leading double-dash, the token name, a colon, the
-// value, and a trailing semicolon; the regex is grep-driven
-// rather than parser-driven on purpose — see the file header
-// for the rationale. Used for both the light standalone root
-// selector and the dark-media nested root selector; shape-
-// agnostic.
-function parseTokens(blockText: string): Record<string, string> {
-  const tokens: Record<string, string> = {};
-  for (const match of blockText.matchAll(DECL_RE)) {
-    const name = match[1] ?? '';
-    const value = match[2]?.trim() ?? '';
-    if (name) tokens[name] = value;
-  }
-  return tokens;
-}
-
-// Locate the root-selector defaults block that runs BEFORE
-// the first `@media` rule. That's the light token source.
-// Operates on `cssNoComments` so the banner-comment snippets
-// can't pollute the match.
-function findLightBlock(source: string): string {
-  const mediaIdx = source.indexOf('@media');
-  const candidates: Array<{ start: number }> = [];
-  const rootRe = /:root\s*\{/g;
-  let m: RegExpExecArray | null;
-  while ((m = rootRe.exec(source))) {
-    if (mediaIdx < 0 || m.index < mediaIdx) {
-      candidates.push({ start: m.index });
-    }
-  }
-  if (candidates.length === 0) return '';
-  const block = extractRootBlock(source, candidates[candidates.length - 1]!.start);
-  return block;
-}
-
-// Locate the dark root block — the inner root-selector
-// declaration block nested inside the prefers-color-scheme
-// media-query wrapper. Tolerates any future `@media`
-// additions by always picking the LAST matching one (the
-// M6 layout convention is "media queries appear after the
-// light root selector").
-function findDarkBlock(source: string): string {
-  const mediaStart = source.indexOf('@media (prefers-color-scheme: dark)');
-  if (mediaStart < 0) return '';
-  const mediaBlock = extractRootBlock(source, mediaStart);
-  const innerStart = mediaBlock.indexOf(':root');
-  if (innerStart < 0) return '';
-  return extractRootBlock(mediaBlock, innerStart);
-}
-
-const lightTokens = parseTokens(findLightBlock(cssNoComments));
-const darkTokens = parseTokens(findDarkBlock(cssNoComments));
-
-// Pull the `@theme inline` body so we can assert the Tailwind
-// namespace mapping shape (count + var() references). Returns
-// an empty string if the directive is missing — every assertion
-// downstream either tolerates that or fails loudly.
-function findThemeInlineBlock(source: string): string {
-  const re = /@theme\s+inline\s*\{/g;
-  const m = re.exec(source);
-  if (!m) return '';
-  return extractRootBlock(source, m.index);
-}
-const themeInlineBody = findThemeInlineBlock(cssNoComments);
+import {
+  darkTokens,
+  lightTokens,
+  themeInlineBody,
+} from './styles-token-resolution.helpers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
