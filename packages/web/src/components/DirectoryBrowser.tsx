@@ -24,8 +24,115 @@
 //   - `internal` → "bridge 内部错误" for unexpected I/O errors.
 //   - `unknown` → fallback when the reply carried no error code
 //     (defensive).
+//
+// ## M6 T08 — reference modal visual shape (D7 family)
+//
+//   - **Outer wrapper** (testid `directory-browser`):
+//     `fixed inset-0 z-[250]` — same outer pattern as the
+//     TokenModal reference modal. Mobile: stays full-screen
+//     `flex flex-col gap-3 overflow-y-auto bg-bg p-4`. Desktop:
+//     `flex items-center justify-center p-4` to centre the card.
+//   - **Backdrop** (desktop only, **M+ (b) 兑现** — M4 kept
+//     DirectoryBrowser without a backdrop on desktop):
+//     `absolute inset-0 bg-deep/30 backdrop-blur-[3px]` deep
+//     slate + 3px blur, click fires `onCancel`. Matches the
+//     TokenModal / DialogHost backdrop family (`bg-deep` token
+//     from `--deep`; 30% alpha for the DirectoryBrowser scrim
+//     is intentionally slightly lighter than TokenModal's 45%
+//     because the DirectoryBrowser modal is a working list
+//     rather than a blocking auth gate).
+//   - **Card** (desktop): `w-full max-w-[480px] rounded-2xl
+//     bg-surface p-6 shadow-2xl` — reference blueprint slightly
+//     wider than TokenModal's 420px because the directory entry
+//     rows hold name + path + dual action buttons across three
+//     conceptual columns. Shadow-2xl (no border) supplies the
+//     elevation; the desktop form does NOT carry the legacy
+//     `card` class — the e2e 09 spec asserts that mobile
+//     `data-testid="directory-browser"` should not contain the
+//     substring `card directory-browser`, so we deliberately
+//     avoid the literal `card` class on either breakpoint.
+//   - **Header tinted icon block**: `size-11 rounded-xl
+//     bg-accent-soft text-accent` (44×44) with a lucide
+//     `<FolderOpen size={20} />` glyph. Same chrome language as
+//     TokenModal's Hash icon block + the 4 类 DialogHost tinted
+//     icon blocks (D7 family — blue tinted family for input /
+//     editor / directory types).
+//   - **Title**: `text-base font-semibold tracking-tight text-
+//     text` — slightly smaller than TokenModal's `text-xl` to
+//     match the in-card widget scale (the DirectoryBrowser
+//     header sits inside a multi-row working area, not a
+//     blocking gate).
+//   - **Path bar** (testid `directory-browser-path`):
+//     `text-sm text-muted-3` wrapper + inline code `rounded
+//     bg-surface-2 px-1.5 py-0.5 font-mono text-xs text-accent`
+//     — name/path single line with the active path in a soft
+//     accent-tinted code chip.
+//   - **Action buttons**: `上到 home` / `取消` as `rounded-lg
+//     border border-border bg-surface px-3 py-1.5 text-sm
+//     text-text hover:bg-surface-2 disabled:cursor-not-allowed`
+//     — same shape as T07 cancel buttons (white-on-surface
+//     outlined pair); the `disabled:opacity-50` modifier keeps
+//     the empty path state legible.
+//   - **Entry row** (testid `dir-entry`):
+//     `rounded-xl border border-border bg-surface p-2
+//     hover:bg-surface-2` card + dual-line name + path inside
+//     the row + inline 「打开」/「选择」 action buttons.
+//     `open` button = white-on-surface outlined (弱态描边);
+//     `select` button = accent-soft background + accent
+//     foreground (accent 弱态) to differentiate the two
+//     actions without competing with the title's primary
+//     blue block.
+//   - **Errors** (`directory-browser-error` / `directory-browser
+//     -add-error`): state-offline family — `bg-state-offline/[0.08]
+//     text-state-offline rounded-md px-3 py-2` — kept for visual
+//     continuity with the other red "something failed" banners
+//     (`.input-bar-error` / `.dialog-error` / `.dialog-host-
+//     toast` / `.message-tool-result-error`).
+//   - **Loading**: `text-sm text-muted-3` — same as the path
+//     bar (loading is "now we'll resolve the path").
+//
+// ## Mobile full-screen sheet (M5 沿用)
+//
+// M5 任务 07 mobile sheet path stays zero-changed:
+//   - `<768px`: outer wrapper is `fixed inset-0 z-[250] flex
+//     flex-col gap-3 overflow-y-auto bg-bg p-4` (matches the
+//     e2e 09 spec assertion `toContain('inset-0')`).
+//   - Backdrop is NOT rendered on mobile (the sheet fills the
+//     viewport; no scrim needed).
+//
+// ## Focus trap + click-out semantics
+//
+// `useFocusTrap` is always active while `open === true`. The
+// container ref points to the outer wrapper (same pattern as
+// TokenModal) so Tab cycles through the card content; the
+// backdrop `<button>` is in the cycle as well (browser default
+// button focus — same shape as TokenModal's backdrop where
+// the button cycles into and out of focus). Escape always fires
+// `onCancel`. **Backdrop click** also fires `onCancel` (M4
+// 既有行为保留 per task brief).
+//
+// ## testids (zero add / zero drop vs M5 / D6 baseline)
+//
+//   - `directory-browser` (root wrapper — both breakpoints)
+//   - `directory-browser-path` (path bar)
+//   - `directory-browser-home` (上到 home button)
+//   - `directory-browser-cancel` (取消 button)
+//   - `directory-browser-error` (list-level error banner)
+//   - `directory-browser-add-error` (per-entry add error)
+//   - `directory-browser-loading` (loading placeholder)
+//   - `dir-entries` (entry list)
+//   - `dir-entry` (row)
+//   - `dir-entry-name` (name span)
+//   - `dir-entry-open` (open / navigate button)
+//   - `dir-entry-select` (select / choose button)
+//
+// No `data-*` attributes are touched. Per the brief the
+// backdrop is intentionally NOT tagged with a new testid
+// (PRD testid zero-add commitment); e2e + unit locators use
+// existing className patterns.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { FolderOpen } from 'lucide-react';
 
 import { useFocusTrap } from '../hooks/useFocusTrap.js';
 import { useIsMobile } from '../hooks/useIsMobile.js';
@@ -42,7 +149,7 @@ interface DirectoryBrowserProps {
    *  ChoicePage level=2. */
   onAdded: (path: string) => void;
   /** Called when the user dismisses the browser (e.g. hits
-   *  Escape or clicks "取消"). */
+   *  Escape or clicks "取消" or backdrop — M4 行为保留). */
   onCancel: () => void;
 }
 
@@ -65,12 +172,16 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
   // leak focus.
   if (open === false) return <></>;
 
-  // Mobile: full-screen sheet. Desktop: centred `.card` panel.
+  // Mobile: full-screen sheet (`flex flex-col bg-bg p-4`).
+  // Desktop: centred modal (`flex items-center justify-center p-4`)
+  // — same shape as TokenModal.
   const isMobile = useIsMobile();
-  const containerRef = useRef<HTMLElement | null>(null);
+  // containerRef points to the outer wrapper. The trap is always
+  // active while open === true; mobile avoids Tab escape into the
+  // hidden page body, desktop avoids Tab escape out of the modal.
+  const containerRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap({
-    active: true, // 永远 trap（open=true 时）：移动端避免键盘跑
-                  // 到背后 hidden 区；桌面端避免 Tab 跳出模态。
+    active: true,
     containerRef,
     onEscape: onCancel,
   });
@@ -207,38 +318,85 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
     [client, onAdded],
   );
 
+  // Outer wrapper chrome — same fixed-inset-0 z-250 pattern as
+  // TokenModal. Mobile keeps the full-screen sheet form so the
+  // e2e 09 spec assertion (testid element has `inset-0`) and
+  // `not.toContain('card directory-browser')` continue to hold.
+  const outerClass = isMobile
+    ? 'directory-browser-mobile fixed inset-0 z-[250] flex flex-col gap-3 overflow-y-auto bg-bg p-4'
+    : 'directory-browser fixed inset-0 z-[250] flex items-center justify-center p-4';
+
+  // Inner card — desktop is the reference blueprint (T08 D7);
+  // mobile reuses the sheet body (no rounded corners, no shadow,
+  // no max-width per M5 任务 07 mobile sheet idiom).
+  const cardClass = isMobile
+    ? 'flex h-full w-full flex-col gap-4'
+    : 'relative flex w-full max-w-[480px] flex-col gap-4 rounded-2xl bg-surface p-6 shadow-2xl';
+
   return (
-    <section
+    <div
       ref={containerRef}
-      // `directory-browser` retained as a semantic anchor on the
-      // desktop form — the e2e 09 spec asserts mobile should NOT
-      // contain the literal `card directory-browser` substring,
-      // so we don't add `card` class to the desktop form (the
-      // chrome utilities below replace it 1-for-1). Mobile form
-      // stays free of both classes — the spec assertion
-      // `not.toContain('card directory-browser')` is satisfied
-      // trivially.
-      className={isMobile
-        ? 'directory-browser-mobile fixed inset-0 z-[250] flex flex-col gap-3 overflow-y-auto bg-bg p-4'
-        : 'directory-browser flex flex-col gap-3 rounded-lg border border-dashed border-border bg-surface px-5 py-4'
-      }
+      className={outerClass}
       data-testid="directory-browser"
       role="dialog"
       aria-modal="true"
       aria-labelledby="directory-browser-title"
     >
-      <div className="directory-browser-header flex flex-col gap-2">
-        <h3 id="directory-browser-title" className="directory-browser-title m-0 text-base">浏览目录</h3>
-        <p className="directory-browser-path m-0 text-[0.88rem] text-muted" data-testid="directory-browser-path">
-          当前路径：<code>{path ?? '$HOME'}</code>
-        </p>
+      {/* Backdrop — desktop only. M+ (b) 兑现: M4 kept the
+          DirectoryBrowser as a flat panel without a scrim; the
+          T08 modal化 adds a deep-slate 30% scrim with 3px blur
+          to match the TokenModal / DialogHost backdrop family.
+          Click fires `onCancel` (M4 click-out 既有行为保留).
+          Mobile is full-screen → no backdrop needed. */}
+      {!isMobile ? (
+        <button
+          type="button"
+          aria-label="关闭对话框"
+          onClick={onCancel}
+          className="absolute inset-0 cursor-default border-0 bg-deep/30 backdrop-blur-[3px]"
+        />
+      ) : null}
+
+      <div className={cardClass}>
+        {/* Header — tinted icon block + title (D7 family). */}
+        <div className="flex items-start gap-3">
+          <div
+            className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-accent-soft text-accent"
+            aria-hidden="true"
+          >
+            <FolderOpen className="size-5" />
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <h3
+              id="directory-browser-title"
+              className="directory-browser-title m-0 text-base font-semibold tracking-tight text-text"
+            >
+              浏览目录
+            </h3>
+            <p
+              className="directory-browser-path m-0 text-sm text-muted-3"
+              data-testid="directory-browser-path"
+            >
+              当前路径：
+              <code className="ml-1 rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs text-accent">
+                {path ?? '$HOME'}
+              </code>
+            </p>
+          </div>
+        </div>
+
+        {/* Action row — 「上到 home」 / 「取消」 as a paired
+            outlined button group. Same shape as T07 cancel
+            buttons (white-on-surface outlined); `hover:bg-
+            surface-2` is the only chrome additive compared to
+            M5 (the rest buttons stayed solid surface). */}
         <div className="directory-browser-actions flex gap-2">
           <button
             type="button"
             onClick={goHome}
             disabled={path === null}
             data-testid="directory-browser-home"
-            className="rounded border border-border bg-surface px-3 py-1.5 text-sm text-text disabled:opacity-50"
+            className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-text hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
             上到 home
           </button>
@@ -246,84 +404,92 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
             type="button"
             onClick={onCancel}
             data-testid="directory-browser-cancel"
-            className="rounded border border-border bg-surface px-3 py-1.5 text-sm text-text"
+            className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-text hover:bg-surface-2"
           >
             取消
           </button>
         </div>
-      </div>
 
-      {listError !== null ? (
-        <p
-          className="directory-browser-error m-0 rounded bg-state-offline/[0.08] px-3 py-2 text-[0.85rem] text-state-offline"
-          role="alert"
-          data-testid="directory-browser-error"
-        >
-          {listError}
-        </p>
-      ) : null}
+        {listError !== null ? (
+          <p
+            className="directory-browser-error m-0 rounded-md bg-state-offline/[0.08] px-3 py-2 text-sm text-state-offline"
+            role="alert"
+            data-testid="directory-browser-error"
+          >
+            {listError}
+          </p>
+        ) : null}
 
-      {addError !== null ? (
-        <p
-          className="directory-browser-error m-0 rounded bg-state-offline/[0.08] px-3 py-2 text-[0.85rem] text-state-offline"
-          role="alert"
-          data-testid="directory-browser-add-error"
-        >
-          {addError}
-        </p>
-      ) : null}
+        {addError !== null ? (
+          <p
+            className="directory-browser-error m-0 rounded-md bg-state-offline/[0.08] px-3 py-2 text-sm text-state-offline"
+            role="alert"
+            data-testid="directory-browser-add-error"
+          >
+            {addError}
+          </p>
+        ) : null}
 
-      {entries === null && listError === null ? (
-        <p className="directory-browser-loading m-0 text-[0.88rem] text-muted" data-testid="directory-browser-loading">
-          加载中…
-        </p>
-      ) : null}
+        {entries === null && listError === null ? (
+          <p
+            className="directory-browser-loading m-0 text-sm text-muted-3"
+            data-testid="directory-browser-loading"
+          >
+            加载中…
+          </p>
+        ) : null}
 
-      {entries !== null ? (
-        <ul className="directory-browser-entries m-0 flex max-h-[40vh] list-none flex-col gap-1 overflow-y-auto p-0" data-testid="dir-entries">
-          {entries.entries.length === 0 ? (
-            <li className="directory-browser-empty text-[0.88rem] text-muted">（无子目录）</li>
-          ) : (
-            entries.entries.map((entry) => (
-              <li
-                key={entry.path}
-                className="directory-browser-entry grid grid-cols-[minmax(8rem,1fr)_minmax(0,2fr)_auto] items-center gap-2 rounded border border-border bg-surface-2 px-2 py-1"
-                data-testid="dir-entry"
-              >
-                <span
-                  className="directory-browser-entry-name text-[0.92rem] font-semibold"
-                  data-testid="dir-entry-name"
+        {entries !== null ? (
+          <ul
+            className="directory-browser-entries m-0 flex max-h-[50vh] list-none flex-col gap-2 overflow-y-auto p-0"
+            data-testid="dir-entries"
+          >
+            {entries.entries.length === 0 ? (
+              <li className="directory-browser-empty text-sm text-muted-3">（无子目录）</li>
+            ) : (
+              entries.entries.map((entry) => (
+                <li
+                  key={entry.path}
+                  className="directory-browser-entry flex items-start gap-3 rounded-xl border border-border bg-surface p-2 hover:bg-surface-2"
+                  data-testid="dir-entry"
                 >
-                  {entry.name}
-                </span>
-                <span className="directory-browser-entry-path break-all font-mono text-[0.82rem] text-muted">
-                  <code>{entry.path}</code>
-                </span>
-                <div className="directory-browser-entry-actions flex gap-1">
-                  <button
-                    type="button"
-                    onClick={() => navigateTo(entry.path)}
-                    data-testid="dir-entry-open"
-                    className="rounded border border-border bg-surface px-2 py-0.5 text-[0.82rem] text-text"
-                  >
-                    打开
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleSelect(entry.path)}
-                    disabled={addingPath === entry.path}
-                    data-testid="dir-entry-select"
-                    className="rounded border border-accent bg-accent px-2 py-0.5 text-[0.82rem] text-white disabled:bg-accent-disabled disabled:border-accent-disabled"
-                  >
-                    {addingPath === entry.path ? '选择中…' : '选择'}
-                  </button>
-                </div>
-              </li>
-            ))
-          )}
-        </ul>
-      ) : null}
-    </section>
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span
+                      className="directory-browser-entry-name truncate text-sm text-text"
+                      data-testid="dir-entry-name"
+                    >
+                      {entry.name}
+                    </span>
+                    <span className="directory-browser-entry-path break-all font-mono text-xs text-muted-4">
+                      <code>{entry.path}</code>
+                    </span>
+                  </div>
+                  <div className="directory-browser-entry-actions flex shrink-0 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => navigateTo(entry.path)}
+                      data-testid="dir-entry-open"
+                      className="rounded-lg border border-border bg-surface px-2.5 py-1 text-xs text-text transition hover:bg-surface-2"
+                    >
+                      打开
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSelect(entry.path)}
+                      disabled={addingPath === entry.path}
+                      data-testid="dir-entry-select"
+                      className="rounded-lg border border-accent bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent transition hover:border-accent hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {addingPath === entry.path ? '选择中…' : '选择'}
+                    </button>
+                  </div>
+                </li>
+              ))
+            )}
+          </ul>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
