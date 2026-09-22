@@ -15,12 +15,44 @@
 //     `tokenStorage.write(value)` + `onSubmit(value)` callback
 //     (the App layer wires this to `client.connect(newToken)`).
 //
-// testids:
-//   - `token-input` / `token-submit` — carried over from the M3
+// ## Reference visual shape (M6 task 06 — D7)
+//
+//   - **Backdrop** (matches T03 sidebar drawer family):
+//     `bg-deep/45 backdrop-blur-[3px]` — 深石板 + 3px blur.
+//   - **Card** (desktop): `rounded-2xl bg-surface p-7 shadow-2xl
+//     w-full max-w-[420px]` (reference blueprint).
+//     Mobile variant stays the existing full-screen sheet form
+//     (no rounded corners, no max-width) per M5 task 07.
+//   - **Header tinted icon block**:
+//     `size-11 rounded-xl bg-accent-soft text-accent` with a
+//     lucide `<Hash size={20} />` glyph (D7 blueprint: blue tinted
+//     icon block in input / editor modals).
+//   - **Title**: `text-xl font-semibold tracking-tight`.
+//   - **Subcopy**: `text-sm leading-6 text-muted-3`.
+//   - **Input**: `h-11 rounded-xl border border-border-2
+//     bg-surface-2 px-3 text-sm outline-none transition
+//     placeholder:text-muted-5 focus:border-accent focus:ring-4
+//     focus:ring-accent-ring` — replaces the legacy `border-border`
+//     single-focus indicator with a soft accent ring (D7 single
+//     focus indicator idiom).
+//   - **Submit button**: `h-11 w-full rounded-xl bg-accent
+//     text-sm font-semibold text-white transition
+//     hover:bg-accent-hover disabled:bg-accent-disabled
+//     disabled:cursor-not-allowed`.
+//   - **Footer privacy hint**: `mt-4 text-center text-[11px]
+//     leading-5 text-muted-5` — "Token 仅保存在当前浏览器本地，
+//     不上传至服务器" wording.
+//
+// ## testids (zero add / zero drop vs M5 baseline)
+//
+//   - `token-input` / `token-submit` — carried over from M3
 //     `TokenPrompt` (e2e 03 asserts on these).
 //   - `token-modal` / `token-modal-backdrop` /
-//     `token-modal-close` — new (dialog container + dismiss
-//     targets).
+//     `token-modal-close` — dialog container + dismiss targets.
+//   - `token-modal-banner` — legacy-bookmark UX hint.
+//   - `token-modal-storage-error` — inline write-failure banner.
+//
+// ## z-index: 400 (D12 — above dialog-host 300 / sidebar 200).
 //
 // Focus: closable mode installs `useFocusTrap` (Escape closes);
 // required mode has the input as the only focusable element,
@@ -29,6 +61,7 @@
 // listener (a previous duplicate listener was removed).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Hash } from 'lucide-react';
 
 import { useFocusTrap } from '../hooks/useFocusTrap.js';
 import { useIsMobile } from '../hooks/useIsMobile.js';
@@ -136,7 +169,8 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
       aria-modal="true"
       aria-labelledby="token-modal-title"
     >
-      {/* Backdrop — blur + dim. Closable mode renders a clickable
+      {/* Backdrop — deep slate + 3px blur (D6 family consistency
+          with T03 sidebar drawer). Closable mode renders a clickable
           button under it; required mode still renders the backdrop
           for visual depth but it has no click handler. */}
       <button
@@ -145,12 +179,12 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
         data-testid="token-modal-backdrop"
         onClick={handleBackdropClick}
         disabled={required}
-        className="absolute inset-0 bg-black/40 backdrop-blur-sm cursor-default disabled:cursor-default"
+        className="absolute inset-0 bg-deep/45 backdrop-blur-[3px] cursor-default disabled:cursor-default"
       />
 
       <div className={isMobile
         ? 'relative flex h-full w-full flex-col overflow-y-auto bg-bg p-4'
-        : 'relative w-full max-w-md rounded-lg border border-border bg-bg p-6 shadow-xl'
+        : 'relative w-full max-w-[420px] rounded-2xl bg-surface p-7 shadow-2xl'
       }>
         {/* Close button — only rendered in closable mode (D10). */}
         {!required ? (
@@ -184,7 +218,7 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
             inline block already maps the colour namespace). */}
         {storageError !== undefined && storageError !== null && storageError.length > 0 ? (
           <div
-            className="mb-4 rounded border border-state-offline bg-state-offline/[0.08] px-3 py-2 text-sm text-state-offline"
+            className="mb-4 rounded-lg border border-state-offline bg-state-offline/[0.08] px-3 py-2 text-sm text-state-offline"
             data-testid="token-modal-storage-error"
             role="alert"
           >
@@ -192,20 +226,30 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
           </div>
         ) : null}
 
+        {/* Header tinted icon block — D7 blueprint for input/editor
+            modals: blue tinted square + lucide Hash glyph. Sized
+            44×44 (size-11) to match reference piagent-console. */}
+        <div
+          className="mb-6 flex size-11 items-center justify-center rounded-xl bg-accent-soft text-accent"
+          aria-hidden="true"
+        >
+          <Hash className="size-5" />
+        </div>
+
         <h2
           id="token-modal-title"
-          className="mb-2 text-lg font-semibold text-text"
+          className="text-xl font-semibold tracking-tight text-text"
         >
           {required ? '连接 Bridge' : '更换访问令牌'}
         </h2>
-        <p className="mb-4 text-sm text-muted">
+        <p className="mt-2 text-sm leading-6 text-muted-3">
           {required
             ? '粘贴你的访问令牌以连接 Bridge。令牌仅保存在浏览器本地存储，不会出现在 URL 或服务器日志中。'
             : '粘贴新的访问令牌以切换 Bridge 连接。'}
         </p>
 
         <form onSubmit={handleSubmit}>
-          <label htmlFor="token-input" className="block text-sm font-medium text-text mb-1">
+          <label htmlFor="token-input" className="mt-6 block text-sm font-medium text-text mb-1">
             访问令牌
           </label>
           <input
@@ -219,17 +263,21 @@ export function TokenModal(props: TokenModalProps): JSX.Element {
             placeholder="paste token"
             value={value}
             onChange={(event) => setValue(event.target.value)}
-            className="w-full rounded border border-border bg-surface px-3 py-2 text-text outline-none focus:border-accent"
+            className="h-11 w-full rounded-xl border border-border-2 bg-surface-2 px-3 text-sm outline-none transition placeholder:text-muted-5 focus:border-accent focus:ring-4 focus:ring-accent-ring"
           />
           <button
             type="submit"
             data-testid="token-submit"
             disabled={submitDisabled}
-            className="mt-4 w-full rounded bg-accent px-3 py-2 text-white font-medium hover:bg-accent disabled:bg-accent-disabled disabled:cursor-not-allowed"
+            className="mt-4 h-11 w-full rounded-xl bg-accent text-sm font-semibold text-white transition hover:bg-accent-hover disabled:bg-accent-disabled disabled:cursor-not-allowed"
           >
             {required ? '连接' : '保存'}
           </button>
         </form>
+
+        <p className="mt-4 text-center text-[11px] leading-5 text-muted-5">
+          Token 仅保存在当前浏览器本地，不会上传至服务器。
+        </p>
       </div>
     </div>
   );

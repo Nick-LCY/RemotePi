@@ -383,8 +383,108 @@ describe('TokenModal — visual layout (Tailwind v4 only, task 04 落地)', () =
     expect(html).toMatch(/class="[^"]*inset-0[^"]*"/);
   });
 
-  it('21. the backdrop uses backdrop-blur-sm (D10 backdrop 高斯模糊)', () => {
+  it('21. the backdrop uses backdrop-blur-[3px] (M6 T06 D6 family — 3px blur on 深石板)', () => {
+    // M6 T06 替换了原 D10 `backdrop-blur-sm` → 与 T03 sidebar drawer
+    // 同族 `bg-deep/45 backdrop-blur-[3px]`。同时验证深石板 + 3px
+    // blur 同时出现（避免单 blur 误命中其他 backdrop）。
     const { html } = render({ required: true });
-    expect(html).toMatch(/data-testid="token-modal-backdrop"[^>]*class="[^"]*backdrop-blur-sm[^"]*"/);
+    const backdropMatch = html.match(/<button[^>]*data-testid="token-modal-backdrop"[^>]*class="([^"]*)"/);
+    expect(backdropMatch).not.toBeNull();
+    expect(backdropMatch![1]).toMatch(/backdrop-blur-\[3px\]/);
+    expect(backdropMatch![1]).toMatch(/bg-deep\/45/);
+  });
+});
+
+describe('TokenModal — M6 T06 reference visual shape (D7 blueprint)', () => {
+  it('22. the desktop card carries `rounded-2xl bg-surface p-7 shadow-2xl max-w-[420px]` (T06 D7 reference)', () => {
+    // M6 T06: desktop 卡片容器 替换原 `rounded-lg border border-border
+    // bg-bg p-6 shadow-xl max-w-md` → reference blueprint
+    // `rounded-2xl bg-surface p-7 shadow-2xl max-w-[420px]`（无边框，
+    // 由 shadow-2xl 表达 elevation）。Tailwind 编译后 class 顺序
+    // 可能与源码不同，逐项 word-boundary regex 校验。
+    const { html } = render({ required: true });
+    // 抽取含 rounded-2xl 的 div class，断言所有属性在同 class 内。
+    const cardMatch = html.match(/<div[^>]*class="([^"]*\brounded-2xl\b[^"]*)"[^>]*>/);
+    expect(cardMatch, 'desktop card div with rounded-2xl should exist').not.toBeNull();
+    const cls = cardMatch![1];
+    expect(cls, 'card should carry bg-surface').toMatch(/\bbg-surface\b/);
+    expect(cls, 'card should carry p-7').toMatch(/\bp-7\b/);
+    expect(cls, 'card should carry shadow-2xl').toMatch(/\bshadow-2xl\b/);
+    expect(cls, 'card should carry max-w-[420px]').toMatch(/max-w-\[420px\]/);
+    // 旧形态不应再残留：no `rounded-lg ... max-w-md` combo.
+    const oldCardMatch = html.match(/<div[^>]*class="([^"]*\brounded-lg\b[^"]*)"[^>]*>/);
+    if (oldCardMatch !== null) {
+      expect(oldCardMatch[1], 'no rounded-lg card should carry max-w-md').not.toMatch(/max-w-md/);
+    }
+  });
+
+  it('23. the header carries a tinted icon block: `size-11 rounded-xl bg-accent-soft text-accent` + lucide Hash (D7)', () => {
+    // M6 T06 D7: 头部 44×44 (size-11) 圆角块，浅蓝底 (`bg-accent-soft`)
+    // + 蓝前景 (`text-accent`)，lucide Hash size-5。
+    const { html } = render({ required: true });
+    expect(html).toMatch(
+      /<div[^>]*class="[^"]*\bsize-11\b[^"]*\brounded-xl\b[^"]*\bbg-accent-soft\b[^"]*\btext-accent\b[^"]*"[^>]*>/,
+    );
+    // lucide Hash SVG 渲染（svg with class containing size-5）。
+    expect(html).toMatch(/<svg[^>]*class="[^"]*\bsize-5\b[^"]*"/);
+  });
+
+  it('24. the input carries `h-11 rounded-xl border border-border-2 bg-surface-2` + focus ring (T06 D7 single-focus indicator)', () => {
+    // M6 T06: input 替换 `w-full rounded border border-border bg-surface
+    // px-3 py-2 ... focus:border-accent` → reference blueprint
+    // `h-11 w-full rounded-xl border border-border-2 bg-surface-2
+    // px-3 text-sm outline-none transition placeholder:text-muted-5
+    // focus:border-accent focus:ring-4 focus:ring-accent-ring`。
+    // 单焦点指示: `focus:ring-4 focus:ring-accent-ring` (D7 光晕
+    // 替代单边 border)。
+    const { html } = render({ required: true });
+    const inputMatch = html.match(/<input[^>]*data-testid="token-input"[^>]*class="([^"]*)"/);
+    expect(inputMatch).not.toBeNull();
+    expect(inputMatch![1]).toMatch(/\bh-11\b/);
+    expect(inputMatch![1]).toMatch(/\brounded-xl\b/);
+    expect(inputMatch![1]).toMatch(/\bbg-surface-2\b/);
+    expect(inputMatch![1]).toMatch(/\bfocus:ring-4\b/);
+    expect(inputMatch![1]).toMatch(/\bfocus:ring-accent-ring\b/);
+    expect(inputMatch![1]).toMatch(/\bplaceholder:text-muted-5\b/);
+    // outline-none 语义保留
+    expect(inputMatch![1]).toMatch(/\boutline-none\b/);
+  });
+
+  it('25. the submit button carries `h-11 w-full rounded-xl bg-accent text-sm font-semibold` + hover/disabled (D7)', () => {
+    // M6 T06: submit 替换 `mt-4 w-full rounded bg-accent px-3 py-2
+    // text-white font-medium hover:bg-accent ...` → reference
+    // `mt-4 h-11 w-full rounded-xl bg-accent text-sm font-semibold
+    // text-white transition hover:bg-accent-hover disabled:bg-accent-
+    // disabled disabled:cursor-not-allowed`。
+    const { html } = render({ required: true });
+    const submitMatch = html.match(/<button[^>]*data-testid="token-submit"[^>]*class="([^"]*)"/);
+    expect(submitMatch).not.toBeNull();
+    expect(submitMatch![1]).toMatch(/\bh-11\b/);
+    expect(submitMatch![1]).toMatch(/\bw-full\b/);
+    expect(submitMatch![1]).toMatch(/\brounded-xl\b/);
+    expect(submitMatch![1]).toMatch(/\bbg-accent\b/);
+    expect(submitMatch![1]).toMatch(/\btext-sm\b/);
+    expect(submitMatch![1]).toMatch(/\bfont-semibold\b/);
+    expect(submitMatch![1]).toMatch(/\bhover:bg-accent-hover\b/);
+    expect(submitMatch![1]).toMatch(/\bdisabled:bg-accent-disabled\b/);
+  });
+
+  it('26. the footer carries the privacy hint at `text-[11px] leading-5 text-muted-5` (T06 D7)', () => {
+    // M6 T06: 底部隐私说明新增 `<p className="mt-4 text-center
+    // text-[11px] leading-5 text-muted-5">Token 仅保存在当前浏览器
+    // 本地，不会上传至服务器。</p>`。逐项 word-boundary regex + 抓
+    // 文本内容校验。
+    const { html } = render({ required: true });
+    // 多个 <p>，filter the privacy hint by its text body.
+    const pMatch = html.match(
+      /<p\s+class="([^"]+)"\s*>Token 仅保存在当前浏览器本地，不会上传至服务器。<\/p>/,
+    );
+    expect(pMatch, 'footer <p> with privacy hint should render').not.toBeNull();
+    const cls = pMatch![1];
+    expect(cls, 'privacy hint <p> should carry mt-4').toMatch(/\bmt-4\b/);
+    expect(cls, 'privacy hint <p> should carry text-center').toMatch(/\btext-center\b/);
+    expect(cls, 'privacy hint <p> should carry text-[11px]').toMatch(/text-\[11px\]/);
+    expect(cls, 'privacy hint <p> should carry leading-5').toMatch(/\bleading-5\b/);
+    expect(cls, 'privacy hint <p> should carry text-muted-5').toMatch(/\btext-muted-5\b/);
   });
 });
