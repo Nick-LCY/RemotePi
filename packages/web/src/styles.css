@@ -1,71 +1,144 @@
-/* RemotePi web — minimal native CSS. No UI library; only what
-   the four components need to look like an integrated page
-   rather than a dev console. Layout is a single column on
-   narrow viewports. */
+/* RemotePi web — minimal native CSS. No UI library; the
+   stylesheet is organised in four concentric layers that
+   cooperate to back both legacy class-based rules and any
+   Tailwind v4 utilities the components use inline. */
 
 /* =====================================================================
- * Tailwind v4 intro.
- *
- * Directive order (load-bearing):
+ * Layer order (load-bearing):
  *
  *   1. `@import "tailwindcss";` injects preflight (the v4 CSS
  *      reset) + the utilities layer + the default @theme. Must
  *      be the first non-comment content.
- *   2. `@theme inline { ... }` re-maps 12 legacy color custom
- *      properties onto Tailwind's `--color-*` tokens. The
- *      `inline` modifier means the value is pasted into each
- *      utility class as `var(--bg)`, so utilities auto-track any
- *      future `:root` override (including the
- *      `@media (prefers-color-scheme: dark)` block further down).
- *   3. `:root { ... }` keeps the original 13 legacy CSS custom
- *      properties verbatim (their names are unchanged because
- *      every existing `background: var(--bg)` rule below depends
- *      on them) and adds `--sidebar-width`.
+ *   2. `@theme inline { ... }` re-maps the 21 colour tokens +
+ *      the sidebar width + the legacy `--accent-disabled`
+ *      placeholder onto Tailwind's `--color-*` / `--spacing-*`
+ *      namespaces. The `inline` modifier pastes each value as
+ *      `var(--token)` into the matching utility class, so
+ *      utilities auto-track any future `:root` override
+ *      (including the `@media (prefers-color-scheme: dark)`
+ *      block further down). The 22nd token, `--shadow-card`,
+ *      stays in `:root` only — Tailwind v4 reserves `--shadow-*`
+ *      for the built-in elevation scale (`shadow-sm`, `shadow-md`,
+ *      …) and we don't want to claim that namespace without a
+ *      concrete shadow utility consumer; downstream tasks
+ *      (M6 task 05 / InputBar) consume it as an arbitrary-value
+ *      utility `shadow-[var(--shadow-card)]` (tokens remain the
+ *      single source of truth in `:root`).
+ *   3. `:root { ... }` holds 22 tokens verbatim. The original
+ *      13 names are kept (legacy `background: var(--bg)` rules
+ *      below depend on them) and now carry the reference cool
+ *      palette plus 9 additions — five grey stops (`--muted-2`
+ *      … `--muted-5`), two border layers (`--border-2`,
+ *      `--border-3`), three accent variants (`--accent-hover`,
+ *      `--accent-soft`, `--accent-ring`), the unified
+ *      `--state-connecting`, and the shared card shadow
+ *      `--shadow-card`. D1 / D2 / D5 / D9.
  *   4. `@media (prefers-color-scheme: dark) { :root { ... } }`
- *      keeps its 12 dark-color overrides — because @theme inline
- *      re-references the original vars, dark mode keeps working
- *      for both legacy rules and Tailwind utilities.
+ *      mirrors the same 22 tokens on the dark slate palette
+ *      (D2 + D9). Because `@theme inline` re-references the
+ *      same names, dark-mode propagates to both legacy rules
+ *      and Tailwind utilities automatically.
  *   5. `@layer components { ... }` wraps the legacy CSS so it
  *      stacks ABOVE preflight (legacy overrides reset) but BELOW
  *      ad-hoc Tailwind utilities (new components win on
  *      specificity without re-architecting).
+ *
+ * M6 D1 / D2 / D5 / D9 — reference cool palette. Token totals:
+ *   light 22 / dark 22 (13 legacy + 9 additions);
+ *   `@theme inline` exposes 14 colour namespaces + 1 spacing
+ *   (the `color-accent-disabled` legacy placeholder is
+ *    preserved because two `*:disabled` rules still reference
+ *    it — its values stay at M5 baselines; task 11 may tune).
  * ===================================================================== */
 
 @import "tailwindcss";
 
 @theme inline {
-  /* 12 color tokens — values are re-references to the legacy
-     vars in :root below, so dark-mode overrides + any future
-     theme override propagates to utilities automatically. */
+  /* 14 colour tokens — every value is a re-reference to the
+     token declared in `:root` (or its dark-mode override), so
+     light / dark propagation is automatic for utilities. */
   --color-bg: var(--bg);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-text: var(--text);
   --color-muted: var(--muted);
+  --color-muted-2: var(--muted-2);
+  --color-muted-3: var(--muted-3);
+  --color-muted-4: var(--muted-4);
+  --color-muted-5: var(--muted-5);
   --color-border: var(--border);
+  --color-border-2: var(--border-2);
+  --color-border-3: var(--border-3);
   --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ring: var(--accent-ring);
   --color-accent-disabled: var(--accent-disabled);
   --color-code-bg: var(--code-bg);
   --color-state-online: var(--state-online);
   --color-state-offline: var(--state-offline);
   --color-state-connecting: var(--state-connecting);
+
+  /* Layout token — sidebar width. Tailwind v4 spacing namespace
+     lets utilities like `w-sidebar-width` or `w-[var(--sidebar-width)]`
+     reach the same value. (Existing consumers in AppShell.tsx
+     already use `w-[var(--sidebar-width)]`; promoting the token
+     to the spacing namespace is additive and does not change
+     those call sites.) */
+  --spacing-sidebar-width: var(--sidebar-width);
 }
 
 :root {
   color-scheme: light dark;
-  --bg: #f7f7f8;
-  --surface: #ffffff;
-  --surface-2: #f0f0f3;
-  --text: #1a1a1f;
-  --muted: #5a5a66;
-  --border: #d8d8de;
-  --accent: #2c5cff;
-  --accent-disabled: #b8c2dd;
-  --code-bg: #ececef;
 
+  /* === reference cool palette (light) — D1 + D2 ================= */
+
+  /* Surfaces */
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f5f7f9;
+
+  /* Text + grey stops (5 stops for body / muted / placeholder) */
+  --text: #17202b;
+  --muted: #687482;
+  --muted-2: #4d5966;
+  --muted-3: #74808c;
+  --muted-4: #87919d;
+  --muted-5: #9aa3ad;
+
+  /* Accent — reference cool blue family (D1) */
+  --accent: #245bc4;
+  --accent-hover: #194da9;
+  --accent-soft: #f0f5ff;
+  --accent-ring: #eef4ff;
+
+  /* Borders — three layers (primary / emphasis / hairline) */
+  --border: #e4e8ed;
+  --border-2: #dfe4e9;
+  --border-3: #edf0f3;
+
+  /* Code surface — theme-aligned for inline / block code */
+  --code-bg: #ffffff;
+
+  /* State colours — green / red constants; connecting now
+     unified on grey scale step (was M5 `#6b6b76`). */
   --state-online: #1f9d55;
   --state-offline: #c0392b;
-  --state-connecting: #6b6b76;
+  --state-connecting: #87919d;
+
+  /* Card shadow — shared by InputBar / TokenModal / message
+     bubbles (downstream tasks). RGB matches `--text` so the
+     shadow inherits the page ink colour in dark mode. */
+  --shadow-card: 0 4px 18px rgba(23, 32, 43, 0.06);
+
+  /* =============================================================== */
+
+  /* Legacy accent-disabled placeholder — two `*:disabled` rules
+     (the global `button` rule + `.dialog-button:disabled`) still
+     reference `var(--accent-disabled)`. The value is unchanged
+     from M5 because the reference palette does not specify a
+     disabled tint; task 11 dark-contrast pass may retune. */
+  --accent-disabled: #b8c2dd;
 
   /* InputBar textarea auto-grow cap. This CSS value is the
      visual source of truth for the `max-height` +
@@ -78,7 +151,11 @@
      cap kicks in independently of the JS inline `style.height`. */
   --input-max-height: 200px;
 
-  /* AppShell sidebar width. */
+  /* AppShell sidebar width — D5 schedules 280→300, but task 01
+     leaves the value at 280 (the layout consumer in
+     `AppShell.tsx` reads it via `w-[var(--sidebar-width)]`) and
+     defers the bump to task 03 alongside the AppShell rebuild
+     so width + card chrome land together. */
   --sidebar-width: 280px;
 
   font-family:
@@ -91,25 +168,71 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14141a;
-    --surface: #1d1d25;
-    --surface-2: #25252f;
-    --text: #ececf1;
-    --muted: #9a9aa6;
-    --border: #34343f;
-    --accent: #6c8cff;
+    /* === reference cool palette (dark slate) — D2 + D9 ========== */
+
+    /* Surfaces */
+    --bg: #0e1218;
+    --surface: #1a2030;
+    --surface-2: #222837;
+
+    /* Text + grey stops — inverted: the higher numbers on
+       `--muted-3..5` are now lighter (more contrast against
+       the dark slate surface). */
+    --text: #e6e9ee;
+    --muted: #9aa3ad;
+    --muted-2: #cbd0d6;
+    --muted-3: #a3acb5;
+    --muted-4: #8b95a0;
+    --muted-5: #6f7a85;
+
+    /* Accent — lifted to the brighter reference blue (D2) */
+    --accent: #6f9bff;
+    --accent-hover: #8aaeff;
+    --accent-soft: #1c2742;
+    --accent-ring: #1c2742;
+
+    /* Borders — three layers on the dark slate; R3 critical
+       point (task 11 ±5% L retune authorised). */
+    --border: #2a3140;
+    --border-2: #353c4a;
+    --border-3: #202632;
+
+    /* Code surface */
+    --code-bg: #222837;
+
+    /* State colours — connecting on the grey scale;
+       online / offline now emerald / rose tints (D2). */
+    --state-connecting: #74808c;
+    --state-online: #34d399;
+    --state-offline: #f87171;
+
+    /* Card shadow — heavier for the dark surface (matches the
+       elevation feel of reference dark cards). */
+    --shadow-card: 0 4px 18px rgba(0, 0, 0, 0.4);
+
+    /* Legacy accent-disabled placeholder — dark base. */
     --accent-disabled: #3a3f55;
-    --code-bg: #2a2a35;
   }
 }
 
 /* =====================================================================
  * Legacy component CSS — wrapped in `@layer components` so the
  * cascade order is `preflight (base) < components < utilities`. The
- * original 1280-line rule body is unchanged; only the wrapping
- * changed. Every rule continues to address legacy selectors
+ * original rule body is unchanged; only the wrapping changed. Every
+ * rule continues to address legacy selectors
  * (`.app-shell`, `.input-bar-field`, `.message-row`, ...) so visual
  * parity is preserved.
+ *
+ * M6 T01 deliberately leaves every legacy selector in place. The
+ * 22-token retune above already shifts the visible palette because
+ * every legacy rule resolves its colour through `var(--token)` —
+ * token name parity means "same class, different colour". The
+ * per-component visual reshape (AppShell double cards, Sidebar
+ * brand block, MessageList bubbles, InputBar shadow ring, TokenModal
+ * tinted icon block, DirectoryBrowser modal backdrop, status/choice/
+ * recovery card chrome) lives in tasks 03–09 — those tasks edit the
+ * JSX + classes; this stylesheet stays the canonical colour
+ * dictionary for everyone.
  * ===================================================================== */
 
 @layer components {
