@@ -220,7 +220,7 @@ export function DirectoryBrowser({ open, onAdded, onCancel }: DirectoryBrowserPr
       // trivially.
       className={isMobile
         ? 'directory-browser-mobile fixed inset-0 z-[250] flex flex-col gap-3 overflow-y-auto bg-bg p-4'
-        : 'directory-browser flex flex-col gap-2 rounded border border-dashed border-border bg-surface p-4'
+        : 'directory-browser flex flex-col gap-3 rounded-lg border border-dashed border-border bg-surface px-5 py-4'
       }
       data-testid="directory-browser"
       role="dialog"

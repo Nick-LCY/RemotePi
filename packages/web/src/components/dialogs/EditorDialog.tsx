@@ -66,7 +66,7 @@ export function EditorDialog({
 
   return (
     <dialog
-      className="dialog dialog-editor pointer-events-auto m-2 flex w-[min(420px,92vw)] flex-col rounded-md border border-border bg-surface p-0 text-text shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
+      className="dialog dialog-editor pointer-events-auto m-2 flex w-[min(420px,92vw)] flex-col rounded-lg border border-border bg-surface p-0 text-text shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
       open
       aria-labelledby={`editor-title-${entry.id}`}
       data-testid="dialog-editor"
@@ -84,9 +84,9 @@ export function EditorDialog({
           {errorMessage}
         </p>
       ) : null}
-      <form onSubmit={handleSubmit} className="dialog-body flex flex-col gap-2 px-3 py-2">
+      <form onSubmit={handleSubmit} className="dialog-body flex flex-col gap-[0.65rem] px-[0.95rem] py-[0.85rem]">
         <textarea
-          className="dialog-editor-field min-h-36 resize-y rounded border border-border bg-surface-2 px-2 py-1.5 font-mono text-[0.9rem] text-text outline outline-2 outline-offset-1 outline-accent focus:outline"
+          className="dialog-editor-field min-h-36 resize-y rounded-md border border-border bg-surface-2 px-[0.65rem] py-[0.55rem] font-mono text-[0.9rem] text-text outline outline-2 outline-offset-1 outline-accent focus:outline"
           data-testid="dialog-editor-field"
           value={value}
           onChange={handleChange}

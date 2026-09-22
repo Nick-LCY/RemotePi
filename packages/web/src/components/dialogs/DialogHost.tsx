@@ -239,7 +239,7 @@ export function DialogHost() {
         // colour family as `.dialog-error` /
         // `.input-bar-error` — achieved via `text-state-offline`
         // + the canonical 16%-alpha shadow token.
-        <div className="dialog-host-toast pointer-events-none mx-2 mb-2 max-w-[min(360px,80vw)] self-end rounded-md border border-border bg-surface px-3 py-2 text-[0.88rem] text-state-offline shadow-[0_6px_18px_rgba(0,0,0,0.16)]" role="status" aria-live="polite" data-testid="dialog-toast">
+        <div className="dialog-host-toast pointer-events-none m-2 max-w-[min(360px,80vw)] self-end rounded-lg border border-border bg-surface px-3 py-2 text-[0.88rem] text-state-offline shadow-[0_6px_18px_rgba(0,0,0,0.16)]" role="status" aria-live="polite" data-testid="dialog-toast">
           {timeoutToast}
         </div>
       ) : null}

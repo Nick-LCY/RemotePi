@@ -81,7 +81,7 @@ export function SelectDialog({
 
   return (
     <dialog
-      className="dialog dialog-select pointer-events-auto m-2 flex w-[min(420px,92vw)] flex-col rounded-md border border-border bg-surface p-0 text-text shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
+      className="dialog dialog-select pointer-events-auto m-2 flex w-[min(420px,92vw)] flex-col rounded-lg border border-border bg-surface p-0 text-text shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
       open
       aria-labelledby={`select-title-${entry.id}`}
       data-testid="dialog-select"
@@ -98,7 +98,7 @@ export function SelectDialog({
           {errorMessage}
         </p>
       ) : null}
-      <form onSubmit={handleSubmit} className="dialog-body flex flex-col gap-2 px-3 py-2">
+      <form onSubmit={handleSubmit} className="dialog-body flex flex-col gap-[0.65rem] px-[0.95rem] py-[0.85rem]">
         <fieldset className="dialog-select-options m-0 flex flex-col gap-1 border-0 p-0" disabled={pending || errorMessage !== null}>
           <legend className="visually-hidden">Options</legend>
           {entry.options.map((option, idx) => {
@@ -113,7 +113,7 @@ export function SelectDialog({
                   // paint from the legacy rule is now expressed
                   // via Tailwind v4's arbitrary `:has()`
                   // descendant variant (`[&:has(input:checked)]:border-accent`).
-                  'dialog-select-option flex cursor-pointer items-center gap-2 rounded border border-border bg-surface-2 px-2 py-1 [&:has(input:checked)]:border-accent [&:has(input:checked)]:bg-[rgba(44,92,255,0.08)]'
+                  'dialog-select-option flex cursor-pointer items-center gap-2 rounded-md border border-border bg-surface-2 px-[0.55rem] py-[0.4rem] [&:has(input:checked)]:border-accent [&:has(input:checked)]:bg-[rgba(44,92,255,0.08)]'
                 }
                 data-testid="dialog-select-option"
               >
@@ -161,7 +161,7 @@ export function DialogHeader({ id, title, timeoutMs, enqueuedAt, onTimeout }: Di
   const remainingMs = useCountdown(timeoutMs, enqueuedAt, onTimeout);
   if (timeoutMs === undefined) {
     return (
-      <header className="dialog-header flex items-center gap-3 border-b border-border px-3 py-2">
+      <header className="dialog-header flex items-center gap-3 border-b border-border px-[0.95rem] py-[0.7rem]">
         <h2 id={id} className="dialog-title m-0 flex-1 text-base">
           {title}
         </h2>
@@ -173,7 +173,7 @@ export function DialogHeader({ id, title, timeoutMs, enqueuedAt, onTimeout }: Di
   const pct = Math.max(0, Math.min(100, (elapsedMs / totalMs) * 100));
   const remainingSec = Math.ceil(remainingMs / 1000);
   return (
-    <header className="dialog-header flex items-center gap-3 border-b border-border px-3 py-2">
+    <header className="dialog-header flex items-center gap-3 border-b border-border px-[0.95rem] py-[0.7rem]">
       <h2 id={id} className="dialog-title m-0 flex-1 text-base">
         {title}
       </h2>
@@ -200,7 +200,7 @@ export function DialogFooter({ onCancel, submitLabel, submitDisabled }: DialogFo
       <button
         type="button"
         onClick={onCancel}
-        className="dialog-button dialog-button-cancel rounded border border-border bg-surface px-3 py-1.5 font-[inherit] text-text"
+        className="dialog-button dialog-button-cancel rounded-md border border-border bg-surface px-3 py-1.5 font-[inherit] text-text disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled"
         data-testid="dialog-cancel"
       >
         Cancel
@@ -208,7 +208,7 @@ export function DialogFooter({ onCancel, submitLabel, submitDisabled }: DialogFo
       <button
         type="submit"
         disabled={submitDisabled}
-        className="dialog-button dialog-button-submit rounded border border-accent bg-accent px-3 py-1.5 font-[inherit] text-white disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled"
+        className="dialog-button dialog-button-submit rounded-md border border-accent bg-accent px-3 py-1.5 font-[inherit] text-white disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled"
         data-testid="dialog-confirm-yes"
       >
         {submitLabel}

@@ -228,6 +228,28 @@ describe('AssistantMessageBody — folded segments', () => {
     // Success path does NOT carry the error styling.
     expect(html).not.toContain('message-tool-result-error');
     expect(html).not.toContain('data-testid="assistant-tool-result-error"');
+    // Success-path POSITIVE assertion — `message-tool-result`
+    // (the semantic class anchor for the result <pre> block) is
+    // emitted on both success AND error branches, but the error
+    // variant appends `-error` to the same class. We pin the
+    // success case by asserting the bare class is present (and
+    // not immediately followed by `-error` in the same class
+    // string). A naive `.toContain('message-tool-result')` would
+    // falsely satisfy because `message-tool-result-error`
+    // contains the substring; we use a negative lookahead to
+    // match the bare class token only when it isn't prefixed by
+    // `-error`. Equivalent: scan the class attribute for the
+    // class token without the `-error` suffix.
+    expect(html).toMatch(/class="[^"]*\bmessage-tool-result\b(?![^"]*-error)[^"]*"/);
+    // The full `data-testid` for the success path is
+    // `assistant-tool-result`; the error variant uses
+    // `assistant-tool-result-error`. A naive `toContain(
+    // 'assistant-tool-result')` would match both (the error
+    // testid is a superset string of the success testid), so we
+    // pin the EXACT bare testid via a regex with negative
+    // lookahead — anything after `assistant-tool-result` that's
+    // not the closing `"` is rejected.
+    expect(html).toMatch(/data-testid="assistant-tool-result(?![-\w])/);
     // Not open by default.
     expect(html).not.toMatch(/<details[^>]*\bopen\b/);
   });

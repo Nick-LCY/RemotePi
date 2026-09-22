@@ -70,7 +70,7 @@ export function ConfirmDialog({
     // pass through to the chat) and the actual dialog must
     // re-enable pointer events on itself.
     <dialog
-      className="dialog dialog-confirm pointer-events-auto m-2 flex w-[min(420px,92vw)] flex-col rounded-md border border-border bg-surface p-0 text-text shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
+      className="dialog dialog-confirm pointer-events-auto m-2 flex w-[min(420px,92vw)] flex-col rounded-lg border border-border bg-surface p-0 text-text shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
       open
       aria-labelledby={`confirm-title-${entry.id}`}
       data-testid="dialog-confirm"
@@ -87,14 +87,14 @@ export function ConfirmDialog({
           {errorMessage}
         </p>
       ) : null}
-      <div className="dialog-body flex flex-col gap-2 px-3 py-2">
+      <div className="dialog-body flex flex-col gap-[0.65rem] px-[0.95rem] py-[0.85rem]">
         <p className="dialog-confirm-message m-0 text-[0.95rem] text-text">{entry.message}</p>
         <div className="dialog-footer flex justify-end gap-2">
           <button
             type="button"
             onClick={handleCancel}
             disabled={pending}
-            className="dialog-button dialog-button-cancel rounded border border-border bg-surface px-3 py-1.5 font-[inherit] text-text"
+            className="dialog-button dialog-button-cancel rounded-md border border-border bg-surface px-3 py-1.5 font-[inherit] text-text disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled"
             data-testid="dialog-cancel"
           >
             Cancel
@@ -103,7 +103,7 @@ export function ConfirmDialog({
             type="button"
             onClick={handleDecline}
             disabled={buttonsDisabled}
-            className="dialog-button dialog-button-decline rounded border border-border bg-surface px-3 py-1.5 font-[inherit] text-text"
+            className="dialog-button dialog-button-decline rounded-md border border-border bg-surface px-3 py-1.5 font-[inherit] text-text disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled"
             data-testid="dialog-decline"
           >
             No
@@ -112,7 +112,7 @@ export function ConfirmDialog({
             type="button"
             onClick={handleConfirm}
             disabled={buttonsDisabled}
-            className="dialog-button dialog-button-submit rounded border border-accent bg-accent px-3 py-1.5 font-[inherit] text-white disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled"
+            className="dialog-button dialog-button-submit rounded-md border border-accent bg-accent px-3 py-1.5 font-[inherit] text-white disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled"
             data-testid="dialog-confirm-yes"
           >
             Yes

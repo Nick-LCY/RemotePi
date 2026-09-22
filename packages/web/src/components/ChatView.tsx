@@ -188,7 +188,7 @@ function MessageList({ session }: { session: string }) {
     // The `message-list-items` class on the `<ol>` likewise stays
     // for structural reference but contributes no paint.
     <section
-      className="message-list flex max-h-[50vh] flex-col gap-3 overflow-y-auto rounded-md border border-border bg-surface p-4"
+      className="message-list flex max-h-[50vh] flex-col gap-3 overflow-y-auto rounded-lg border border-border bg-surface px-5 py-4"
       aria-label="Conversation"
       data-testid="message-list"
     >
@@ -217,7 +217,9 @@ function MessageList({ session }: { session: string }) {
                 key={item.key}
                 className={`message-row message-role-${item.role}${
                   item.kind === 'draft' ? ' message-draft' : ''
-                } border border-border ${roleBorderClass} rounded-md bg-surface-2 px-3 py-2`}
+                } border border-border ${roleBorderClass}${
+                  item.kind === 'draft' ? ' border-dashed opacity-85' : ''
+                } rounded-md bg-surface-2 px-[0.7rem] py-[0.55rem]`}
                 data-testid={item.kind === 'draft' ? 'message-draft' : 'message-row'}
               >
                 <div className="message-role mb-1.5 text-[0.72rem] uppercase tracking-[0.05em] text-muted">{item.role}</div>
@@ -841,7 +843,7 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
         // `hooks/useAutoResizeTextarea.ts` references). All
         // chrome (box-sizing / resize / min-height / max-height /
         // overflow / focus outline) is now utilities.
-        className="input-bar-field m-0 box-border w-full min-w-[12rem] flex-1 resize-none rounded border border-border bg-surface-2 px-2 py-1.5 font-[inherit] text-[0.95rem] leading-[1.4] text-text outline outline-2 outline-offset-1 outline-accent focus:outline disabled:cursor-not-allowed disabled:opacity-70"
+        className="input-bar-field m-0 box-border w-full min-w-[12rem] flex-1 resize-none rounded-md border border-border bg-surface-2 px-[0.6rem] py-[0.45rem] font-[inherit] text-[0.95rem] leading-[1.4] text-text outline outline-2 outline-offset-1 outline-accent focus:outline disabled:cursor-not-allowed disabled:opacity-70"
         style={{ maxHeight: 'var(--input-max-height)' }}
         data-testid="input-field"
         rows={1}
@@ -860,7 +862,7 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
         autoComplete="off"
         spellCheck={false}
       />
-      <button type="submit" data-testid="input-send" disabled={inputDisabled || value.trim().length === 0} className="self-end rounded border border-accent bg-accent px-4 py-2 font-[inherit] text-white">
+      <button type="submit" data-testid="input-send" disabled={inputDisabled || value.trim().length === 0} className="self-end rounded border border-accent bg-accent px-4 py-2 font-[inherit] text-white disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled">
         Send
       </button>
       <button
@@ -874,7 +876,7 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
           (abortLive
             ? 'abort-button abort-live border-state-offline bg-state-offline text-white'
             : 'abort-button border-border bg-surface text-text') +
-          ' self-end rounded px-4 py-2 font-[inherit] disabled:cursor-not-allowed disabled:opacity-50'
+          ' self-end rounded px-4 py-2 font-[inherit] disabled:cursor-not-allowed disabled:bg-accent-disabled disabled:border-accent-disabled'
         }
         onClick={onAbort}
         disabled={!abortLive}
@@ -891,14 +893,14 @@ function InputBar({ session, workDir }: { session: string; workDir: string }) {
       {settledHintVisible && phase === 'idle' ? (
         // `input-bar-hint` retained as a semantic anchor (no
         // styling; layout pulse + text colour are utilities).
-        <p className="input-bar-hint m-0 basis-full text-[0.82rem] text-muted">agent settled — 5 minutes until auto-shutdown</p>
+        <p className="input-bar-hint m-0 mt-[0.2rem] basis-full text-[0.82rem] text-muted">agent settled — 5 minutes until auto-shutdown</p>
       ) : null}
       {commandError !== null ? (
         // `input-bar-error` retained as a semantic anchor (no
         // styling; tint is the canonical "red = something
         // failed" 8%-alpha paint matching the other surfaces that
         // flip on `--state-offline`).
-        <p className="input-bar-error m-0 basis-full rounded bg-state-offline/[0.08] px-2 py-1 text-[0.82rem] text-state-offline" role="alert" data-testid="input-error">
+        <p className="input-bar-error m-0 mt-[0.2rem] basis-full rounded-md bg-state-offline/[0.08] px-[0.6rem] py-[0.4rem] text-[0.82rem] text-state-offline" role="alert" data-testid="input-error">
           {commandError}
         </p>
       ) : null}

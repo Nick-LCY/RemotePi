@@ -206,6 +206,18 @@ function AssistantSegment({ piece }: AssistantSegmentProps): ReactNode {
 // at the call site lets us pass through to `ReactMarkdown`'s
 // strict `Components` type without needing to model the full
 // hast Element shape.
+//
+// M6 T02 review note: every `className` prop in
+// `markdownComponents` is injected by React at JSX render time
+// (after `rehype-sanitize` has already produced the hast
+// tree). rehype-sanitize operates on the post-render tree and
+// has no view of the className strings we attach here, so its
+// schema's `className` whitelist (which would normally gate
+// arbitrary attribute values) is irrelevant to the Tailwind
+// utility classes we use. This means we can attach any
+// utility class without conflicting with the sanitize schema
+// — sanitize doesn't constrain class values, only the raw
+// HTML attributes on user-supplied content.
 const markdownComponents: Record<string, unknown> = {
   a: ({ href, children }: { href?: string; children?: ReactNode }) => {
     // `mailto:` links should NOT open in a new tab. The browser
@@ -293,13 +305,13 @@ const markdownComponents: Record<string, unknown> = {
   // applied at the renderer level (the segment wrapper alone
   // can't reach these without descendant selectors).
   p: ({ children }: { children?: ReactNode }) => (
-    <p className="first:mt-0 mb-1 mt-1 last:mb-0">{children}</p>
+    <p className="first:mt-0 my-[0.4rem] last:mb-0">{children}</p>
   ),
   ul: ({ children }: { children?: ReactNode }) => (
-    <ul className="m-1 list-disc pl-6">{children}</ul>
+    <ul className="my-[0.4rem] list-disc pl-6">{children}</ul>
   ),
   ol: ({ children }: { children?: ReactNode }) => (
-    <ol className="m-1 list-decimal pl-6">{children}</ol>
+    <ol className="my-[0.4rem] list-decimal pl-6">{children}</ol>
   ),
   li: ({ children }: { children?: ReactNode }) => (
     <li className="my-0.5">{children}</li>
