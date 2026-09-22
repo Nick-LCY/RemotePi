@@ -18,6 +18,8 @@
 
 import type { RefObject } from 'react';
 
+import { Menu } from 'lucide-react';
+
 import { useIsMobile } from '../hooks/useIsMobile.js';
 
 // ---------------------------------------------------------------------------
@@ -81,24 +83,13 @@ export function MobileTopBar(props: MobileTopBarProps): JSX.Element | null {
         data-testid="sidebar-toggle"
         data-open={sidebarOpen ? 'true' : 'false'}
       >
-        {/* Three horizontal bars — inline SVG keeps it self-
-            contained. aria-label carries the semantic so the
-            SVG itself is aria-hidden. */}
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 16 16"
-          aria-hidden="true"
-          focusable="false"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-        >
-          <line x1="2" y1="4" x2="14" y2="4" />
-          <line x1="2" y1="8" x2="14" y2="8" />
-          <line x1="2" y1="12" x2="14" y2="12" />
-        </svg>
+        {/* M6 T04 (D3) — hamburger icon moved from inline SVG to
+            lucide-react's `Menu` icon. The aria-label on the
+            button carries the semantic so the SVG itself stays
+            aria-hidden. lucide-react inherits `currentColor`
+            so the icon picks up the surrounding `text-text`
+            colour automatically. */}
+        <Menu className="size-4" aria-hidden="true" focusable="false" />
       </button>
 
       <span

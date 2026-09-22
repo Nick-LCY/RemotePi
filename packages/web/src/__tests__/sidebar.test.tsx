@@ -1,5 +1,6 @@
 // Vitest specs for `Sidebar.tsx` — M5 task 06 §a Sidebar 行为
-// （M5 §第二块 G5 / D8）。
+// （M5 §第二块 G5 / D8）+ M6 task 04 brand 双行块 + lucide-react
+// （G6 / D3 / D5 / D7）。
 //
 // ## Strategy
 //
@@ -8,13 +9,22 @@
 // render the Sidebar via `renderToStaticMarkup` against a stub
 // WsClient — same pattern as app-shell.test.tsx.
 //
-// ## Coverage (≥5 cases per task brief)
+// ## Coverage
 //
+// M5 baseline (≥5 cases per task brief):
 //   1. 默认 active tab = Sessions（mount 时 active tab 高亮）
 //   2. 切换 tab 渲染对应内容
 //   3. 点 session 行触发 hash 写（mock window.location.hash setter）
 //   4. 设置按钮回调（onSettingsClick props）
 //   5. bridge 三态 badge（online/offline/connecting）各自渲染
+//   6. brand slot (M5 D8)
+//
+// M6 T04 added (≥3 cases per task brief):
+//   6. brand 双行块（D5） — Terminal icon + 「RemotePi」 + 「远程开发工作台」
+//   7. BridgeStatusBar reference「远端连接」卡（D7） — Globe2 / Server / Bot
+//      三节点 + 「链路断开」 caption + data-state="offline"
+//   8. lucide-react 引入钉桩（D3） — Plus icon in session-new + Settings icon
+//      in settings-button + Folder icon in work-dir-browse
 
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement, type ReactElement } from 'react';
@@ -263,14 +273,20 @@ describe('Sidebar — settings button callback', () => {
 // ---------------------------------------------------------------------------
 
 describe('Sidebar — BridgeStatusBar 三态 badge', () => {
-  it('5a. 初始 connState=offline → "Offline" badge', () => {
+  it('5a. 初始 connState=offline → 「链路断开」 caption + data-state="offline"', () => {
     const html = renderSidebar({ view: 'recovery' });
     expect(html).toContain('data-testid="bridge-status"');
-    // The badge has data-state="offline" in the default WsClient
-    // state (the fake client never connected).
+    // M6 T04 (D7) — BridgeStatusBar 重做为 reference「远端连接」卡.
+    // The state caption carries `data-state` (descendant selector
+    // preserved for e2e 01 / 05 / 07). Default WsClient state is
+    // offline (fake never connected) → 「链路断开」 caption.
     expect(html).toMatch(/data-state="offline"/);
-    // "Offline" label text appears inside the badge span.
-    expect(html).toContain('>Offline<');
+    expect(html).toContain('链路断开');
+    // 卡片标题「远端连接」 + 三个节点（Globe / Server / Bot）渲染。
+    expect(html).toContain('远端连接');
+    expect(html).toMatch(/lucide-globe-2/);
+    expect(html).toMatch(/lucide-server/);
+    expect(html).toMatch(/lucide-bot/);
   });
 
   it('5b. BridgeStatusBar 保留 data-testid bridge-status + data-state 字段（e2e 01 spec 强依赖）', () => {
@@ -291,11 +307,41 @@ describe('Sidebar — BridgeStatusBar 三态 badge', () => {
 // 6. brand slot
 // ---------------------------------------------------------------------------
 
-describe('Sidebar — brand slot (D8 品牌位移入 sidebar)', () => {
-  it('6. sidebar 顶部渲染 <h1>RemotePi</h1>（testid brand）', () => {
+describe('Sidebar — M6 T04 brand 双行块 (D5)', () => {
+  it('6a. sidebar 顶部 brand 容器渲染 lucide Terminal + 「RemotePi」 + 「远程开发工作台」', () => {
     const html = renderSidebar({ view: 'recovery' });
+    // brand testid preserved (zero-add/zero-delete contract)
     expect(html).toContain('data-testid="brand"');
-    expect(html).toMatch(/<h1[^>]*data-testid="brand"[^>]*>RemotePi<\/h1>/);
+    // lucide Terminal icon class marks the icon node inside brand
+    expect(html).toMatch(/class="lucide lucide-terminal[^"]*"/);
+    // 双行文字 (D5): 「RemotePi」 加粗 + 「远程开发工作台」 11px 灰
+    expect(html).toContain('RemotePi');
+    expect(html).toContain('远程开发工作台');
+    // brand row container has the 72px height + border-bottom
+    // hairline (var(--border-3) token-driven).
+    const brandMatch = html.match(/<div[^>]*data-testid="brand"[^>]*>/);
+    expect(brandMatch).not.toBeNull();
+    expect(brandMatch![0]).toMatch(/h-\[72px\]/);
+    expect(brandMatch![0]).toMatch(/border-b/);
+  });
+
+  it('6b. brand icon block 是 size-9 rounded-xl 深石板方块 (bg-deep + text-white)', () => {
+    const html = renderSidebar({ view: 'recovery' });
+    // The icon-block <div> wraps the Terminal icon; it should
+    // carry bg-deep (tokenised #17202b) + text-white + size-9 +
+    // rounded-xl. Asserting all four tokens are present (in any
+    // order) pins the reference layout so a future colour
+    // regression surfaces here instead of as a visual-only
+    // drift. We match the icon block by anchoring on its
+    // position right before the lucide-terminal svg.
+    const iconBlockMatch = html.match(
+      /class="([^"]*\bbg-deep\b[^"]*)"[^>]*><svg[^>]*lucide-terminal/,
+    );
+    expect(iconBlockMatch, 'brand icon block should wrap the lucide-terminal svg').not.toBeNull();
+    const cls = iconBlockMatch![1];
+    expect(cls).toContain('size-9');
+    expect(cls).toContain('rounded-xl');
+    expect(cls).toContain('text-white');
   });
 });
 
@@ -347,5 +393,102 @@ describe('Sidebar — M5 task 06 review W3 activeTab syncs to view', () => {
     const sidebarMatch = html.match(/<aside[^>]*data-testid="sidebar"[^>]*>/);
     expect(sidebarMatch).not.toBeNull();
     expect(sidebarMatch![0]).toMatch(/data-active-tab="sessions"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. M6 T04 (D3 / D7) — lucide-react icons + BridgeStatusBar
+// reference「远端连接」卡。
+//
+// Coverage:
+//   8a. brand 容器渲染 Terminal icon（lucide 引）
+//   8b. settings-button 含 lucide Settings icon
+//   8c. session-new 含 lucide Plus icon
+//   8d. work-dir-browse 含 lucide FolderOpen icon
+//   8e. BridgeStatusBar 三节点 lucide icons (Globe2 / Server / Bot)
+//   8f. BridgeStatusBar offline 态文字「链路断开」
+//   8g. BridgeStatusBar offline 态无 emerald-500 class + 无 animate-ping
+// ---------------------------------------------------------------------------
+
+describe('Sidebar — M6 T04 lucide-react 引 (D3)', () => {
+  it('8a. brand 容器渲染 lucide Terminal icon (svg class 含 "lucide-terminal")', () => {
+    const html = renderSidebar({ view: 'recovery' });
+    // lucide Terminal renders an <svg> with class="lucide lucide-terminal"
+    // — pinning that marker catches accidental icon swaps (e.g.
+    // BoxIcon or HashIcon) without requiring a deep structural
+    // assertion.
+    expect(html).toMatch(/class="lucide lucide-terminal[^"]*"/);
+  });
+
+  it('8b. settings-button 含 lucide Settings icon', () => {
+    const html = renderSidebar({ view: 'recovery' });
+    const settingsMatch = html.match(/<button[^>]*data-testid="settings-button"[^>]*>/);
+    expect(settingsMatch).not.toBeNull();
+    // Lucide Settings renders an SVG with class="lucide lucide-settings"
+    expect(html).toMatch(/class="lucide lucide-settings[^"]*"/);
+    // settings button 文本 + aria-label 保留
+    expect(settingsMatch![0]).toContain('aria-label="设置 — 更换访问令牌"');
+    expect(html).toContain('>设置<');
+  });
+
+  it('8c. session-new (sessions tab, workdir 非空) 含 lucide Plus icon + 「新建会话」文案', () => {
+    const html = renderSidebar({ view: 'choiceLevel2', currentWorkDir: '/home/me' });
+    expect(html).toContain(`data-testid="${'session-new'}"`);
+    expect(html).toMatch(/class="lucide lucide-plus[^"]*"/);
+    expect(html).toContain('新建会话');
+  });
+
+  it('8d. work-dir-browse (work-dirs tab) 含 lucide FolderOpen icon + 「浏览添加」文案', () => {
+    const html = renderSidebar({ view: 'choiceLevel1', currentWorkDir: null });
+    expect(html).toContain(`data-testid="${'work-dir-browse'}"`);
+    expect(html).toMatch(/class="lucide lucide-folder-open[^"]*"/);
+    expect(html).toContain('浏览添加');
+  });
+
+  it('8e. BridgeStatusBar「远端连接」卡渲染 Globe2 / Server / Bot 三节点 lucide icons', () => {
+    const html = renderSidebar({ view: 'recovery' });
+    // D7 — reference 三节点远端连接卡。三个 lucide icons:
+    // lucide-react v1 emits the icon name as a class name in
+    // the form `lucide lucide-<name>`; Globe2 also carries an
+    // alias class `lucide-earth` (Globe's base class). Match
+    // by substring instead of full-prefix.
+    expect(html).toMatch(/lucide-globe-2/);
+    expect(html).toMatch(/lucide-server/);
+    expect(html).toMatch(/lucide-bot/);
+    // 卡片标题 + 节点 label。
+    expect(html).toContain('远端连接');
+    expect(html).toContain('网页');
+    expect(html).toContain('worker');
+    expect(html).toContain('pi');
+  });
+
+  it('8f. BridgeStatusBar offline 态 caption 是「链路断开」', () => {
+    const html = renderSidebar({ view: 'recovery' });
+    // 默认 WsClient state = offline (fake never connected)。
+    // caption 在 <span data-state="offline"> 元素内。
+    expect(html).toContain('>链路断开<');
+    const captionMatch = html.match(/<span[^>]*data-state="offline"[^>]*>([^<]*)<\/span>/);
+    expect(captionMatch).not.toBeNull();
+    expect(captionMatch![1]).toBe('链路断开');
+  });
+
+  it('8g. BridgeStatusBar offline 态连线 + dot 节点无 emerald class + 无 animate-ping', () => {
+    const html = renderSidebar({ view: 'recovery' });
+    // Offline 态: 连接线使用 bg-border-2 (非 emerald-300)。
+    // 连线节点 dot 使用 bg-muted-4 (非 emerald-500)。
+    expect(html).toContain('bg-border-2');
+    expect(html).toContain('bg-muted-4');
+    // 没有 emerald class (只有 online 态才有)。
+    expect(html).not.toContain('bg-emerald-300');
+    expect(html).not.toContain('bg-emerald-500');
+    expect(html).not.toContain('animate-ping');
+  });
+
+  it('8h. BridgeStatusBar caption span 携带 data-state 属性 (e2e 01 / 05 / 07 强依赖)', () => {
+    const html = renderSidebar({ view: 'recovery' });
+    // e2e selectors: [data-testid="bridge-status"] [data-state="online"]
+    // → 需 bridge-status testid 容器 + 其子节点携带 data-state。
+    expect(html).toContain('data-testid="bridge-status"');
+    expect(html).toMatch(/<span[^>]*data-state="offline"[^>]*>/);
   });
 });

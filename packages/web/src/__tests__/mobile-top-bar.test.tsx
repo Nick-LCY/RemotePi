@@ -197,16 +197,22 @@ describe('MobileTopBar — mobile (<768px) renders hamburger + title', () => {
     expect(btnMatch![0]).toContain('aria-controls="app-sidebar"');
   });
 
-  it('2d. isMobile=true → sidebar-toggle 按钮包含内嵌 hamburger SVG（三横线 icon）', () => {
+  it('2d. isMobile=true → sidebar-toggle 按钮包含 lucide Menu icon (三横线)', () => {
     installMatchMediaStub(true);
     const html = renderTopBar({ title: '选择工作目录' });
-    // 视觉 icon：3 条横线 SVG <line> 元素。与 SessionStatusBar
-    // 内汉堡 icon 一致——视觉外观统一（统一图标语言）。
-    const svgMatch = html.match(/<svg[^>]*>/);
-    expect(svgMatch).not.toBeNull();
-    const lines = html.match(/<line\s/g);
-    expect(lines).not.toBeNull();
-    expect(lines!.length).toBe(3);
+    // M6 T04 (D3) — hamburger icon switched from inline SVG
+    // (3 × <line>) to lucide-react's `Menu` icon. Visual
+    // identity (三横线 hamburger) preserved via the lucide
+    // Menu's three <path> elements + the `lucide-menu` class
+    // tag in the SVG attribute. We assert the lucide marker
+    // class so future migrations away from lucide fail loudly
+    // here instead of silently rendering a different glyph.
+    expect(html).toMatch(/class="lucide lucide-menu[^"]*"/);
+    // lucide Menu icon always emits 3 <path> children — the
+    // three horizontal bars. This pin catches accidental
+    // icon swaps (e.g. `<PanelLeft />` or `<LayoutGrid />`).
+    const pathCount = (html.match(/<path\s/g) ?? []).length;
+    expect(pathCount).toBeGreaterThanOrEqual(3);
   });
 });
 

@@ -291,6 +291,15 @@ export function AppShell(props: AppShellProps): JSX.Element {
           view={view}
           onSettingsClick={onSettingsClick}
           onBrowseWorkDirsClick={onBrowseWorkDirsClick}
+          // M6 T04 — mobile drawer close wired through the brand
+          // row's X button. The same `onCloseSidebar` already
+          // backs the backdrop click / Escape / hashchange
+          // handlers; passing it down lets the in-sidebar X
+          // share the canonical close path (drawer state +
+          // focus return). On desktop the X is hidden via the
+          // `lg:hidden` modifier the Sidebar applies, so the
+          // prop being always passed is harmless.
+          onClose={isMobile ? onCloseSidebar : undefined}
         />
       </aside>
 
