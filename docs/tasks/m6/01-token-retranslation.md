@@ -1,8 +1,19 @@
 ---
 prd: prds/m6-visual-rebuild.md
-status: todo
+status: done
 ---
 # 任务：styles.css token 翻译（13 → 20+，reference 蓝本 + WCAG AA 校色）
+
+## 完成情况（2026-09-22，63eceb1 + 7700d6c2 范围）
+
+- **commit**：`63eceb1` feat(web): M6 T01 — token 体系重译（reference 冷色板 light/dark 20+ token + @theme 映射）；下游 `7700d6c` 紧跟 T02 review 收尾未触动 token 落地值。
+- **做了什么**：`styles.css` `:root` 与 `@media (prefers-color-scheme: dark)` 落地 reference 冷色板全表（13 → 21+ token，含 `--bg / --surface / --surface-2 / --text / --muted{,-2,-3,-4,-5} / --accent{,-soft,-ring} / --border{,-2,-3} / --code-bg / --state-{connecting,online,offline} / --shadow-card / --sidebar-width` + `--deep / --deep-hover / --amber-soft / --amber` 配套 reference 形态色 + `--accent-disabled` 禁用态）；`@theme inline { ... }` 完整 var() 引用映射（编排者修正延续，保护暗色机制）。
+- **关键偏差**：dark 灰阶 `--muted-5` 由草案 `#6f7a85` 落地为 `#7c8590`（与 `--muted-4 #8b95a0` 拉开对比步进 +5 L，draft 仅按序列逆推）；`--deep-hover` 落地 `#2d3a49` light / `#3a5064` dark（draft 仅说 `#3a5064`，light 由实施期校色）。
+- **新单测**：`styles-token-resolution.test.ts` **43 条**（D2 灰阶 + 边框双层 + 暗色模拟 getComputedStyle 校对全部 20+ token）——超额完成 PRD 预估 ~10 条。
+- **测试基线**（T01 后）：workspace 1091 tests / 47 files 全绿；typecheck 4 包绿；build 4 包绿。
+- **M4 雷区**：零字节 diff（grep 实证，五处代码块未触）。
+- **协议 / worker / bridge / shared**：零改动（git diff `7700d6c..HEAD --stat` 范围仅 `packages/web/**` + `pnpm-lock.yaml`）。
+- **后续任务衔接**：T02 全量迁以本任务 token 落地为前提，零返工落地。
 
 ## 目标
 

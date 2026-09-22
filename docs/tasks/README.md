@@ -29,7 +29,7 @@ status: todo        # todo | doing | done | blocked
 
 ## 任务索引
 
-按里程碑分组，每行一个任务文件 wikilink + 短标题。**M1–M5 共 42 个任务，全部 `done`**（M5 第一块 2026-09-11 实施收官 3/3 done，2026-09-22 用户口头确认全部完成；M5 第二块 2026-09-12 实施收官 5/5 done，10 个 web commit + 用户并行 ADR-0013 bridge 修复，2026-09-22 用户口头确认全部完成）；**M6 — Web UI 全量视觉重做（reference 蓝本） 11 个任务全部 `todo`**（2026-09-22 用户裁定 D1-D12 全部定档；前置 M5 第一块 + 第二块 2026-09-22 用户口头确认全部完成）。里程碑汇总见 [[current-state.md]]。
+按里程碑分组，每行一个任务文件 wikilink + 短标题。**M1–M5 共 42 个任务，全部 `done`**（M5 第一块 2026-09-11 实施收官 3/3 done，2026-09-22 用户口头确认全部完成；M5 第二块 2026-09-12 实施收官 5/5 done，10 个 web commit + 用户并行 ADR-0013 bridge 修复，2026-09-22 用户口头确认全部完成）；**M6 — Web UI 全量视觉重做（reference 蓝本）10 个任务 `done` / 1 个 `todo`**（2026-09-22 实施收官 10/11，10 个 web commit 领先 origin/main 15 commits 未 push；T01-T10 全量验证轮全绿；T11 暗色对比度 WCAG AA + a11y 兑底 todo）。里程碑汇总见 [[current-state.md]]。
 
 ### M1 — 基建（5/5 done）
 
@@ -93,16 +93,16 @@ status: todo        # todo | doing | done | blocked
 - [[tasks/m5/07-mobile-drawer.md|07 — 手机适配：抽屉 + 汉堡 + 焦点陷阱 + 滚动锁 + modal 全屏化]] ✅ done（依赖 04 / 05 / 06）
 - [[tasks/m5/08-e2e-and-validation.md|08 — e2e 改写（localStorage seeding）+ 移动端新 spec + 全量验证 + 文档收尾]] ✅ done（依赖 04 / 05 / 06 / 07）
 
-### M6 — Web UI 全量视觉重做（reference 蓝本，11/11 todo，2026-09-22 用户裁定 D1-D12 全部定档）
+### M6 — Web UI 全量视觉重做（reference 蓝本，10/11 done，2026-09-22 实施收官）
 
-- [[tasks/m6/01-token-retranslation.md|01 — styles.css token 翻译（13 → 20+，reference 蓝本 + WCAG AA 校色）]] `todo`（无依赖）
-- [[tasks/m6/02-css-full-migration.md|02 — ~1280 行 styles.css 全量迁 Tailwind utilities（按组件分批）+ `@source not` 精简 22 条未消费 utility]] `todo`（依赖 01）
-- [[tasks/m6/03-app-shell-rebuild.md|03 — AppShell 桌面态双 elevated 卡 + sidebar 300px + 移动端 backdrop 风格化]] `todo`（依赖 01 / 02）
-- [[tasks/m6/04-sidebar-brand-lucide.md|04 — 引 lucide-react + Sidebar 重写（brand 双行块 + session row + BridgeStatusBar reference「远端连接」卡）]] `todo`（依赖 01 / 02 / 03）
-- [[tasks/m6/05-chatview-bubbles-inputbar.md|05 — MessageList 气泡化 + InputBar reference 形态 + 单一焦点指示]] `todo`（依赖 01-04）
-- [[tasks/m6/06-token-modal.md|06 — TokenModal reference 形态（卡片 + backdrop + tinted icon block + input token 化）]] `todo`（依赖 01-04）
-- [[tasks/m6/07-dialoghost-styling.md|07 — 4 类 DialogHost + toast 统一 reference modal（D7 分色表）+ footer 按钮形态]] `todo`（依赖 01-04）
-- [[tasks/m6/08-directory-browser-modal.md|08 — DirectoryBrowser modal 化 + 路径条 inline code + 桌面端新增 backdrop（z-250）]] `todo`（依赖 01-04 / 06）
-- [[tasks/m6/09-statusbar-choice-recovery.md|09 — SessionStatusBar + ChoiceLevel1/2Panel + RecoveryView reference 形态（仅样式，D12 / 雷区）]] `todo`（依赖 01-04）
-- [[tasks/m6/10-e2e-validation-docs.md|10 — 全量验证（单测 / 集成 / e2e 9 spec × 2 / typecheck / lint / build / 体积记录）+ 文档收尾]] `todo`（依赖 01-09）
-- [[tasks/m6/11-dark-contrast-a11y.md|11 — 暗色对比度 WCAG AA 单测 + R3 临界点校色 + focus 可及性]] `todo`（依赖 10）
+- [[tasks/m6/01-token-retranslation.md|01 — styles.css token 翻译（13 → 20+，reference 蓝本 + WCAG AA 校色）]] ✅ done（2026-09-22 63eceb1）
+- [[tasks/m6/02-css-full-migration.md|02 — ~1280 行 styles.css 全量迁 Tailwind utilities（按组件分批）+ `@source not` 精简]] ✅ done（2026-09-22 1226002 + 7700d6c review）
+- [[tasks/m6/03-app-shell-rebuild.md|03 — AppShell 桌面态双 elevated 卡 + sidebar 300px + 移动端 backdrop 风格化]] ✅ done（2026-09-22 c52d9f0 + f1a4395 review）
+- [[tasks/m6/04-sidebar-brand-lucide.md|04 — 引 lucide-react + Sidebar 重写（brand 双行块 + session row + BridgeStatusBar reference「远端连接」卡）]] ✅ done（2026-09-22 334941a）
+- [[tasks/m6/05-chatview-bubbles-inputbar.md|05 — MessageList 气泡化 + InputBar reference 形态 + 单一焦点指示]] ✅ done（2026-09-22 5eae766 + f1a4395 polish）
+- [[tasks/m6/06-token-modal.md|06 — TokenModal reference 形态（卡片 + backdrop + tinted icon block + input token 化）]] ✅ done（2026-09-22 6cc1941）
+- [[tasks/m6/07-dialoghost-styling.md|07 — 4 类 DialogHost + toast 统一 reference modal（D7 分色表）+ footer 按钮形态]] ✅ done（2026-09-22 93cd6a9）
+- [[tasks/m6/08-directory-browser-modal.md|08 — DirectoryBrowser modal 化 + 路径条 inline code + 桌面端新增 backdrop（z-250）]] ✅ done（2026-09-22 11c2ded）
+- [[tasks/m6/09-statusbar-choice-recovery.md|09 — SessionStatusBar + ChoiceLevel1/2Panel + RecoveryView reference 形态（仅样式，D12 / 雷区）]] ✅ done（2026-09-22 916998a + f1a4395 polish）
+- [[tasks/m6/10-e2e-validation-docs.md|10 — 全量验证（单测 / 集成 / e2e 9 spec × 2 / typecheck / lint / build / 体积记录）+ 文档收尾]] ✅ done（2026-09-22 T10）
+- [[tasks/m6/11-dark-contrast-a11y.md|11 — 暗色对比度 WCAG AA 单测 + R3 临界点校色 + focus 可及性]] `todo`（依赖 10；暗色对比度边缘 3 处：amber pill 1.8:1 / accent CTA 2.9:1 / state-offline 2.1:1 白字场景）

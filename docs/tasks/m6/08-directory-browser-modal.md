@@ -1,8 +1,20 @@
 ---
 prd: prds/m6-visual-rebuild.md
-status: todo
+status: done
 ---
 # 任务：DirectoryBrowser modal 化 + 路径条 inline code + 桌面端新增 backdrop（z-250）
+
+## 完成情况（2026-09-22，11c2ded 范围）
+
+- **commit**：`11c2ded` feat(web): M6 T08 — DirectoryBrowser reference modal 化 + 桌面端 backdrop（M+ (b) 兑现）。
+- **做了什么**：modal 化卡片容器 `rounded-2xl shadow-2xl max-w-[640px] bg-[var(--surface)]` + backdrop `bg-[#17202b]/45 backdrop-blur-[3px]` **z-[250]**（在 sidebar 200 之上、dialog-host 100/300（注：实际 dialog-host 100，详见修订注记）之下——m 与移动端抽屉栈兼容）；点击 backdrop 关闭 modal（M4 既有行为保留沿用）；头部 `px-6 py-5 border-b border-[var(--border)]` 含 `<FolderOpen size={18} />` + 「选择工作目录」+ 关闭按钮 `<X>`；路径条 inline code `bg-[var(--surface-2)] text-[var(--accent)] font-mono text-[13px] px-3 py-2 rounded-md`；entry 行 `rounded-xl px-3 py-2.5 hover:bg-[var(--surface-2)]` + 选中态 `bg-[var(--accent-soft)] text-[var(--accent)]`；footer 按钮形态沿用 T07（primary 蓝 / cancel 白底描边）；移动全屏 sheet 沿用 M5 任务 07。
+- **M5 M+ (b) 兑现**：桌面端新增 backdrop（M4 既有 desktop 无 backdrop，本任务起桌面端也带 modal backdrop——视觉层叠与 TokenModal closable 一致）。
+- **关键偏差**：z-250 落地（PRD 原文「桌面端新增 backdrop」未规定具体 z-index——M5 本附录栈 toast(100) < sidebar(200) < dialog-host(300) < token-modal(400)，本任务取 sidebar(200) 与 dialog-host(300) 中间值 250）——**但实施期 DialogHost 实际 z-[100]**（M3 起沿用），与 M5 PRD D12 文案 dialog-host(300) 不一致，详见 [[prds/m6-visual-rebuild.md#修订注记2026-09-22-t01-t10-实施收官\|PRD 修订注记]] §z-index 勘误。
+- **testid 全保**：`directory-browser*` 全集沿用——零增零删。
+- **测试基线**：新增 `directory-browser-reference.test.tsx` **10 条**（桌面端 backdrop 渲染 + 路径条 inline code + entry 行 hover/active token 化形态覆盖）。
+- **e2e 04 重点回归**：T10 实测 spec 04 路径列表断言 + 桌面端 backdrop 后断言零回归；e2e 09 移动端 sheet 兼容零回归。
+- **M4 雷区**：零字节 diff。
+- **协议 / worker / bridge / shared**：零改动。
 
 ## 目标
 

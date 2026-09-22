@@ -1,8 +1,20 @@
 ---
 prd: prds/m6-visual-rebuild.md
-status: todo
+status: done
 ---
 # 任务：SessionStatusBar + ChoiceLevel1/2Panel + RecoveryView reference 形态（仅样式，D12 / 雷区）
+
+## 完成情况（2026-09-22，916998a + f1a4395 polish 范围）
+
+- **commit**：`916998a` feat(web): M6 T09 — SessionStatusBar/ChoicePage/RecoveryView reference 形态 + session 状态色 token 化收尾 + `f1a4395` 紧跟 polish（ChoicePanel 窄体居中卡）。
+- **做了什么**：白卡 pill 条 `rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 shadow-sm` + phase badge tinted 小方块（running 绿 `bg-emerald-soft` / idle 灰 `bg-[var(--surface-2)]` / spawning 蓝 `bg-accent-soft` / exited 红 `bg-state-offline/15` / unknown 灰）+ queue pills `bg-[var(--surface-2)] text-[var(--muted)] rounded-full px-2 py-0.5 text-[11px]`（follow-up / steering 分色） + session 名（`session === 'new'` 显「**新会话**」沿用）；ChoiceLevel1/2Panel 极简提示卡 `rounded-2xl border bg-[var(--surface)] p-8 max-w-[560px] mx-auto mt-12 shadow-sm` + 标题 + 副文 + 主 CTA 按钮（T07 形态沿用）——列表走 Sidebar，Panel 仅做提示与跳转；RecoveryView **in-flight 卡** + **error 卡** 卡片样式重做（`rounded-2xl border p-8 max-w-[480px] mx-auto mt-12 shadow-sm`） + error 卡 `border-[var(--state-offline)]/30` 描边。
+- **RecoveryView 逻辑零改动**（D12 / 雷区）：`autoStartConsumedRef` / `useEffect` / `gateRef.current.retry()` 等语义全保留；M4 雷区五处（`useRecoveryGateMap` / `handleRefill` / `RecoveryView` effect / connect 语义 / stem-refilled watcher）零字节 diff（grep 实证：`gateMapRef / handleRefill / useRecoveryGateMap` 仍仅命中 `App.tsx`，未下移到 AppShell / Sidebar / 子组件）。
+- **关键偏差**：ChoicePanel 文字大小由草案 `text-base` 落地 `text-[15px]`（f1a4395 polish 收尾——窄体居中卡用 text-[15px] 比 text-base 视觉密度更平衡，draft 未规定具体字号）。
+- **关键候选**：ChoiceLevel1 双提示文案共存（T09——recovery 路径下既有「恢复会话」Banner 又走 ChoiceLevel1 Panel「请选择工作目录」，与 PRD 单一职责有微冲突；M+ 候选——统一收口到 ChoiceLevel1）。
+- **testid 全保**：`phase-indicator[data-phase]` / `recovery-in-flight` / `recovery-error-card[data-error]` / `work-dir-list` / `session-list` / `new-session-button` 沿用——零增零删；`data-phase` / `data-error` 语义不变。
+- **测试基线**：新增 `m6-statusbar-choice-recovery.test.tsx` **11 条**（phase badge 五态 + ChoicePanel CTA + RecoveryView in-flight/error 双卡）；既有 `session-status-bar.test.tsx` 12 条全绿。
+- **M4 雷区**：零字节 diff（grep 实证）。
+- **协议 / worker / bridge / shared**：零改动。
 
 ## 目标
 

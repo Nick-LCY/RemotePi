@@ -1,8 +1,20 @@
 ---
 prd: prds/m6-visual-rebuild.md
-status: todo
+status: done
 ---
 # 任务：MessageList 气泡化 + InputBar reference 形态 + 单一焦点指示
+
+## 完成情况（2026-09-22，5eae766 + f1a4395 polish 范围）
+
+- **commit**：`5eae766` feat(web): M6 T05 — ChatView 气泡布局 + InputBar reference 重做（AI 头像方块/用户右侧蓝气泡/单一焦点指示/深石板发送钮）+ `f1a4395` 紧跟 polish review。
+- **做了什么**：AI 行 `flex items-start gap-3` + size-8 深石板头像方块 `bg-[#17202b] rounded-lg` + `<Zap size={16} className="text-white" />` + 名字行「RemotePi」11px 灰 + 气泡 `rounded-2xl rounded-tl-sm bg-[var(--surface-2)] px-4 py-3 text-sm leading-6 text-[var(--muted-2)]` + 时间戳 `text-[10px] text-[var(--muted-5)]`；用户行 `flex justify-end` + max-w-[80%] + 气泡 `rounded-2xl rounded-tr-sm bg-[var(--accent)] text-white`；InputBar 外壳 `rounded-2xl border bg-[var(--surface)] shadow-[var(--shadow-card)] focus-within:border-[var(--accent)] focus-within:ring-4 ring-[var(--accent-ring)]`（R4 单一焦点指示落地——移除旧 2px outline 双焦点指示，键盘 focus-visible 语义保留）；发送钮 size-8 rounded-xl 深石板 `<Send size={16} className="text-white" />`；abort 红色 `<Square size={14} />` `bg-[var(--state-offline)]`；底部 helper 文案 + `<ShieldCheck>` 安全副文。
+- **关键偏差**：内嵌 code 由草案「白底蓝字 `text-[#245bc4]`」落地为「半透明 accent 软底 + accent 文字」（draft 留 `text-[var(--accent)]` 但缺背景容器；实施期用 `bg-[var(--accent-soft)]` 补足）；**dark 态 inline code 反转方向相反**（dark 改用 `text-[#ffd86b]` 黄系高亮，draft 未规定；M+ 候选登记）。
+- **关键候选**：`message-body` testid 曾在 T05 短暂新增、polish f1a4395 撤除恢复零增承诺（e2e 全集无引用 + `chatview-bubbles.test.tsx:186` 设 negative pin）；dark 态 inline code 颜色反转（M+ 候选）。
+- **testid**：`message-row` / `message-role-{user,assistant}` / `message-body` / `message-draft` / `input-field` / `input-send` / `input-abort` / `message-list` 沿用——D6 / R2 零增零删。
+- **测试基线**：新增 `chatview-bubbles.test.tsx` **10 条**（AI 行 / 用户行 / 契约锚点 / draft 形态 / InputBar 单焦点指示 + textarea outline-none + 发送/中断按钮形态 + 底部 helper）；既有 `assistant-message-body.test.tsx` 31 条（含 T02 regex 适配）全绿；`input-bar-keydown.test.ts` 9 + `use-auto-resize-textarea.test.ts` 7 全绿。
+- **e2e 重点回归**：01 spec §6 draft textContent 单调性 + 02 spec 角色断言 + 08 spec 流式打字机 + tool 归并 pill——T10 实测 9 spec × 2 连跑全绿无回归。
+- **M4 雷区**：零字节 diff。
+- **协议 / worker / bridge / shared**：零改动。
 
 ## 目标
 

@@ -272,6 +272,74 @@ e2e 9 spec 预期改动 **≤3 行**：spec 04 / 09 在某些 `className` 字符
 
 [[architecture/protocol/README.md|协议 v3]] / [[architecture/protocol/envelope.md]] / [[architecture/protocol/control.md]] / [[architecture/protocol/pi.md]] / [[prds/m1-infrastructure.md|M1 PRD]] / [[prds/m2-tunnel.md|M2 PRD]] / [[prds/m3-single-session.md|M3 PRD]] / [[prds/m4-multi-session.md|M4 PRD]] / [[prds/m5-uiux.md|M5 PRD]] / [[roadmap.md]] / [[current-state.md]] / [[tasks/README.md|tasks/README]] / [[architecture/decisions/0009-headless-browser-e2e.md|ADR-0009]]（e2e 套路）/ [[conventions/README.md#data-testid-约定packages-web--testse2e|data-testid 约定]] / [[glossary.md]] / [[tasks/m4/08-web-multi-session-store.md|tasks/m4/08]] SessionBucket + 雷区代码基线。
 
+## 修订注记（2026-09-22 T01-T10 实施收官）
+
+> 本节为 M6 实施期偏差注记——**不修改 PRD 原文**（遵守 M2 / M3 / M4 / M5 「文档遵从代码」原则），仅在本节登记实施期与 D1-D12 决策不一致 / 补充实施期 M+ 候选 / testid 勘误等。
+
+### 实施摘要
+
+- 9 任务（T01-T09）+ 1 polish（T03-T09 review 收尾）实施收官，10 个 web commit + pnpm-lock.yaml 更新，领先 origin/main 15 commits（2026-09-22）：
+  1. `63eceb1` feat(web): M6 T01 — token 体系重译（reference 冷色板 light/dark 20+ token + @theme 映射）
+  2. `1226002` feat(web): M6 T02 — styles.css 全量迁 Tailwind utilities（legacy CSS 清零 + 语义标记类保留 + 断言 regex 化）
+  3. `7700d6c` fix(web): M6 T02 review 修复 — 迁移视觉保真度 1:1 回归（draft 虚线/禁用态底色/圆角与 padding 校准 17 项）
+  4. `c52d9f0` feat(web): M6 T03 — AppShell 双 elevated 卡布局（sidebar 300px + rounded-2xl shadow-sm + 深石板 backdrop token 化）
+  5. `334941a` feat(web): M6 T04 — Sidebar reference 重做（brand 双行块 + lucide-react 引入 + 远端连接卡 + 汉堡 SVG 双处收编）
+  6. `5eae766` feat(web): M6 T05 — ChatView 气泡布局 + InputBar reference 重做（AI 头像方块/用户右侧蓝气泡/单一焦点指示/深石板发送钮）
+  7. `6cc1941` feat(web): M6 T06 — TokenModal reference 形态（tinted icon block + 深石板 backdrop + focus 光晕）
+  8. `93cd6a9` feat(web): M6 T07 — 4 类阻塞弹窗 + toast reference 形态（tinted icon block 分色 + 倒计时 pill + footer 双按钮）
+  9. `11c2ded` feat(web): M6 T08 — DirectoryBrowser reference modal 化 + 桌面端 backdrop（M+ (b) 兑现）
+  10. `916998a` feat(web): M6 T09 — SessionStatusBar/ChoicePage/RecoveryView reference 形态 + session 状态色 token 化收尾
+  11. `f1a4395` fix(web): M6 T03-T09 review 收尾 — 撤除多余 message-body testid + ChoicePanel 窄体居中卡修正
+- **T11 暗色对比度 WCAG AA 单测 + a11y 核对** 仍 `todo`（依赖 10）——计划 T10 done 后串联 T11 校色 + a11y。
+- **未推送**：沿用 M2 / M3 / M4 / M5 交付约定（用户本地验证 → push → Actions CD）。
+
+### Carve-out 登记
+
+- **`data-testid="session-select"` 删除**（T04 Sidebar 视图重组后由 `session-row` onClick 承担切换，e2e 全集无引用）；grep 实证唯一差异：7700d6c → HEAD 仅有 `session-select` 删除，零增（`message-body` 仅留测试负向 pin + 既有动态 `message-row` / `message-draft` 锡点不作新增）。
+- **`data-testid="message-body"` 曾在 T05 短暂新增**（`message-body` textContent 父容器约定），**polish f1a4395 撤除恢复零增承诺**（仅留 `chatview-bubbles.test.tsx:186` negative pin 实证「message-body 作为 class 而非 testid」）；e2e 9 spec 全集无引用，不影响。
+- **`lucide-react` 本轮唯一新增依赖**（D3）；原 `package.json` 仅增 1 行（`lucide-react: ^1.47.0`）。
+
+### z-index 勘误（与 M5 PRD D12 文案不一致）
+
+- **实际栈（代码 grep）**：toast/dialog-host **z-[100]** + sidebar backdrop **z-[199]**（桌面 / 移动端） + sidebar 200 + directory-browser **250** + token-modal **400**——实测 dialog-host 实际 z-[100]（M3 起沿用）。
+- **M5 PRD D12 文案**：toast(100) < sidebar(200) < **dialog-host(300)** < token-modal(400)——**与代码不一致**。
+- **实施期决策**：按「文档遵从代码」原则**不改 M5 PRD 原文**（M5 PRD D12 仍记 dialog-host(300)）；本 PRD 修订注记记录实际栈——**toast/dialog-host(100) < backdrop(199) < sidebar(200) < directory-browser(250) < token-modal(400)**——M+ 候选登录「mobile 抽屉(200) 与阻塞弹窗(100) 并存时的视觉层叠 quirk」（是否提升 dialog-host 至 200 以避开 toast 路由冲突，由任务 11 + 0002 评审）。
+- **DialogHost 焦点陷阱缺失**（M5 既有缺漏）：T07 仍未补——mobile 抽屉与阻塞弹窗并存时，焦点可能进入黑环弹窗背后部。Joker 为 M+ 候选（任务 11 兑底 + 0002 评审）。
+
+### M+ 候选登记（未在本轮实施）
+
+- **DialogHost 4 类弹窗 focus trap**（M5 既有缺漏）——T07 未补；Mobile 抽屉与阻塞弹窗并存时焦点可能进入黑环。
+- **focus-visible ring 跨组件统一**（input-field / token-input / dialog-input-field / work-dir-change 多处使用 -outline-none + focus-visible ring）——本轮零改；M+ 抽到 `@layer components` 为 `.focus-ring` 语义类。
+- **emerald 字面值 token 收编**（T04 留 `bg-[#1f9d55]` / `bg-[#ecfdf5]` / `text-[#1f9d55]` 等 ~4 处）——T07 amber 字面值同大部。
+- **dark 态 inline code 明暗反转**（T05）——两主题均达标但方向相反（light 走 accent 蓝 / dark 走 amber-400 黄系）；M+ 候选 token 化反转 `--inline-code-fg` + 两主题镜像。
+- **ChoiceLevel1 双提示文案共存**（T09）——recovery 路径下既有「恢复会话」Banner 又走 ChoiceLevel1 Panel「请选择工作目录」，与 PRD 单一职责有微冲突；M+ 候选统一收口到 ChoiceLevel1。
+
+### 测试基线（实测）
+
+- **单测** = workspace 全量 **1091 tests / 47 files** 全绿（web 566 / bridge 378 / shared 136 / worker 11）。
+- **集成** = **32 tests / 7 files** 零回归（11.15s）。
+- **e2e** = **9 spec × 2 连跑全绿**，两轮各 **19.6s / 19.1s**，**无 flaky 无重跑**。
+- **typecheck** = **4 包绿**。
+- **lint**（web 范围） = **0 error / 5 pre-existing warnings**（WsClient.ts no-console）。
+- **build 实测体积对比**（D8 不设硬门槛，只记录）：
+
+  | 指标 | M5 baseline | M6 实测 | 增量 |
+  |------|------------|---------|------|
+  | web entry | 266.98 KB raw / 77.87 KB gzip | 296.75 KB raw / 84.64 KB gzip | **+29.77 / +6.77 KB** |
+  | web CSS | 32.67 KB / 6.92 KB gzip | 34.80 KB / 7.35 KB gzip | **+2.13 / +0.43 KB** |
+  | markdown chunk | 170.57 KB / 52.47 KB | 170.57 KB / 52.47 KB | **0 / 0**（不变） |
+  | AssistantMessageBody chunk | 2.78 KB | 5.14 KB / 1.74 KB | **+2.36 KB**（T05 气泡布局 + lucide AI 头像 icon block 代码） |
+
+### 遗留（待 T11 + 用户 push + 端到端验收）
+
+- **T11 暗色对比度 WCAG AA 校色 + a11y 审计** `todo`——已知三处 dark 对比边缘：
+  - **amber pill** on dark surface-2 ：1.8:1（低于 UI 3:1 门槛）；M+ 候选取 amber-300 或 #2f2738 背景以提升对比。
+  - **accent CTA** on dark surface-2 ：2.9:1（低于 UI 3:1 门槛）；M+ 候选取 accent-hover 以提升对比。
+  - **state-offline** on white text ：2.1:1（低于正文 4.5:1）；M+ 候选取 dark 变体 #f87171 以提升对比。
+- **推 origin/main**——领先 15 commits 仍未推送；用户手动 `git push origin main` 触发 Actions CD（deploy.yml 沿用 M5）。
+- **服务器端 bridge 更新重启**——与 push 同批动作即可合并触发（加载 M6 web commit + M5-08 efe265f 后 web 重连 token 路径修复 + ADR-0013 bridge 重连状态机修复 + ADR-0011 read-idle 判死 + ADR-0012 退避门控）。
+- **用户端到端验收**：访问 `https://remote-pi.sankabox.com/`（无 hash）→ 首次弹 TokenModal required（reference 形态）→ 粘贴 token → reload → 进入 sidebar（reference brand 双行块 + 双 tab + 远端连接卡）→ 多会话切换走 sidebar → 输入框 reference 形态 → 弹窗 / DirectoryBrowser / StatusBar / RecoveryView 全部 reference 形态 → **新形态手测验收清单** 8 条（详见 [[tasks/m6/10-e2e-validation-docs.md#完成情况|T10 完成情况]] + [[tasks/README.md#m6-任务|tasks/README M6]]）。
+
 ## 决策记录（D1-D12 全部定稿，2026-09-22 用户裁定）
 
 > **写作时不再保留「待裁定」字样**——D1-D12 全部已定稿。

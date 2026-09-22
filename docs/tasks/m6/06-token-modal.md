@@ -1,8 +1,19 @@
 ---
 prd: prds/m6-visual-rebuild.md
-status: todo
+status: done
 ---
 # 任务：TokenModal reference 形态（卡片 + backdrop + tinted icon block + input token 化）
+
+## 完成情况（2026-09-22，6cc1941 范围）
+
+- **commit**：`6cc1941` feat(web): M6 T06 — TokenModal reference 形态（tinted icon block + 深石板 backdrop + focus 光晕）。
+- **做了什么**：卡片容器 `rounded-2xl p-7 shadow-2xl max-w-[420px] bg-[var(--surface)]`；backdrop `bg-[#17202b]/45 backdrop-blur-[3px]` z-400；头部 size-11 rounded-xl tinted icon block `bg-[var(--accent-soft)] text-[var(--accent)]` + `<Hash size={20} />`；input `h-11 rounded-xl bg-[var(--surface-2)] focus:border-[var(--accent)] focus:ring-4 ring-[var(--accent-ring)]`；提交钮蓝填充 `bg-[var(--accent)] text-white rounded-xl hover:bg-[var(--accent-hover)] w-full`；底部隐私说明 11px 灰「token 仅存浏览器本地，不上传服务器」（M5 既有文案沿用）。
+- **关键偏差**：focus 边色由草案 `focus:border-[#7da1df]` 落地 `focus:border-[var(--accent)]`（更直接——T05 InputBar 单一焦点指示已落地，外层 border 直接走 accent 比 focus 边浅蓝更与卡片底对比清晰）。
+- **两模式逻辑零改动**：required 不可关闭（Esc / 遮罩 / X 均无效）+ closable 三路关闭 + z-index 400 + autofocus 钉桩——M5 D10 沿用。
+- **testid**：`token-modal` / `token-modal-backdrop` / `token-modal-close` / `token-input` / `token-submit` 沿用——零增零删。
+- **测试基线**：`token-modal.test.ts` **30 条**（既有 19 + 4 regex 适配 + 7 新增 icon block / 卡片形态 / focus 边断言）全绿。
+- **M4 雷区**：零字节 diff。
+- **协议 / worker / bridge / shared**：零改动。
 
 ## 目标
 

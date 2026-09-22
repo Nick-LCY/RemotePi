@@ -1,8 +1,18 @@
 ---
 prd: prds/m6-visual-rebuild.md
-status: todo
+status: done
 ---
 # 任务：全量验证（单测 / 集成 / e2e 9 spec × 2 / typecheck / lint / build / 体积记录）+ 文档收尾
+
+## 完成情况（2026-09-22，T10）
+
+- **做了什么**（含本批 docs commit）：workspace 全量单测 `pnpm test` 根跑 **1091 tests / 47 files / 2.22s 全绿**（web 566 + bridge 378 + shared 136 + worker 11）；集成 `pnpm test:integration` **32 tests / 7 files / 11.15s 零回归**；e2e `pnpm test:e2e` **9 spec × 2 连跑全绿**（两轮各 **19.6s / 19.1s** 无 flaky 无重跑——spec 改动 0 行，className 字符串断言与新容器 class 自然兼容）；`pnpm -r typecheck` 4 包绿；`pnpm exec eslint packages/web/src` 范围限定 **0 error / 5 pre-existing warnings**（WsClient.ts no-console）；根 `pnpm lint` **86 problems（81 errors / 5 warnings）**——81 errors 全在 `reference/` 第三方 shadcn 风格源码（M5 立项前已存在污染，不计入本轮门）；`pnpm -r build` 4 包绿 + web build 实测体积（web entry 296.75 KB raw / 84.64 KB gzip + CSS 34.80 KB / 7.35 KB gzip + markdown chunk 170.57 KB / 52.47 KB 不变 + AssistantMessageBody 5.14 KB / 1.74 KB）——D8 不设硬门槛。
+- **契约自证**：testid 唯一差异 = `data-testid="session-select"` 删除（T04 Sidebar 视图重组后由 `session-row` onClick 承担切换，e2e 9 spec 全集无引用）；M4 雷区零字节 diff（grep `useRecoveryGateMap | handleRefill | gateMapRef | RecoveryView | stem-refilled watcher` 仍仅命中 `App.tsx` 与既有测试，未下移到 AppShell / Sidebar）；`git diff 7700d6c..HEAD --stat` 范围仅 `packages/web/**` + `pnpm-lock.yaml`（29 个文件 changed，3924 insertions / 532 deletions）——协议 / worker / bridge / shared 零改动；组件内硬编码 hex 仅 1 处注释提及 previous 值（`Sidebar.tsx:144` `bg-[#e69138]` 注释），全部 hex 在 `styles.css` `:root` / `@media dark` 块 token 化。
+- **重点回归**：e2e 01 spec §6 draft textContent 单调性 + 02 spec 角色断言 + 08 spec 流式打字机 + tool 归并 pill——T10 实测 9 spec × 2 全绿无回归。
+- **修订注记落地**（本批 docs commit）：[[prds/m6-visual-rebuild.md#修订注记2026-09-22-t01-t10-实施收官|PRD §修订注记]]（carve-out / z-index 勘误 / M+ 候选 / 实测基线 / 遗留）/ [[tasks/m6/README.md]] 任务状态表 + 实测基线段 / 9 个任务文件（[[tasks/m6/01-token-retranslation.md|01]] / [[tasks/m6/02-css-full-migration.md|02]] / [[tasks/m6/03-app-shell-rebuild.md|03]] / [[tasks/m6/04-sidebar-brand-lucide.md|04]] / [[tasks/m6/05-chatview-bubbles-inputbar.md|05]] / [[tasks/m6/06-token-modal.md|06]] / [[tasks/m6/07-dialoghost-styling.md|07]] / [[tasks/m6/08-directory-browser-modal.md|08]] / [[tasks/m6/09-statusbar-choice-recovery.md|09]]）status → done + 完成情况节 / [[tasks/m6/11-dark-contrast-a11y.md|任务 11]] 仍 `todo` / [[tasks/README.md]] M6 节 / [[prds/README.md]] M6 条目 / [[current-state.md]] M6 行 + 测试基线 + 最近变更 + TODO / 阻塞。
+- **遗留**：T11 暗色对比度 WCAG AA 校色 + a11y 审计 `todo`（已知三处 dark 对比边缘：amber pill 1.8:1 / accent CTA 2.9:1 / state-offline 2.1:1 白字场景）；用户 push origin/main + 服务器端 bridge 重启 + 三端联调手测验收（详见 [[prds/m6-visual-rebuild.md#用户操作清单|PRD §用户操作清单]] 8 条 + 移动端抽屉）。
+- **commit**（T10 实施收官批）：本批两批 commit——docs commit `docs(m6): T01-T10 完成情况回填 + 修订注记（carve-out / z-index 勘误 / M+ 候选登记）` + 任何验证期代码微修（≤10 行）`fix(web): M6 T10 验证轮修复 — <摘要>`（T10 实测零代码微修）。
+- **依赖链**：✅ 01 / 02 / 03 / 04 / 05 / 06 / 07 / 08 / 09 全部 done（领先 origin/main 15 commits）。
 
 ## 目标
 

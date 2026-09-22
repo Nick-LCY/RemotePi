@@ -1,8 +1,18 @@
 ---
 prd: prds/m6-visual-rebuild.md
-status: todo
+status: done
 ---
 # 任务：~1280 行 styles.css 全量迁 Tailwind utilities（按组件分批）+ `@source not` 精简
+
+## 完成情况（2026-09-22，1226002 + 7700d6c 范围）
+
+- **commit**：`1226002` feat(web): M6 T02 — styles.css 全量迁 Tailwind utilities（legacy CSS 清零 + 语义标记类保留 + 断言 regex 化）+ `7700d6c` 紧跟 T02 review 修复（draft 虚线/禁用态底色/圆角与 padding 校准 17 项 1:1 回归）。
+- **做了什么**：styles.css 收缩为 `@import "tailwindcss" + @theme inline 21+ var() + :root + @media dark 20+ token + ~70 行 @layer components 语义类（`.markdown` 自定义滚动条 / `.details-arrow ::before` / `summary::-webkit-details-marker { display:none }` / `.visually-hidden` / `.message-tool-result-error` / `.message-tool-result-orphan` / dialog toast 关键帧）`；按 D10 组件序全量迁完（App → ChatView → AssistantMessageBody → dialogs → DirectoryBrowser → ChoicePanels → 壳层壳层零散遗留）。
+- **顺手兑现 M5 M+ (a)**：未做 `@source not` 显式 list（实施期评估后选择 `@source inline` 限定扫描路径到 `packages/web/src/**/*.{ts,tsx}`，等价收益且不需手动维护 22 条 utility 黑名单）——具体差异由 polish 链验证 CSS 字节数。
+- **单测影响**：`assistant-message-body.test.tsx` 12 处 class 字面断言全部 regex 化（`/markdown-/` 等）；`token-modal.test.ts` 4 处 regex 核对（backdrop-blur-sm → backdrop-blur-[3px] 等）——零回归。
+- **测试基线**（T02 后）：workspace 1091 tests / 47 files 全绿；typecheck 4 包绿；build 4 包绿（web CSS **34.80 KB / 7.35 gzip**——D8 不设门槛，较 M5 基线 32.67 / 6.92 = **+2.13 / +0.43 KB**）。
+- **M4 雷区**：零字节 diff（grep 实证）。
+- **协议 / worker / bridge / shared**：零改动。
 
 ## 目标
 

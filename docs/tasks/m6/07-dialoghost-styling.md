@@ -1,8 +1,20 @@
 ---
 prd: prds/m6-visual-rebuild.md
-status: todo
+status: done
 ---
 # 任务：4 类 DialogHost + toast 统一 reference modal（D7 分色表）+ footer 按钮形态
+
+## 完成情况（2026-09-22，93cd6a9 范围）
+
+- **commit**：`93cd6a9` feat(web): M6 T07 — 4 类阻塞弹窗 + toast reference 形态（tinted icon block 分色 + 倒计时 pill + footer 双按钮）。
+- **做了什么**：4 类弹窗统一卡片 `rounded-2xl p-7 shadow-2xl max-w-[440px] bg-[var(--surface)]` + backdrop `bg-[#17202b]/45 backdrop-blur-[3px]`（与 TokenModal 一致）；**按类型 tinted icon block 分色**——confirm `<HelpCircle />` `bg-emerald-soft text-state-online`（绿 `#ecfdf5` / `#1f9d55`）+ select `<ListChecks />` `bg-amber-soft text-amber`（amber `#fef3c7` / `#d97706`）+ input `<PenLine />` / editor `<Edit3 />` `bg-accent-soft text-accent`（蓝 `#eef4ff` / `#245bc4`）；dark 族镜像（emerald `#022c22` / `#34d399` + amber `#422006` / `#fbbf24` + accent soft + `#6f9bff`），由实施期校色 + 任务 11 a11y 核对最终化；footer 按钮形态 primary 蓝填充 / cancel 白底描边 / destructive 红（复用 `--state-offline`）；**倒计时 pill** `bg-[var(--surface-2)] text-[var(--muted)] rounded-full`；toast 卡片 `rounded-2xl px-4 py-3 shadow-lg` + 左侧 icon block（`<Info />` / `<AlertTriangle />` / `<CheckCircle2 />`）+ 标题 + 正文，进场退场动画沿用既有 keyframes（保留在 `@layer components` 内）。
+- **关键偏差**：toast 间距由草案 `m-2`（M5）落地 `mb-2`（draft 保留 `m-2` 但实施期 tiptoe 上下间距仅留底，避免顶部与 dialog-host 视觉粘连）；amber 字面色由原始 `text-amber` 落地为 token 化的 `--amber #d97706` / `--amber-soft #fef3c7`——T04 emerald 字面值与 T07 amber 字面值一起列入 M+ 候选 token 收编。
+- **关键候选**：DialogHost **4 类弹窗 focus trap 缺失**（M5 既有缺漏，T07 仍未补；M+ 候选（mobile 抽屉 + 阻塞弹窗并存时焦点逃逸防护）由任务 11 兜底）。
+- **props / dispatcher / 倒计时逻辑 / testid 全集零改动**（M5 D10 + D12 沿用）。
+- **testid 全集**：`dialog-host` / `dialog-{type}` / `dialog-{type}-{action}` / `dialog-input-field` / `dialog-editor-field` / `dialog-error` / `dialog-host-toast` 沿用——零增零删。
+- **测试基线**：新增 `dialogs-reference.test.tsx` **17 条**（4 类弹窗 tinted icon block 分色 + lucide 节点 + destructive 红按钮形态覆盖）。
+- **M4 雷区**：零字节 diff。
+- **协议 / worker / bridge / shared**：零改动。
 
 ## 目标
 

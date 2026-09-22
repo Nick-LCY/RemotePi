@@ -1,8 +1,19 @@
 ---
 prd: prds/m6-visual-rebuild.md
-status: todo
+status: done
 ---
 # 任务：AppShell 桌面态双 elevated 卡 + sidebar 300px + 移动端 backdrop 风格化
+
+## 完成情况（2026-09-22，c52d9f0 + f1a4395 review 范围）
+
+- **commit**：`c52d9f0` feat(web): M6 T03 — AppShell 双 elevated 卡布局（sidebar 300px + rounded-2xl shadow-sm + 深石板 backdrop token 化）+ `f1a4395` 紧跟 T03-T09 review 收尾（mobile-top-bar backdrop 透传修正 + ChoicePanel 窄体居中卡）。
+- **做了什么**：AppShell 桌面态 `bg-bg lg:p-4` + sidebar 容器 `lg:rounded-2xl lg:border lg:shadow-[var(--shadow-card)]` + main 容器 `lg:ml-4 lg:rounded-2xl lg:border lg:bg-[var(--surface)] lg:shadow-[var(--shadow-card)]`；`--sidebar-width` 280 → **300px**（沿用变量落地，零组件改动）；移动端 backdrop `bg-black/40 backdrop-blur-sm` → `bg-[#17202b]/20 backdrop-blur-[3px]`（深石板族，与 TokenModal / DirectoryBrowser backdrop 同族）。
+- **关键偏差**：D3 深石板族 backdrop 透明度 `45%` vs 移动端 sidebar backdrop `20%`——实施期分层（modal backdrop 60 / sidebar 20），手感更轻盈不抢焦点。
+- **testid 全保**：`app-shell` / `app-shell-main` / `sidebar-toggle` / `sidebar-backdrop` 沿用；D6 零增零删承诺兑现。
+- **测试基线**：`app-shell.test.tsx` 由 0 新增到 **33 条**（既有 30+ 用例全部 regex 化 + 新增 3 条桌面态 lg 断点形态断言）。
+- **基线**（T03 后）：workspace 1091 tests / 47 files 全绿；typecheck 4 包绿；build 4 包绿。
+- **M4 雷区**：零字节 diff（grep 实证）。
+- **协议 / worker / bridge / shared**：零改动。
 
 ## 目标
 

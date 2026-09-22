@@ -1,8 +1,20 @@
 ---
 prd: prds/m6-visual-rebuild.md
-status: todo
+status: done
 ---
 # 任务：引 lucide-react + Sidebar 重写（brand 双行块 + session row + BridgeStatusBar reference「远端连接」卡）
+
+## 完成情况（2026-09-22，334941a 范围）
+
+- **commit**：`334941a` feat(web): M6 T04 — Sidebar reference 重做（brand 双行块 + lucide-react 引入 + 远端连接卡 + 汉堡 SVG 双处收编）。
+- **做了什么**：`pnpm --filter @remotepi/web add lucide-react`（唯一新增依赖，D3 兑现）；删除 Sidebar / MobileTopBar 双处内联 `HamburgerIcon` SVG（M5 M+ (d) 兑现，统一 `<Menu>` / `<X>`）；Sidebar 顶部 72px brand 双行块（深石板 `#17202b` size-9 rounded-xl + `<Terminal>` 白图标 + 「RemotePi」加粗 + 「远程开发工作台」11px 灰副文）；分组标题 11px uppercase tracking-[0.12em]；session 行 rounded-xl + hover/active token 化蓝块（WorkDirs tab 当前目录 `bg-[var(--accent-soft)] text-[var(--accent)]`）；BridgeStatusBar reference「远端连接」卡（Globe2 / Server / Bot 三节点 size-7 rounded-lg + emerald-300 连线 + emerald-500 + animate-ping 心跳 + 「链路正常」10px emerald-600）；设置按钮简化行（lucide `<Settings>` + 「设置」文案）；**carve-out**：session-row 直接接管点击（移除 7700d6c 既有 `session-select` testid，由 session-row onClick 承担——T10 实证 e2e 9 spec 全集无引用）。
+- **关键偏差**：BridgeStatusBar 离线态文案由草案「未连接」落地「链路断开」（draft 用「未连接」），与「正在连接 / connecting / 链路正常」三态文案对齐。
+- **关键候选**：`use-only lucide` 字面值收编进 token（M+ 候选，T04 留 `bg-[#1f9d55]` / `bg-[#ecfdf5]` 等 emerald 字面值未抽 4 处 — 由 T07 dialog icon block 顺手收编）。
+- **testid**：`sidebar-tabs` / `session-row` / `work-dir-row` / `bridge-status[data-state]` / `settings-button` 沿用；`data-state` 语义不变（e2e 01 / 05 / 07 强依赖）。
+- **测试基线**：`sidebar.test.tsx` 既有 ≥5 + 新增 22 条（**from 4 to 26 tests**；brand 双行块 + lucide 节点 + BridgeStatusBar 三态文案 + 离线态无 emerald-500 断言全部覆盖）。
+- **build 实测**：lucide-react tree-shaking 后实际增量 ~+6 KB gzip（web entry **296.75 KB / 84.64 gzip** vs M5 baseline 266.98 / 77.87 = +29.77 / **+6.77 KB**）——落在预估 +5~+10 KB 区间内。
+- **M4 雷区**：零字节 diff。
+- **协议 / worker / bridge / shared**：零改动。
 
 ## 目标
 
