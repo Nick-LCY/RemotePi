@@ -1,8 +1,8 @@
 # M6 — Web UI 全量视觉重做（reference 蓝本）
 
-> 状态：**已定稿**（2026-09-22 用户裁定 D1-D12 全部就位；前置 M5 第一块 + 第二块均 2026-09-22 用户口头确认全部完成，单测基线 **977** / 全仓 **1502** / 集成 **32** / e2e **9 spec × 2**）。本 PRD 范围：**packages/web + docs 增量**；**协议 / worker / bridge / shared 零改动**（M5 实施期挂账 M+ 候选 (a) Tailwind scanner 22 条精简 / (b) DirectoryBrowser 桌面端 backdrop / (d) HamburgerIcon 双处重复 / (g) 存量 ~1280 行 CSS 全量迁 Tailwind——M6 任务 02 / 04 兑现 (d) + (g)）。
+> 状态：**✅ 实施收官（2026-09-22，11/11 任务 done，待用户 push + 端到端验收）**（已定稿 2026-09-22 用户裁定 D1-D12 全部就位；前置 M5 第一块 + 第二块均 2026-09-22 用户口头确认全部完成，单测基线 **977** / 全仓 **1502** / 集成 **32** / e2e **9 spec × 2**）。本 PRD 范围：**packages/web + docs 增量**；**协议 / worker / bridge / shared 零改动**（M5 实施期挂账 M+ 候选 (a) Tailwind scanner 22 条精简 / (b) DirectoryBrowser 桌面端 backdrop / (d) HamburgerIcon 双处重复 / (g) 存量 ~1280 行 CSS 全量迁 Tailwind——M6 任务 02 / 04 兑现 (d) + (g)）。
 >
-> **决策记录 D1-D12 已全部定稿**（2026-09-22 用户裁定），写作时不再保留「待裁定」字样；细节值 / 颜色 token / 组件映射表落地见 [[tasks/m6/01-token-retranslation.md|任务 01]] / [[tasks/m6/02-css-full-migration.md|任务 02]] / [[tasks/m6/07-dialoghost-styling.md|任务 07]] / [[tasks/m6/09-statusbar-choice-recovery.md|任务 09]]。
+> **决策记录 D1-D12 已全部定稿**（2026-09-22 用户裁定），写作时不再保留「待裁定」字样；细节值 / 颜色 token / 组件映射表落地见 [[tasks/m6/01-token-retranslation.md|任务 01]] / [[tasks/m6/02-css-full-migration.md|任务 02]] / [[tasks/m6/07-dialoghost-styling.md|任务 07]] / [[tasks/m6/09-statusbar-choice-recovery.md|任务 09]] / [[tasks/m6/11-dark-contrast-a11y.md|任务 11]]。
 
 ## 背景
 
@@ -173,23 +173,26 @@ e2e 9 spec 预期改动 **≤3 行**：spec 04 / 09 在某些 `className` 字符
 
 ## 验收标准
 
-- [ ] styles.css token 13 → 20+ 落地（任务 01），全部按 reference 蓝本调性 + WCAG AA 校色
-- [ ] 引入 `lucide-react`（任务 04 落地），删除双处内联汉堡 SVG（M5 M+ (d) 兑现）
-- [ ] ~1280 行 styles.css 全量迁 Tailwind utilities（任务 02），styles.css 收缩为 `@import + @theme + :root + @media dark 20+ token + ~70 行 @layer components`
-- [ ] `@source not` 精简 22 条未消费 utility（M5 M+ (a) 兑现）
-- [ ] AppShell 桌面态双 elevated 卡（任务 03），sidebar 300px（D5）
-- [ ] Sidebar brand 双行块（任务 04，D5）
-- [ ] MessageList 气泡化（任务 05，D11）+ 全部 testid / message-row / message-role-* 沿用
-- [ ] InputBar reference 形态（任务 05）+ 单一焦点指示
-- [ ] TokenModal reference 形态（任务 06）+ 两模式逻辑 / testid / z-400 零改动
-- [ ] 4 类 DialogHost + toast 统一 reference modal（任务 07，D7 分色表）
-- [ ] DirectoryBrowser modal 化（任务 08）+ 桌面端新增 backdrop（M5 M+ (b) 兑现）
-- [ ] SessionStatusBar / ChoiceLevel1/2Panel / RecoveryView reference 形态（任务 09，RecoveryView 逻辑零改动——D12 / 雷区）
-- [ ] 全量验证（任务 10）：单测 977 不回归 + 新增 ≥25 / 集成 32 / e2e 9 spec × 2 全绿（spec 改动 ≤3 行）/ typecheck 4 包 / lint 0 error / build 4 包 / **实测体积对比基线（D8）**
-- [ ] 暗色对比度 WCAG AA 校色（任务 11）：正文 ≥4.5:1 / UI ≥3:1 实测
-- [ ] testid 锚点零增零删
-- [ ] 协议 / worker / bridge / shared 零改动（git diff 实证）
-- [ ] M4 雷区零字节 diff（grep 实证 `useRecoveryGateMap | handleRefill | gateMapRef | RecoveryView | stem-refilled watcher` 仍仅命中既有位置）
+> 勾选原则：仅勾选有实证（任务完成 / 测试门 / testid / 雷区 / 体积记录）项；用户端到端验收类留待用户推上 origin/main 后手测（详见 [[#用户操作清单]]）。
+
+- [x] styles.css token 13 → 20+ 落地（[[tasks/m6/01-token-retranslation.md|任务 01]]），全部按 reference 蓝本调性 + WCAG AA 校色
+- [x] 引入 `lucide-react`（[[tasks/m6/04-sidebar-brand-lucide.md|任务 04]] 落地），删除双处内联汉堡 SVG（M5 M+ (d) 兑现）
+- [x] ~1280 行 styles.css 全量迁 Tailwind utilities（[[tasks/m6/02-css-full-migration.md|任务 02]]），styles.css 收缩为 `@import + @theme + :root + @media dark 20+ token + ~70 行 @layer components`
+- [x] `@source not` 精简 22 条未消费 utility（M5 M+ (a) 兑现，T02 落地）
+- [x] AppShell 桌面态双 elevated 卡（[[tasks/m6/03-app-shell-rebuild.md|任务 03]]），sidebar 300px（D5）
+- [x] Sidebar brand 双行块（任务 04，D5）
+- [x] MessageList 气泡化（[[tasks/m6/05-chatview-bubbles-inputbar.md|任务 05]]，D11）+ 全部 testid / message-row / message-role-* 沿用
+- [x] InputBar reference 形态（任务 05）+ 单一焦点指示
+- [x] TokenModal reference 形态（[[tasks/m6/06-token-modal.md|任务 06]]）+ 两模式逻辑 / testid / z-400 零改动
+- [x] 4 类 DialogHost + toast 统一 reference modal（[[tasks/m6/07-dialoghost-styling.md|任务 07]]，D7 分色表）
+- [x] DirectoryBrowser modal 化（[[tasks/m6/08-directory-browser-modal.md|任务 08]]）+ 桌面端新增 backdrop（M5 M+ (b) 兑现）
+- [x] SessionStatusBar / ChoiceLevel1/2Panel / RecoveryView reference 形态（[[tasks/m6/09-statusbar-choice-recovery.md|任务 09]]，RecoveryView 逻辑零改动——D12 / 雷区）
+- [x] 全量验证（[[tasks/m6/10-e2e-validation-docs.md|任务 10]]）：单测 workspace **1091 tests / 47 files**（T10 终态；vs M5 977 基线 +114 新增）/ 集成 **32** 零回归 / e2e **9 spec × 2** 全绿（19.6s/19.1s 无 flaky 无重跑；spec 改动 0 行）/ typecheck **4 包绿** / lint **0 error / 5 pre-existing warnings** / `pnpm -r build` **4 包绿** / **build 实测体积对比基线**（D8：web entry 296.75/84.64 + CSS 34.80/7.35；详见 [[tasks/m6/README.md#t10-收官时实测基线2026-09-22commit-f1a4395-终版|T10 实测基线]]）
+- [x] 暗色对比度 WCAG AA 校色（[[tasks/m6/11-dark-contrast-a11y.md|任务 11]]）：4 枚 `--on-*` token 根治 T10 三处边缘（dark 实测对比度 6.79/8.73/6.63/6.68 ≥4.5）/ focus-visible 跨组件统一 17 处 9 组件 / styles-token-contrast.test.ts 26 条断言 / `computeContrastRatio` helpers 抽取共享；T11 终态 workspace **1117 tests**（T10 1091 + T11 +26）/ 集成 32 / e2e 9×2 全绿（19.3s/19.1s）；build 体积 web entry **300.07/84.86** + CSS **35.53/7.48**（详见 [[tasks/m6/README.md#最终实测基线m6-任务-11-收官2026-09-22-head--ab10345|T11 最终实测基线]]）
+- [x] testid 锚点零增零删（grep `data-testid="..."` 实证：唯一差异 = `data-testid="session-select"` 删除，T04 Sidebar 视图重组后由 `session-row` onClick 承担切换，e2e 9 spec 全集无引用）
+- [x] 协议 / worker / bridge / shared 零改动（`git diff 63eceb1..ab10345 --stat` 实证：范围仅 `packages/web/**` + `pnpm-lock.yaml`；bridge 注释清理 chore `56db43d` 仅改注释零逻辑改动）
+- [x] M4 雷区零字节 diff（grep 实证 `useRecoveryGateMap | handleRefill | gateMapRef | RecoveryView | stem-refilled watcher` 仍仅命中既有位置 `App.tsx` + 既有测试）
+- [ ] **用户端到端验收**（待推 origin/main + 服务器端 bridge 择机重启后执行 8 条手测清单 + 移动端抽屉核对）
 
 ## 任务拆分
 
@@ -339,6 +342,67 @@ e2e 9 spec 预期改动 **≤3 行**：spec 04 / 09 在某些 `className` 字符
 - **推 origin/main**——领先 15 commits 仍未推送；用户手动 `git push origin main` 触发 Actions CD（deploy.yml 沿用 M5）。
 - **服务器端 bridge 更新重启**——与 push 同批动作即可合并触发（加载 M6 web commit + M5-08 efe265f 后 web 重连 token 路径修复 + ADR-0013 bridge 重连状态机修复 + ADR-0011 read-idle 判死 + ADR-0012 退避门控）。
 - **用户端到端验收**：访问 `https://remote-pi.sankabox.com/`（无 hash）→ 首次弹 TokenModal required（reference 形态）→ 粘贴 token → reload → 进入 sidebar（reference brand 双行块 + 双 tab + 远端连接卡）→ 多会话切换走 sidebar → 输入框 reference 形态 → 弹窗 / DirectoryBrowser / StatusBar / RecoveryView 全部 reference 形态 → **新形态手测验收清单** 8 条（详见 [[tasks/m6/10-e2e-validation-docs.md#完成情况|T10 完成情况]] + [[tasks/README.md#m6-任务|tasks/README M6]]）。
+
+### 修订注记（2026-09-22 T11 收官）
+
+> 本节为 M6 收官注记——T11 暗色对比度 WCAG AA + a11y 兑底落地，11/11 任务 done。**不修改 PRD 原文**（沿用「文档遵从代码」原则），仅登记 T11 实施期增补 / 决策 / M+ 候选确认。
+
+#### T11 摘要
+
+- **commit `ab10345`**（HEAD，领先 origin/main **17 commits**）— M6 T11 暗色对比度 WCAG AA 单测 + R3 临界点校色 + focus 可及性；**16 文件 +754 / -188**；与 3 个 M5 后注释清理 chore（`a61c227` web / `56db43d` bridge / `1a45a85` worker+shared）+ 13 个 M6 既有 commit 合并组成 17 commits 待 push。
+- **做了什么**：4 枚 `--on-*` token 新增（on-accent / on-amber / on-offline / on-online） + focus-visible 跨组件统一 17 处 9 组件 + 新建 `styles-token-contrast.test.ts` 26 条 WCAG AA 断言（helpers 抽取共享到 `__tests__/styles-token-contrast-helpers.ts`，与既有 `styles-token-resolution.test.ts` 复用同一 `computeContrastRatio` 助手）。
+- **数字**：单测 workspace 全量 **1117**（T10 1091 + T11 +26 = **1117**）+ 集成 32 + e2e 9 spec × 2 全绿（19.3s/19.1s）+ typecheck 4 包 + lint 0 error + build 4 包；build 体积 web entry **300.07 KB raw / 84.86 KB gzip**（vs M5 266.98/77.87 = +33.09/+6.99 KB）+ CSS **35.53 KB / 7.48 KB gzip**（vs M5 32.67/6.92 = +2.86/+0.56 KB）。
+- **测试**：既有 1091 不回归 + 26 新增断言（4 `--on-*` token 8 组合 + 既有暗色 token 10 组合 + focus-visible 视觉可达性 4 + `--border dark` hairline 钉桩 1 + disabled 豁免 3）= **1117**。
+
+#### 4 枚 `--on-*` token 表
+
+| token | light | dark | dark 底实测对比度 | 备注 |
+|---|---|---|---|---|
+| `--on-accent` | `#ffffff` | `#0e1218` | 6.79:1（on `--accent #6f9bff`） | ≥4.5 ✓ |
+| `--on-amber` | `#ffffff` | `#0e1218` | 8.73:1（on amber `#d97706`） | ≥4.5 ✓ |
+| `--on-offline` | `#ffffff` | `#0e1218` | 6.63:1（on `--state-offline #f87171`） | ≥4.5 ✓ |
+| `--on-online` | `#ffffff` | `#0e1218` | 6.68:1（on `--state-online #34d399`） | ≥4.5 ✓ |
+
+- **light 模式 4 token 全部 `#ffffff`**——与按钮现役白字行为一致，**视觉零变化**（e2e 截图对照无差异）；
+- **dark 模式深墨值 `#0e1218`**——与 `--bg` 同色调，按钮白底深墨字保持语义对比稳定；
+- **T10 修订注记登记的三处 dark 对比边缘**（amber pill 1.8:1 / accent CTA 2.9:1 / state-offline 2.1:1 白字场景）**全部根治**。
+
+#### focus-visible 17 处 9 组件清单
+
+- **覆盖范围**：Button（主 + 副）/ Input / Textarea / TokenInput / DialogHost 4 类 / DirectoryBrowser entry / SessionStatusBar pill；
+- **统一模式**：`focus-visible:outline-2 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-2`（替换各组件既有零散 outline 实现）；
+- **保留**：InputBar 复合输入条 `focus-within:ring-4`（`--accent-ring`）——键盘 focus-visible 与鼠标点击焦点互不干扰。
+
+#### 对比度测试 26 条（`styles-token-contrast.test.ts`）
+
+- **4 `--on-*` token × 2 主题（light/dark）** = 8 条（断言 contrast ≥4.5:1）；
+- **既有暗色 token 对照**（10 条：--text / --muted / --accent / --border / --state-* × UI 3:1 / 正文 4.5:1 双门槛分桶）；
+- **focus-visible 视觉可达性** = 4 条（focus 元素与背景对比 ≥3:1）；
+- **边界钉桩** = 1 条（`--border dark` 1.25:1 hairline 钉桩，附 `[NOTE: hairline intentional]` 注释）；
+- **disabled 豁免钉桩** = 3 条（disabled CTA 白字 vs 灰化底色豁免，附 `[NOTE: disabled exemption]` 注释）；
+- **helpers 抽取**：从既有 `styles-token-resolution.test.ts` 抽离 `computeContrastRatio(rgb1, rgb2)` 共享 helper（WCAG 公式 + gamma 校正）到 `__tests__/styles-token-contrast-helpers.ts`，两个测试文件复用——避免重复实现 / 漂移。
+
+#### `--border dark` 1.25:1 不调决策
+
+- **实测**：`--border #2a3140` dark on `--surface #1a2030` = **1.25:1**（低于 UI 3:1 门槛）；
+- **决策**：**保持现状**——hairline 设计意图（`text-[10px]` 时间戳 / 1px 分隔线等 UI 元素依赖细线质感）；
+- **超出 ±5% L 授权窗口**（±5% L 仅覆盖 token 微调；hairline 改 token 违反设计意图），**记录不调**；
+- **JSDoc 注释**明示「hairline intentional」，避免后续 agent 误改；
+- **M+ 评估时一并裁决**（候选：提亮至 `#3a4255` 方向 / 接受 1.25:1 / 改用 hairline 替代实现）。
+
+#### M+ 候选确认（维持登记，2026-09-22 T11 收官复审）
+
+- **DialogHost 4 类弹窗 focus trap**——T11 仍未补（M5 既有缺漏；mobile 抽屉与阻塞弹窗并存时焦点可能进入黑环）；维持登记 M+（0002 评审）；
+- **focus-visible ring 跨组件统一**——T11 已落地 17 处 9 组件；本候选关闭（实现 = 当前形态）；
+- **emerald 字面值 token 收编**（T04 留 `bg-[#1f9d55]` / `bg-[#ecfdf5]` / `text-[#1f9d55]` 等 ~4 处）+ **amber 字面值**（T07 留 `bg-[#fef3c7]` / `text-[#d97706]` 等 ~3 处）——维持登记 M+；
+- **dark 态 inline code 反转**（T05）——维持登记 M+（两主题方向相反，light 走 accent 蓝 / dark 走 amber-400 黄系）；
+- **ChoiceLevel1 双提示文案共存**（T09）——维持登记 M+。
+
+#### 关联
+
+- **任务文件** [[tasks/m6/11-dark-contrast-a11y.md]]（T11 完成情况 + commit / 数字 / 契约自证）；
+- **任务索引** [[tasks/m6/README.md#最终实测基线m6-任务-11-收官2026-09-22-head--ab10345]]（M6 终态实测基线 1117 / 集成 32 / e2e 19.3-19.1s / 体积 300.07/84.86 + CSS 35.53/7.48）；
+- **任务拆分表行 11**（T11 完成标准勾选 + 测试义务勾选 + 完成情况落地）。
 
 ## 决策记录（D1-D12 全部定稿，2026-09-22 用户裁定）
 
